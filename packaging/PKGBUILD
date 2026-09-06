@@ -1,0 +1,36 @@
+pkgname=browser-wayland-manager
+pkgver=0.1.0
+pkgrel=1
+pkgdesc='Manage isolated browser-wayland Docker desktops'
+arch=('x86_64')
+license=('MIT')
+# Native crypto assembly is incompatible with makepkg's injected C LTO flags.
+options=('!lto')
+backup=('etc/browser-wayland-manager/environment')
+depends=('docker' 'docker-buildx' 'git' 'gcc-libs')
+makedepends=('rust' 'nodejs' 'npm')
+source=("$pkgname-$pkgver.tar.gz")
+sha256sums=('SKIP')
+
+build() {
+    cd "$srcdir/$pkgname-$pkgver"
+    (cd web && npm ci --no-audit --no-fund && npm run build)
+    cargo build --release --locked
+}
+
+check() {
+    cd "$srcdir/$pkgname-$pkgver"
+    cargo test --locked
+}
+
+package() {
+    cd "$srcdir/$pkgname-$pkgver"
+    install -Dm755 target/release/browser-wayland-manager "$pkgdir/usr/bin/browser-wayland-manager"
+    install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+    install -Dm644 packaging/browser-wayland-manager.service "$pkgdir/usr/lib/systemd/system/browser-wayland-manager.service"
+    install -Dm644 packaging/browser-wayland-manager.sysusers "$pkgdir/usr/lib/sysusers.d/browser-wayland-manager.conf"
+    install -Dm644 packaging/environment "$pkgdir/etc/browser-wayland-manager/environment"
+    install -d "$pkgdir/usr/share/$pkgname"
+    cp -r sessions .dockerignore "$pkgdir/usr/share/$pkgname/"
+    install -Dm755 scripts/build-sessions "$pkgdir/usr/share/$pkgname/scripts/build-sessions"
+}

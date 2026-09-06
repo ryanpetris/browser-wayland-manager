@@ -1,0 +1,20 @@
+[Unit]
+Description=Browser Wayland Manager
+After=docker.service network-online.target
+Requires=docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=browser-wayland-manager
+Group=browser-wayland-manager
+SupplementaryGroups=docker
+StateDirectory=browser-wayland-manager
+StateDirectoryMode=0700
+EnvironmentFile=-/etc/browser-wayland-manager/environment
+ExecStart=/usr/bin/browser-wayland-manager
+Restart=on-failure
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target
