@@ -35,6 +35,17 @@ if [ ! -f /opt/bwm/packages-installed ]; then
     sh /opt/bwm/packages.sh "$@"
     touch /opt/bwm/packages-installed
 fi
+# Device group IDs come from the host and may differ from the image's groups.
+for device in /dev/dri/card* /dev/dri/renderD*; do
+    [ -c "$device" ] || continue
+    gid=$(stat -c %g "$device")
+    group=$(getent group "$gid" | cut -d: -f1)
+    if [ -z "$group" ]; then
+        group="bwm-gpu-$gid"
+        groupadd -g "$gid" "$group"
+    fi
+    usermod -aG "$group" bw
+done
 stage launch
 trap - EXIT
 exec runuser -u bw -- sh /opt/bwm/start.sh

@@ -15,6 +15,7 @@ services:
       - "host.docker.internal:host-gateway"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
+      - /dev/dri:/dev/dri:ro
       - manager-data:/var/lib/browser-wayland-manager
     restart: unless-stopped
 volumes:

@@ -410,6 +410,12 @@ async fn prepare(app: Shared, id: &str) -> Result<()> {
     .into_iter()
     .map(str::to_owned)
     .collect::<Vec<_>>();
+    if std::path::Path::new("/dev/dri/renderD128").exists() {
+        args.splice(
+            1..1,
+            ["--device".to_owned(), "/dev/dri:/dev/dri".to_owned()],
+        );
+    }
     args.extend(s.packages.iter().cloned());
     docker(&args.iter().map(String::as_str).collect::<Vec<_>>()).await?;
     docker(&[

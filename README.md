@@ -40,7 +40,7 @@ Creation validates package names, records the session, downloads a release packa
 
 Inside the session container, setup installs runtime services, prepares the user and runtime directories, and installs browser-wayland with `apt` or `pacman`. The package manager resolves the package's declared dependencies, including Debian recommendations. A separate script installs requested extra packages before browser-wayland starts. The manager publishes an Open action only after an authenticated readiness request succeeds. Setup and installation markers allow stopped sessions to restart without reinstalling packages.
 
-Both distributions include xterm for sessions with no extra packages. Sessions use software rendering and encoding, so GPU device mounts are not required. Release packages are assumed compatible with the selected distribution; the manager does not perform a separate binary or shared-library compatibility check.
+Both distributions include xterm for sessions with no extra packages. Sessions use hardware encoding when a supported GPU is available, and software encoding without a GPU. Release packages are assumed compatible with the selected distribution; the manager does not perform a separate binary or shared-library compatibility check.
 
 An empty package list is valid. Package names cannot contain shell syntax, whitespace, paths, version expressions, or leading-dash options. Failed installations stop startup and expose their stage and output in Logs. Setup stages time out after 30 minutes; launch readiness times out after two minutes; release download and base-image preparation time out after 30 minutes. A failed session remains available for Stop and Destroy.
 
@@ -89,3 +89,18 @@ docker build --target check .
 ```
 
 The footer displays the manager's own build version. Builds use `BWM_VERSION` when set, otherwise `git describe` from a `v`-prefixed manager tag, falling back to the Cargo package version when Git tags are unavailable. Docker includes Git metadata only in the build stage. Override the version with `docker build --build-arg BWM_VERSION=1.2.3 .`, `BWM_VERSION=1.2.3 docker compose up -d --build`, or `BWM_VERSION=1.2.3 ./scripts/build-packages`. Browser-wayland's pinned release is independent of the manager version.
+
+## Hardware encoding
+
+New sessions use the host GPU for rendering and VA-API video encoding when
+`/dev/dri/renderD128` is available to the manager. The Compose file mounts
+`/dev/dri` so the manager can detect it, and the manager passes GPU devices to
+session containers. When running the manager with `docker run`, also mount
+`/dev/dri:/dev/dri:ro`. The Docker daemon must run on the same host.
+
+Native installations detect the devices directly without additional configuration.
+Session setup installs Intel and AMD VA-API and Vulkan drivers for encoding and
+rendering, and grants the desktop user access to the device groups. Hosts without a render device use software rendering
+and encoding. A GPU must support VA-API encoding to use the hardware path.
+Existing sessions retain their original container configuration and startup scripts;
+create a new session to use hardware encoding.
