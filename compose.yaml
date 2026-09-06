@@ -1,22 +1,22 @@
-name: browser-wayland-manager
+name: elsewhere-innkeeper
 services:
-  manager:
+  innkeeper:
     build:
       context: .
       args:
-        BWM_VERSION: "${BWM_VERSION:-}"
+        INNKEEPER_VERSION: "${INNKEEPER_VERSION:-}"
     ports:
       - "19300:19300"
     environment:
-      BWM_PUBLIC_HOST: "${BWM_PUBLIC_HOST:-}"
-      BWM_SESSION_BIND: "${BWM_SESSION_BIND:-0.0.0.0}"
-      BWM_DOCKER_HOST: host.docker.internal
+      INNKEEPER_PUBLIC_HOST: "${INNKEEPER_PUBLIC_HOST:-}"
+      INNKEEPER_SESSION_BIND: "${INNKEEPER_SESSION_BIND:-0.0.0.0}"
+      INNKEEPER_DOCKER_HOST: host.docker.internal
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - /dev/dri:/dev/dri:ro
-      - manager-data:/var/lib/browser-wayland-manager
+      - innkeeper-data:/var/lib/elsewhere-innkeeper
     restart: unless-stopped
 volumes:
-  manager-data:
+  innkeeper-data:

@@ -1,13 +1,13 @@
-Source: browser-wayland-manager
+Source: elsewhere-innkeeper
 Section: admin
 Priority: optional
-Maintainer: Browser Wayland Manager contributors <noreply@localhost>
+Maintainer: Elsewhere Innkeeper contributors <noreply@localhost>
 Build-Depends: debhelper-compat (= 13), cargo (>= 1.85), rustc (>= 1.85), nodejs (>= 22.12), npm, git
 Standards-Version: 4.7.0
 Rules-Requires-Root: no
 
-Package: browser-wayland-manager
+Package: elsewhere-innkeeper
 Architecture: any
 Depends: ${shlibs:Depends}, ${misc:Depends}, docker.io, docker-cli, curl, ca-certificates, systemd
-Description: Manage browser-wayland Docker desktops
+Description: Manage elsewhere Docker desktops
  Creates isolated Arch Linux and Debian desktop sessions with a web interface.

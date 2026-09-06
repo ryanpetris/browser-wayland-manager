@@ -9,12 +9,12 @@ ifeq (,$(filter nocheck,$(DEB_BUILD_OPTIONS)))
 	cargo test --locked
 endif
 override_dh_auto_install:
-	install -Dm755 target/release/browser-wayland-manager debian/browser-wayland-manager/usr/bin/browser-wayland-manager
-	install -Dm644 packaging/environment debian/browser-wayland-manager/etc/browser-wayland-manager/environment
-	install -Dm644 packaging/browser-wayland-manager.service debian/browser-wayland-manager/usr/lib/systemd/system/browser-wayland-manager.service
-	install -Dm644 packaging/browser-wayland-manager.sysusers debian/browser-wayland-manager/usr/lib/sysusers.d/browser-wayland-manager.conf
-	install -d debian/browser-wayland-manager/usr/share/browser-wayland-manager
-	cp -r sessions debian/browser-wayland-manager/usr/share/browser-wayland-manager/
+	install -Dm755 target/release/elsewhere-innkeeper debian/elsewhere-innkeeper/usr/bin/elsewhere-innkeeper
+	install -Dm644 packaging/environment debian/elsewhere-innkeeper/etc/elsewhere-innkeeper/environment
+	install -Dm644 packaging/elsewhere-innkeeper.service debian/elsewhere-innkeeper/usr/lib/systemd/system/elsewhere-innkeeper.service
+	install -Dm644 packaging/elsewhere-innkeeper.sysusers debian/elsewhere-innkeeper/usr/lib/sysusers.d/elsewhere-innkeeper.conf
+	install -d debian/elsewhere-innkeeper/usr/share/elsewhere-innkeeper
+	cp -r sessions debian/elsewhere-innkeeper/usr/share/elsewhere-innkeeper/
 override_dh_auto_clean:
 	rm -rf target web/dist web/node_modules
 override_dh_installsystemd:

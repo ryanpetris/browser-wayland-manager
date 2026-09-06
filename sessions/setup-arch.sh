@@ -1,4 +1,4 @@
 #!/bin/sh
 set -eu
 pacman -Syu --noconfirm --needed dbus pipewire pipewire-pulse wireplumber gst-plugin-pipewire pipewire-alsa libpulse gst-plugins-ugly gst-plugin-va intel-media-driver libva-mesa-driver vulkan-intel vulkan-radeon xorg-xwayland util-linux xterm ttf-dejavu coreutils
-id -u bw >/dev/null 2>&1 || useradd -m -u 1000 bw
+id -u elsewhere >/dev/null 2>&1 || useradd -m -u 1000 elsewhere

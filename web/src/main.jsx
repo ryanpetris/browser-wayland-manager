@@ -31,12 +31,12 @@ function enqueuePreview(task) {
 function App() {
   const [version, setVersion] = useState("");
   const [token, setToken] = useState(
-    () => sessionStorage.getItem("bwm-token") || "",
+    () => sessionStorage.getItem("innkeeper-token") || "",
   );
   const [authenticated, setAuthenticated] = useState(false);
   const [sessions, setSessions] = useState([]);
   const [layout, setLayout] = useState(
-    () => localStorage.getItem("bwm-layout") || "grid",
+    () => localStorage.getItem("innkeeper-layout") || "grid",
   );
   const [error, setError] = useState("");
   const [creating, setCreating] = useState(false);
@@ -79,7 +79,7 @@ function App() {
     setSessions(data.sessions);
     setVersion(data.version);
     setAuthenticated(true);
-    sessionStorage.setItem("bwm-token", token);
+    sessionStorage.setItem("innkeeper-token", token);
   }
   useEffect(() => {
     if (!token) return;
@@ -106,7 +106,7 @@ function App() {
     };
   }, [token]);
   useEffect(() => {
-    localStorage.setItem("bwm-layout", layout);
+    localStorage.setItem("innkeeper-layout", layout);
   }, [layout]);
   useEffect(() => {
     if (!logs) return;
@@ -186,8 +186,8 @@ function App() {
     return (
       <main className="login">
         <Monitor size={36} />
-        <h1>Browser Wayland Manager</h1>
-        <p>Enter the administrator token from the manager’s data directory.</p>
+        <h1>Elsewhere Innkeeper</h1>
+        <p>Enter the administrator token from Innkeeper’s data directory.</p>
         <form
           onSubmit={(e) => {
             e.preventDefault();
@@ -222,13 +222,13 @@ function App() {
         <div className="brand">
           <Monitor />
           <span>
-            Browser Wayland <strong>Manager</strong>
+            Elsewhere <strong>Innkeeper</strong>
           </span>
         </div>
         <button
           onClick={() => {
             currentToken.current = "";
-            sessionStorage.removeItem("bwm-token");
+            sessionStorage.removeItem("innkeeper-token");
             setToken("");
             setAuthenticated(false);
             setLogs(null);
@@ -349,7 +349,7 @@ function App() {
           </div>
         )}
         <footer>
-          Browser Wayland Manager <code>v{version}</code>
+          Elsewhere Innkeeper <code>v{version}</code>
         </footer>
       </main>
       {creating && (

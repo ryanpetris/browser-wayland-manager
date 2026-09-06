@@ -1,4 +1,4 @@
-# Instructions for agents working on browser-wayland-manager
+# Instructions for agents working on elsewhere-innkeeper
 
 ## Commits and pushes
 

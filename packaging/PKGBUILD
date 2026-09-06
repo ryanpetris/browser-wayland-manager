@@ -1,12 +1,12 @@
-pkgname=browser-wayland-manager
+pkgname=elsewhere-innkeeper
 pkgver=0.1.0
 pkgrel=1
-pkgdesc='Manage isolated browser-wayland Docker desktops'
+pkgdesc='Manage isolated elsewhere Docker desktops'
 arch=('x86_64')
 license=('MIT')
 # Native crypto assembly is incompatible with makepkg's injected C LTO flags.
 options=('!lto')
-backup=('etc/browser-wayland-manager/environment')
+backup=('etc/elsewhere-innkeeper/environment')
 depends=('docker' 'curl' 'ca-certificates' 'gcc-libs')
 makedepends=('rust' 'nodejs' 'npm' 'git')
 source=("$pkgname-$pkgver.tar.gz")
@@ -25,11 +25,11 @@ check() {
 
 package() {
     cd "$srcdir/$pkgname-$pkgver"
-    install -Dm755 target/release/browser-wayland-manager "$pkgdir/usr/bin/browser-wayland-manager"
+    install -Dm755 target/release/elsewhere-innkeeper "$pkgdir/usr/bin/elsewhere-innkeeper"
     install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
-    install -Dm644 packaging/browser-wayland-manager.service "$pkgdir/usr/lib/systemd/system/browser-wayland-manager.service"
-    install -Dm644 packaging/browser-wayland-manager.sysusers "$pkgdir/usr/lib/sysusers.d/browser-wayland-manager.conf"
-    install -Dm644 packaging/environment "$pkgdir/etc/browser-wayland-manager/environment"
+    install -Dm644 packaging/elsewhere-innkeeper.service "$pkgdir/usr/lib/systemd/system/elsewhere-innkeeper.service"
+    install -Dm644 packaging/elsewhere-innkeeper.sysusers "$pkgdir/usr/lib/sysusers.d/elsewhere-innkeeper.conf"
+    install -Dm644 packaging/environment "$pkgdir/etc/elsewhere-innkeeper/environment"
     install -d "$pkgdir/usr/share/$pkgname"
     cp -r sessions "$pkgdir/usr/share/$pkgname/"
 }

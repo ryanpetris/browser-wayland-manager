@@ -1,5 +1,5 @@
 Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
-Upstream-Name: browser-wayland-manager
+Upstream-Name: elsewhere-innkeeper
 
 Files: *
 Copyright: 2026 Ryan Petris

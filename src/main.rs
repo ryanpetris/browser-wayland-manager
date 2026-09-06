@@ -23,9 +23,9 @@ use tokio::{
 };
 use uuid::Uuid;
 
-const BROWSER_WAYLAND_VERSION: &str = include_str!("../sessions/browser-wayland-version");
+const ELSEWHERE_VERSION: &str = include_str!("../sessions/elsewhere-version");
 const RECIPE: &str = include_str!("../sessions/recipe-version");
-const LABEL: &str = "io.browser-wayland-manager.owner";
+const LABEL: &str = "io.innkeeper.owner";
 #[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
 struct Session {
     id: String,
@@ -166,10 +166,10 @@ impl App {
     }
 }
 fn container(id: &str) -> String {
-    format!("bwm-{id}")
+    format!("innkeeper-{id}")
 }
 fn volume(id: &str) -> String {
-    format!("bwm-{id}-data")
+    format!("innkeeper-{id}-data")
 }
 async fn docker(args: &[&str]) -> Result<String> {
     let output = tokio::time::timeout(
@@ -207,7 +207,7 @@ fn public_session(s: &Session) -> serde_json::Value {
 }
 async fn list(State(app): State<Shared>) -> Json<serde_json::Value> {
     Json(
-        serde_json::json!({"sessions":app.db.lock().await.sessions.iter().map(public_session).collect::<Vec<_>>(),"version":env!("BWM_VERSION")}),
+        serde_json::json!({"sessions":app.db.lock().await.sessions.iter().map(public_session).collect::<Vec<_>>(),"version":env!("INNKEEPER_VERSION")}),
     )
 }
 #[derive(Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -309,13 +309,12 @@ async fn create(State(app): State<Shared>, Json(input): Json<Create>) -> Api<imp
 }
 async fn prepare(app: Shared, id: &str) -> Result<()> {
     let initial = app.session(id).await.map_err(|e| anyhow::anyhow!(e.1))?;
-    let version = BROWSER_WAYLAND_VERSION.trim();
-    if std::fs::read_to_string(app.assets.join("sessions/browser-wayland-version"))?.trim()
-        != version
+    let version = ELSEWHERE_VERSION.trim();
+    if std::fs::read_to_string(app.assets.join("sessions/elsewhere-version"))?.trim() != version
         || std::fs::read_to_string(app.assets.join("sessions/recipe-version"))?.trim()
             != RECIPE.trim()
     {
-        bail!("Session recipes changed. Restart the manager after upgrading.");
+        bail!("Session recipes changed. Restart Innkeeper after upgrading.");
     }
     let architecture = docker(&["info", "--format", "{{.Architecture}}"]).await?;
     if !matches!(architecture.trim(), "x86_64" | "amd64") {
@@ -324,12 +323,12 @@ async fn prepare(app: Shared, id: &str) -> Result<()> {
     let (image, asset) = if initial.distribution == "arch" {
         (
             "archlinux:base",
-            format!("browser-wayland-{version}-1-x86_64.pkg.tar.zst"),
+            format!("elsewhere-{version}-1-x86_64.pkg.tar.zst"),
         )
     } else {
         (
             "debian:trixie-slim",
-            format!("browser-wayland_{version}-1_amd64.deb"),
+            format!("elsewhere_{version}-1_amd64.deb"),
         )
     };
     let package = app
@@ -340,7 +339,7 @@ async fn prepare(app: Shared, id: &str) -> Result<()> {
         .join(&initial.distribution)
         .join(&asset);
     let url = format!(
-        "https://github.com/ryanpetris/browser-wayland/releases/download/v{}/{}",
+        "https://github.com/ryanpetris/elsewhere/releases/download/v{}/{}",
         version, asset
     );
     let started = Instant::now();
@@ -421,15 +420,15 @@ async fn prepare(app: Shared, id: &str) -> Result<()> {
     docker(&["volume", "create", "--label", &label, &volume(id)]).await?;
     let tcp = format!("{}:{}:19443/tcp", app.bind, s.port);
     let udp = format!("{}:{}:19443/udp", app.bind, s.port);
-    let mount = format!("{}:/home/bw", volume(id));
+    let mount = format!("{}:/home/elsewhere", volume(id));
     let screen_size = format!(
-        "BWM_SCREEN_SIZE={}",
+        "INNKEEPER_SCREEN_SIZE={}",
         s.screen_size
             .map(|size| format!("{}x{}", size.width, size.height))
             .unwrap_or_default()
     );
-    let kiosk = format!("BWM_KIOSK={}", u8::from(s.kiosk));
-    let startup_command = format!("BWM_STARTUP_COMMAND={}", s.startup_command);
+    let kiosk = format!("INNKEEPER_KIOSK={}", u8::from(s.kiosk));
+    let startup_command = format!("INNKEEPER_STARTUP_COMMAND={}", s.startup_command);
     let mut args = vec![
         "create",
         "--env",
@@ -460,7 +459,7 @@ async fn prepare(app: Shared, id: &str) -> Result<()> {
         "--entrypoint",
         "sh",
         image,
-        "/opt/bwm/entrypoint.sh",
+        "/opt/innkeeper/entrypoint.sh",
     ]
     .into_iter()
     .map(str::to_owned)
@@ -479,13 +478,13 @@ async fn prepare(app: Shared, id: &str) -> Result<()> {
             .join("sessions")
             .to_str()
             .context("Invalid assets path")?,
-        &format!("{}:/opt/bwm", container(id)),
+        &format!("{}:/opt/innkeeper", container(id)),
     ])
     .await?;
     docker(&[
         "cp",
         package.to_str().context("Invalid package path")?,
-        &format!("{}:/opt/bwm/{}", container(id), asset),
+        &format!("{}:/opt/innkeeper/{}", container(id), asset),
     ])
     .await?;
     docker(&[
@@ -494,7 +493,7 @@ async fn prepare(app: Shared, id: &str) -> Result<()> {
             .join(format!("sessions/setup-{}.sh", s.distribution))
             .to_str()
             .context("Invalid assets path")?,
-        &format!("{}:/opt/bwm/setup.sh", container(id)),
+        &format!("{}:/opt/innkeeper/setup.sh", container(id)),
     ])
     .await?;
     let seed = app.dir.join(format!("{id}.seed"));
@@ -577,7 +576,7 @@ async fn reconcile(app: Shared) {
             let stage_path = app.dir.join(format!("{}.stage", s.id));
             let stage = if docker(&[
                 "cp",
-                &format!("{}:/tmp/bwm-stage", container(&s.id)),
+                &format!("{}:/tmp/innkeeper-stage", container(&s.id)),
                 stage_path.to_str().unwrap(),
             ])
             .await
@@ -614,7 +613,7 @@ async fn reconcile(app: Shared) {
             } else {
                 false
             };
-            let timings = docker(&["exec", &container(&s.id), "cat", "/tmp/bwm-timings"])
+            let timings = docker(&["exec", &container(&s.id), "cat", "/tmp/innkeeper-timings"])
                 .await
                 .unwrap_or_default();
             let entries = timings
@@ -801,7 +800,7 @@ async fn logs(State(app): State<Shared>, Path(id): Path<String>) -> Api<Json<ser
             .args([
                 "-c",
                 "exec docker logs --tail 1000 \"$1\" 2>&1",
-                "bwm-logs",
+                "innkeeper-logs",
                 &container(&id),
             ])
             .kill_on_drop(true)
@@ -898,7 +897,7 @@ async fn asset(uri: axum::http::Uri) -> Response {
 }
 #[tokio::main]
 async fn main() -> Result<()> {
-    let dir = PathBuf::from(env("BWM_DATA_DIR", "/var/lib/browser-wayland-manager"));
+    let dir = PathBuf::from(env("INNKEEPER_DATA_DIR", "/var/lib/elsewhere-innkeeper"));
     std::fs::create_dir_all(&dir)?;
     std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700))?;
     use std::os::fd::AsRawFd;
@@ -906,10 +905,10 @@ async fn main() -> Result<()> {
         .create(true)
         .truncate(false)
         .write(true)
-        .open(dir.join("manager.lock"))?;
+        .open(dir.join("innkeeper.lock"))?;
     // The open file holds this exclusive lock for the lifetime of the server.
     if unsafe { libc::flock(data_lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
-        bail!("Another manager is using this data directory");
+        bail!("Another Innkeeper is using this data directory");
     }
     let secret_path = dir.join("admin-token");
     let secret = if secret_path.exists() {
@@ -934,17 +933,20 @@ async fn main() -> Result<()> {
     for s in &mut db.sessions {
         if s.status == "preparing" && matches!(s.stage.as_str(), "image" | "download") {
             s.status = "failed".into();
-            s.error=Some("Manager restarted during session preparation. Destroy this session and create it again.".into());
+            s.error=Some("Innkeeper restarted during session preparation. Destroy this session and create it again.".into());
         }
     }
     let app = Arc::new(App {
         db: Mutex::new(db),
         dir,
         secret,
-        public_host: env("BWM_PUBLIC_HOST", ""),
-        docker_host: env("BWM_DOCKER_HOST", "127.0.0.1"),
-        bind: env("BWM_SESSION_BIND", "0.0.0.0"),
-        assets: PathBuf::from(env("BWM_ASSETS_DIR", "/usr/share/browser-wayland-manager")),
+        public_host: env("INNKEEPER_PUBLIC_HOST", ""),
+        docker_host: env("INNKEEPER_DOCKER_HOST", "127.0.0.1"),
+        bind: env("INNKEEPER_SESSION_BIND", "0.0.0.0"),
+        assets: PathBuf::from(env(
+            "INNKEEPER_ASSETS_DIR",
+            "/usr/share/elsewhere-innkeeper",
+        )),
         client: reqwest::Client::builder()
             .danger_accept_invalid_certs(true)
             .timeout(Duration::from_secs(8))
@@ -956,7 +958,7 @@ async fn main() -> Result<()> {
     });
     if loopback(&app.bind) && !loopback(&app.docker_host) {
         bail!(
-            "Loopback session binding requires a loopback BWM_DOCKER_HOST. In Compose use BWM_SESSION_BIND=0.0.0.0."
+            "Loopback session binding requires a loopback INNKEEPER_DOCKER_HOST. In Compose use INNKEEPER_SESSION_BIND=0.0.0.0."
         );
     }
     app.save(&*app.db.lock().await)?;
@@ -975,9 +977,9 @@ async fn main() -> Result<()> {
         .fallback(asset)
         .layer(DefaultBodyLimit::max(32 * 1024))
         .with_state(app);
-    let listener = tokio::net::TcpListener::bind(env("BWM_LISTEN", "0.0.0.0:19300")).await?;
+    let listener = tokio::net::TcpListener::bind(env("INNKEEPER_LISTEN", "0.0.0.0:19300")).await?;
     eprintln!(
-        "browser-wayland-manager listening on {}",
+        "elsewhere-innkeeper listening on {}",
         listener.local_addr()?
     );
     axum::serve(listener, router)
