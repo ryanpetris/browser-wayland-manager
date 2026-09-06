@@ -55,7 +55,7 @@ The Logs dialog polls without overlapping requests. It shows the last 128 KiB of
 The current Docker rig and packages target x86_64 Linux.
 
 - Arch Linux `archlinux:base`, rolling repositories as of the image build.
-- Debian 13 `debian:trixie-slim`, Trixie repositories.
+- Debian 13 `debian:trixie-slim`, Trixie repositories with `main`, `contrib`, `non-free`, and `non-free-firmware` enabled.
 
 The browser-wayland source revision is pinned in `sessions/revision`. Builds clone that exact revision into a temporary directory, without using or modifying another working checkout. `sessions/recipe-version` versions this application's image recipe; increment it when changing session scripts or the session Dockerfile so existing installations rebuild. Tags include distribution, upstream revision, and recipe version. Distribution tags and package repositories receive upstream updates; rebuilding is not bit-for-bit reproducible.
 
