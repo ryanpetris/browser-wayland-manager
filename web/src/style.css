@@ -347,3 +347,32 @@ small {
     font-size: 9px;
   }
 }
+
+.session-fields {
+  border: 0;
+  padding: 0;
+  margin: 0;
+  min-width: 0;
+}
+.profile-import {
+  margin-bottom: 18px;
+}
+.profile-import summary {
+  cursor: pointer;
+  margin-bottom: 12px;
+}
+.screen-dimensions {
+  display: flex;
+  gap: 16px;
+}
+.screen-dimensions label {
+  flex: 1;
+  min-width: 0;
+}
+label.checkbox {
+  flex-direction: row;
+  align-items: center;
+}
+.checkbox input {
+  width: auto;
+}

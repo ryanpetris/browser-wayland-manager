@@ -348,71 +348,28 @@ function App() {
             ))}
           </div>
         )}
-        <footer>Browser Wayland Manager <code>v{version}</code></footer>
+        <footer>
+          Browser Wayland Manager <code>v{version}</code>
+        </footer>
       </main>
       {creating && (
         <Dialog title="New session" close={() => setCreating(false)}>
-          <form
-            onSubmit={async (e) => {
-              e.preventDefault();
-              const form = e.currentTarget;
-              const data = new FormData(form);
-              const button = form.querySelector("button[type=submit]");
-              button.disabled = true;
+          <SessionForm
+            error={createError}
+            submit={async (profile) => {
               setCreateError("");
               try {
                 await api("/sessions", {
                   method: "POST",
-                  body: JSON.stringify({
-                    name: data.get("name"),
-                    distribution: data.get("distribution"),
-                    packages: data
-                      .get("packages")
-                      .trim()
-                      .split(/\s+/)
-                      .filter(Boolean),
-                  }),
+                  body: JSON.stringify(profile),
                 });
                 setCreating(false);
                 await refresh();
               } catch (e) {
                 setCreateError(e.message);
-              } finally {
-                button.disabled = false;
               }
             }}
-          >
-            <label>
-              Session name
-              <input
-                name="name"
-                required
-                maxLength={80}
-                placeholder="My desktop"
-                autoFocus
-              />
-            </label>
-            <label>
-              Distribution
-              <select name="distribution">
-                <option value="arch">Arch Linux · rolling base</option>
-                <option value="debian">Debian 13 · Trixie</option>
-              </select>
-            </label>
-            <label>
-              Extra packages
-              <textarea name="packages" rows={3} placeholder="firefox foot" />
-              <small>Optional. Separate package names with spaces.</small>
-            </label>
-            {createError && (
-              <p role="alert" className="error">
-                {createError}
-              </p>
-            )}
-            <button type="submit" className="primary">
-              Create session
-            </button>
-          </form>
+          />
         </Dialog>
       )}
       {logs && (
@@ -554,4 +511,237 @@ function Preview({ session, layout, api }) {
     </div>
   );
 }
+
+const defaultProfile = {
+  name: "",
+  distribution: "arch",
+  packages: [],
+  startup_command: "",
+  screen_size: null,
+  kiosk: false,
+};
+const screenPresets = ["1280x720", "1920x1080", "2560x1440", "3840x2160"];
+
+function SessionForm({ submit, error }) {
+  const [profile, setProfile] = useState(defaultProfile);
+  const [packages, setPackages] = useState("");
+  const [screen, setScreen] = useState("dynamic");
+  const [width, setWidth] = useState(1920);
+  const [height, setHeight] = useState(1080);
+  const [text, setText] = useState("");
+  const [importError, setImportError] = useState("");
+  const [pending, setPending] = useState(false);
+  function change(key, value) {
+    setProfile((p) => ({ ...p, [key]: value }));
+  }
+  function importProfile() {
+    try {
+      const value = JSON.parse(text);
+      if (
+        !value ||
+        Array.isArray(value) ||
+        typeof value !== "object" ||
+        Object.keys(value).some((key) => !Object.hasOwn(defaultProfile, key))
+      ) {
+        throw new Error(
+          "Profile must be an object containing session settings only.",
+        );
+      }
+      const p = { ...defaultProfile, ...value };
+      if (
+        typeof p.name !== "string" ||
+        !["arch", "debian"].includes(p.distribution) ||
+        !Array.isArray(p.packages) ||
+        p.packages.some(
+          (item) => typeof item !== "string" || /\s/.test(item),
+        ) ||
+        typeof p.startup_command !== "string" ||
+        typeof p.kiosk !== "boolean"
+      ) {
+        throw new Error("Invalid profile field types.");
+      }
+      if (
+        p.screen_size !== null &&
+        (typeof p.screen_size !== "object" ||
+          Array.isArray(p.screen_size) ||
+          Object.keys(p.screen_size).some(
+            (key) => !["width", "height"].includes(key),
+          ) ||
+          ![p.screen_size.width, p.screen_size.height].every(
+            (n) => Number.isInteger(n) && n >= 2 && n <= 8192 && n % 2 === 0,
+          ))
+      ) {
+        throw new Error(
+          "Screen dimensions must be even numbers between 2 and 8192.",
+        );
+      }
+      setProfile(p);
+      setPackages(p.packages.join(" "));
+      const size = p.screen_size;
+      const preset = size ? `${size.width}x${size.height}` : "dynamic";
+      setScreen(size && !screenPresets.includes(preset) ? "custom" : preset);
+      setWidth(size?.width ?? 1920);
+      setHeight(size?.height ?? 1080);
+      setImportError("");
+      setText("");
+    } catch (e) {
+      setImportError(e.message);
+    }
+  }
+  return (
+    <form
+      onSubmit={async (event) => {
+        event.preventDefault();
+        if (text.trim()) {
+          setImportError(
+            "Apply or clear the pasted profile before creating a session.",
+          );
+          return;
+        }
+        setPending(true);
+        const size =
+          screen === "dynamic"
+            ? null
+            : screen === "custom"
+              ? { width: Number(width), height: Number(height) }
+              : {
+                  width: Number(screen.split("x")[0]),
+                  height: Number(screen.split("x")[1]),
+                };
+        try {
+          await submit({
+            ...profile,
+            packages: packages.trim().split(/\s+/).filter(Boolean),
+            screen_size: size,
+          });
+        } finally {
+          setPending(false);
+        }
+      }}
+    >
+      <fieldset disabled={pending} className="session-fields">
+        <details className="profile-import">
+          <summary>Import profile</summary>
+          <label>
+            Profile JSON
+            <textarea
+              rows={6}
+              value={text}
+              onChange={(e) => setText(e.target.value)}
+            />
+          </label>
+          <button type="button" onClick={importProfile}>
+            Apply profile
+          </button>
+        </details>
+        {importError && (
+          <p role="alert" className="error">
+            {importError}
+          </p>
+        )}
+        <label>
+          Session name
+          <input
+            name="name"
+            required
+            maxLength={80}
+            placeholder="My desktop"
+            autoFocus
+            value={profile.name}
+            onChange={(e) => change("name", e.target.value)}
+          />
+        </label>
+        <label>
+          Distribution
+          <select
+            name="distribution"
+            value={profile.distribution}
+            onChange={(e) => change("distribution", e.target.value)}
+          >
+            <option value="arch">Arch Linux · rolling base</option>
+            <option value="debian">Debian 13 · Trixie</option>
+          </select>
+        </label>
+        <label>
+          Extra packages
+          <textarea
+            name="packages"
+            rows={3}
+            placeholder="firefox foot"
+            value={packages}
+            onChange={(e) => setPackages(e.target.value)}
+          />
+          <small>Optional. Separate package names with spaces.</small>
+        </label>
+        <label>
+          Screen size
+          <select value={screen} onChange={(e) => setScreen(e.target.value)}>
+            <option value="dynamic">Dynamic</option>
+            {screenPresets.map((size) => (
+              <option key={size} value={size}>
+                {size.replace("x", " × ")}
+              </option>
+            ))}
+            <option value="custom">Custom</option>
+          </select>
+        </label>
+        {screen === "custom" && (
+          <div className="screen-dimensions">
+            <label>
+              Width
+              <input
+                type="number"
+                required
+                min={2}
+                max={8192}
+                step={2}
+                value={width}
+                onChange={(e) => setWidth(e.target.value)}
+              />
+            </label>
+            <label>
+              Height
+              <input
+                type="number"
+                required
+                min={2}
+                max={8192}
+                step={2}
+                value={height}
+                onChange={(e) => setHeight(e.target.value)}
+              />
+            </label>
+          </div>
+        )}
+        <label className="checkbox">
+          <input
+            type="checkbox"
+            checked={profile.kiosk}
+            onChange={(e) => change("kiosk", e.target.checked)}
+          />
+          Kiosk mode
+        </label>
+        <label>
+          Startup command
+          <textarea
+            rows={2}
+            maxLength={4096}
+            placeholder="0ad"
+            value={profile.startup_command}
+            onChange={(e) => change("startup_command", e.target.value)}
+          />
+        </label>
+        {error && (
+          <p role="alert" className="error">
+            {error}
+          </p>
+        )}
+        <button type="submit" className="primary">
+          Create session
+        </button>
+      </fieldset>
+    </form>
+  );
+}
+
 createRoot(document.getElementById("root")).render(<App />);

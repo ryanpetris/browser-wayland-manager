@@ -32,6 +32,12 @@ struct Session {
     name: String,
     distribution: String,
     packages: Vec<String>,
+    #[serde(default)]
+    startup_command: String,
+    #[serde(default)]
+    screen_size: Option<ScreenSize>,
+    #[serde(default)]
+    kiosk: bool,
     port: u16,
     #[serde(default)]
     started_ms: u64,
@@ -197,18 +203,38 @@ async fn auth(State(app): State<Shared>, req: axum::extract::Request, next: Next
     response
 }
 fn public_session(s: &Session) -> serde_json::Value {
-    serde_json::json!({"id":s.id,"name":s.name,"distribution":s.distribution,"packages":s.packages,"port":s.port,"status":s.status,"stage":s.stage,"error":s.error,"timings":s.timings})
+    serde_json::json!({"id":s.id,"name":s.name,"distribution":s.distribution,"packages":s.packages,"startup_command":s.startup_command,"screen_size":s.screen_size,"kiosk":s.kiosk,"port":s.port,"status":s.status,"stage":s.stage,"error":s.error,"timings":s.timings})
 }
 async fn list(State(app): State<Shared>) -> Json<serde_json::Value> {
     Json(
         serde_json::json!({"sessions":app.db.lock().await.sessions.iter().map(public_session).collect::<Vec<_>>(),"version":env!("BWM_VERSION")}),
     )
 }
+#[derive(Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+struct ScreenSize {
+    width: u32,
+    height: u32,
+}
+impl ScreenSize {
+    fn valid(self) -> bool {
+        [self.width, self.height]
+            .iter()
+            .all(|n| (2..=8192).contains(n) && n % 2 == 0)
+    }
+}
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct Create {
     name: String,
     distribution: String,
     packages: Vec<String>,
+    #[serde(default)]
+    startup_command: String,
+    #[serde(default)]
+    screen_size: Option<ScreenSize>,
+    #[serde(default)]
+    kiosk: bool,
 }
 fn valid_package(p: &str) -> bool {
     !p.is_empty()
@@ -227,6 +253,18 @@ async fn create(State(app): State<Shared>, Json(input): Json<Create>) -> Api<imp
     {
         return Err(Error(StatusCode::BAD_REQUEST, "Choose Arch or Debian, a name of 1–80 characters, and up to 100 valid package names. Shell syntax and options are not allowed.".into()));
     }
+    if input.screen_size.is_some_and(|size| !size.valid()) {
+        return Err(Error(
+            StatusCode::BAD_REQUEST,
+            "Screen dimensions must be even numbers between 2 and 8192.".into(),
+        ));
+    }
+    if input.startup_command.len() > 4096 || input.startup_command.contains('\0') {
+        return Err(Error(
+            StatusCode::BAD_REQUEST,
+            "Startup command must be at most 4096 bytes and contain no NUL characters.".into(),
+        ));
+    }
     let mut db = app.db.lock().await;
     let port = (19500..20000)
         .find(|p| db.sessions.iter().all(|s| s.port != *p))
@@ -239,6 +277,9 @@ async fn create(State(app): State<Shared>, Json(input): Json<Create>) -> Api<imp
         name: input.name.trim().into(),
         distribution: input.distribution,
         packages: input.packages,
+        startup_command: input.startup_command,
+        screen_size: input.screen_size,
+        kiosk: input.kiosk,
         port,
         started_ms: 0,
         status: "preparing".into(),
@@ -381,8 +422,22 @@ async fn prepare(app: Shared, id: &str) -> Result<()> {
     let tcp = format!("{}:{}:19443/tcp", app.bind, s.port);
     let udp = format!("{}:{}:19443/udp", app.bind, s.port);
     let mount = format!("{}:/home/bw", volume(id));
+    let screen_size = format!(
+        "BWM_SCREEN_SIZE={}",
+        s.screen_size
+            .map(|size| format!("{}x{}", size.width, size.height))
+            .unwrap_or_default()
+    );
+    let kiosk = format!("BWM_KIOSK={}", u8::from(s.kiosk));
+    let startup_command = format!("BWM_STARTUP_COMMAND={}", s.startup_command);
     let mut args = vec![
         "create",
+        "--env",
+        &screen_size,
+        "--env",
+        &kiosk,
+        "--env",
+        &startup_command,
         "--name",
         &container(id),
         "--label",
@@ -954,12 +1009,39 @@ mod tests {
         }
     }
     #[test]
+    fn screen_sizes_and_profile_defaults() {
+        for (width, height, valid) in [
+            (1920, 1080, true),
+            (2, 8192, true),
+            (0, 720, false),
+            (1281, 720, false),
+            (1920, 8194, false),
+        ] {
+            assert_eq!(ScreenSize { width, height }.valid(), valid);
+        }
+        let profile: Create =
+            serde_json::from_str(r#"{"name":"Desktop","distribution":"arch","packages":[]}"#)
+                .unwrap();
+        assert!(profile.screen_size.is_none());
+        assert!(!profile.kiosk);
+        assert!(profile.startup_command.is_empty());
+        assert!(
+            serde_json::from_str::<Create>(
+                r#"{"name":"Desktop","distribution":"arch","packages":[],"kioks":true}"#
+            )
+            .is_err()
+        );
+    }
+    #[test]
     fn tokens_are_redacted() {
         let s = Session {
             id: "".into(),
             name: "".into(),
             distribution: "".into(),
             packages: vec![],
+            startup_command: String::new(),
+            screen_size: None,
+            kiosk: false,
             port: 0,
             started_ms: 0,
             status: "".into(),

@@ -9,7 +9,11 @@ mkfifo "$XDG_RUNTIME_DIR/output"
 # Redact startup links before Docker persists them, including rotated token links.
 LC_ALL=C stdbuf -oL sed -E 's/(#token=)[[:xdigit:]]{64}/\1[REDACTED]/g' < "$XDG_RUNTIME_DIR/output" &
 filter=$!
-browser-wayland --listen 0.0.0.0:19443 --rtc-port 19443 --elements > "$XDG_RUNTIME_DIR/output" 2>&1 &
+set -- --listen 0.0.0.0:19443 --rtc-port 19443 --elements
+if [ -n "${BWM_SCREEN_SIZE:-}" ]; then set -- "$@" --screen-size "$BWM_SCREEN_SIZE"; fi
+if [ "${BWM_KIOSK:-0}" = 1 ]; then set -- "$@" --kiosk; fi
+if [ -n "${BWM_STARTUP_COMMAND:-}" ]; then set -- "$@" --exec "$BWM_STARTUP_COMMAND"; fi
+browser-wayland "$@" > "$XDG_RUNTIME_DIR/output" 2>&1 &
 desktop=$!
 trap 'kill -TERM "$desktop" 2>/dev/null || true' TERM INT
 set +e

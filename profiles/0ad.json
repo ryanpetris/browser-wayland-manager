@@ -1,0 +1,8 @@
+{
+  "name": "0 A.D.",
+  "distribution": "arch",
+  "packages": ["0ad"],
+  "startup_command": "0ad",
+  "screen_size": { "width": 1920, "height": 1080 },
+  "kiosk": true
+}

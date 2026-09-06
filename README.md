@@ -104,3 +104,17 @@ rendering, and grants the desktop user access to the device groups. Hosts withou
 and encoding. A GPU must support VA-API encoding to use the hardware path.
 Existing sessions retain their original container configuration and startup scripts;
 create a new session to use hardware encoding.
+
+## Session profiles
+
+In **New session**, expand **Import profile**, paste JSON, and choose **Apply profile**.
+Review the settings and choose **Create session**. See [the 0 A.D. profile](profiles/0ad.json)
+for a game that starts in kiosk mode at 1920 × 1080.
+
+Profiles support `name`, `distribution` (`arch` or `debian`), `packages` (an array of
+package names), `startup_command`, `screen_size`, and `kiosk`. Omitted fields use the
+form defaults. Unknown fields are rejected. `screen_size` is `null` for dynamic sizing, or an object with `width`
+and `height`, both even integers from 2 to 8192. Kiosk mode defaults to `false`.
+The startup command runs through `sh -c` as the desktop user on each session start,
+with the desktop's display and audio environment. An empty command starts no application.
+Settings are saved with the session and retained when it is stopped and started.
