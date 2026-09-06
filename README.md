@@ -42,6 +42,13 @@ Inside the session container, setup installs runtime services, prepares the user
 
 Both distributions include xterm for sessions with no extra packages. Sessions use hardware encoding when a supported GPU is available, and software encoding without a GPU. Release packages are assumed compatible with the selected distribution; Innkeeper does not perform a separate binary or shared-library compatibility check.
 
+Sessions default to `GSK_RENDERER=ngl` to work around GTK 4 Vulkan rendering artifacts
+and `QT_QPA_PLATFORM='wayland;xcb'` so Qt tries Wayland, then X11 when its Wayland
+plugin is unavailable. These settings apply to Elsewhere and applications it launches,
+including applications activated through the session bus. Values already set in the
+session environment, including empty values, are preserved. Innkeeper's own environment
+is not forwarded to session containers.
+
 An empty package list is valid. Package names cannot contain shell syntax, whitespace, paths, version expressions, or leading-dash options. Failed installations stop startup and expose their stage and output in Logs. Setup stages time out after 30 minutes; launch readiness times out after two minutes; release download and base-image preparation time out after 30 minutes. A failed session remains available for Stop and Destroy.
 
 **Stop** terminates the container while retaining the complete session home directory. **Start** relaunches a stopped session with the same tokens and data. **Destroy** removes the owned container, home volume, and Innkeeper preparation log. It permanently deletes that session's data. Shared base images and downloaded packages remain available for reuse. Remove obsolete image tags individually with `docker image rm <exact-tag>` after checking that no retained container uses them; Innkeeper never prunes shared Docker resources. Cancelling a session during download or base-image preparation terminates that preparation process group. A cancelled preparation has no desktop to restart; destroy its record and create a new session.

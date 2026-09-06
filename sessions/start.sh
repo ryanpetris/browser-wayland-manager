@@ -1,6 +1,7 @@
 #!/bin/sh
 set -eu
 export HOME=/home/elsewhere XDG_RUNTIME_DIR=/tmp/runtime-elsewhere NO_COLOR=1
+export GSK_RENDERER="${GSK_RENDERER-ngl}" QT_QPA_PLATFORM="${QT_QPA_PLATFORM-wayland;xcb}"
 cd "$HOME"
 DBUS_SESSION_BUS_ADDRESS=$(dbus-daemon --session --fork --print-address)
 export DBUS_SESSION_BUS_ADDRESS
