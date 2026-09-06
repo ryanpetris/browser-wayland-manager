@@ -1,0 +1,15 @@
+#!/bin/sh
+set -eu
+cd "$(dirname "$0")/.."
+revision=$(cat sessions/revision)
+recipe=$(cat sessions/recipe-version)
+source_dir=$(mktemp -d)
+trap 'rm -rf "$source_dir"' EXIT HUP INT TERM
+git clone --quiet https://github.com/ryanpetris/browser-wayland.git "$source_dir"
+git -C "$source_dir" checkout --quiet --detach "$revision"
+for distribution in "${@:-arch debian}"; do
+    for target in $distribution; do
+        case "$target" in arch|debian) ;; *) echo 'Expected arch or debian' >&2; exit 1;; esac
+        docker build --build-context "upstream=$source_dir" -f sessions/Dockerfile --target "$target" -t "browser-wayland-manager-session:$target-$revision-r$recipe" .
+    done
+done
