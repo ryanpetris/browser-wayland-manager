@@ -3,9 +3,9 @@ services:
   manager:
     build: .
     ports:
-      - "127.0.0.1:19300:19300"
+      - "19300:19300"
     environment:
-      BWM_PUBLIC_HOST: "${BWM_PUBLIC_HOST:-localhost}"
+      BWM_PUBLIC_HOST: "${BWM_PUBLIC_HOST:-}"
       BWM_SESSION_BIND: "${BWM_SESSION_BIND:-0.0.0.0}"
       BWM_DOCKER_HOST: host.docker.internal
     extra_hosts:

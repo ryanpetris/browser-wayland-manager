@@ -9,7 +9,7 @@ docker compose up -d --build
 docker compose exec manager cat /var/lib/browser-wayland-manager/admin-token
 ```
 
-Open `http://localhost:19300` and sign in with that token. The manager generates it once and saves it with mode `0600` in its private data directory. Compose retains manager state in `manager-data` and mounts the Docker socket. Session home directories use separate Docker named volumes, managed by the application.
+Open `http://<server-hostname>:19300` and sign in with that token. The manager generates it once and saves it with mode `0600` in its private data directory. Compose retains manager state in `manager-data` and mounts the Docker socket. Session home directories use separate Docker named volumes, managed by the application.
 
 The first session for a distribution builds its image. This can take several minutes and requires internet access, several gigabytes of disk space, and a Docker daemon with BuildKit. Open **Logs** to follow the build. Later sessions reuse the image. You can also prepare both images with `./scripts/build-sessions`.
 
@@ -21,14 +21,16 @@ The manager listens on port `19300`. Sessions publish matching TCP and UDP ports
 
 | Variable | Native default | Purpose |
 | --- | --- | --- |
-| `BWM_LISTEN` | `127.0.0.1:19300` | Manager HTTP listen address |
-| `BWM_PUBLIC_HOST` | `localhost` | Browser-reachable hostname used in session links |
+| `BWM_LISTEN` | `0.0.0.0:19300` | Manager HTTP listen address |
+| `BWM_PUBLIC_HOST` | Empty | Override the browser hostname used in session links |
 | `BWM_DOCKER_HOST` | `127.0.0.1` | Address where the backend reaches published session ports |
-| `BWM_SESSION_BIND` | `127.0.0.1` | Host address on which Docker publishes session ports |
+| `BWM_SESSION_BIND` | `0.0.0.0` | Host address on which Docker publishes session ports |
 | `BWM_DATA_DIR` | `/var/lib/browser-wayland-manager` | Private manager state, administrator token, build logs |
 | `BWM_ASSETS_DIR` | `/usr/share/browser-wayland-manager` | Session recipes and build scripts |
 
-Compose binds the manager to host loopback, publishes session ports on all host interfaces, and uses `host.docker.internal:host-gateway` for backend access. For remote browsers, set `BWM_PUBLIC_HOST` to the Docker host's reachable hostname and expose the manager through an HTTPS reverse proxy. Forward both TCP and UDP session ports when using NAT. One manager controls one local Linux Docker daemon; remote Docker daemons and rootless Docker are not currently supported.
+The native manager and session ports bind all IPv4 interfaces by default. Compose publishes the manager port on the addresses supported by the Docker daemon. Desktop links use the hostname or IP address in the browser's manager URL, with the session's HTTPS port. Set `BWM_PUBLIC_HOST` to override that hostname. When a reverse proxy runs on another machine, set it to the Docker host's browser-reachable address unless the proxy also forwards the session ports. IPv6 literal overrides must include brackets, for example `[2001:db8::1]`; IPv6 links also require Docker to publish the session ports over IPv6. Compose uses `host.docker.internal:host-gateway` for backend access, independently of browser links. Use an HTTPS reverse proxy to protect management traffic on untrusted networks. To restrict management access to the local machine, change the Compose port mapping to `127.0.0.1:19300:19300`, or set `BWM_LISTEN=127.0.0.1:19300` for a native installation. For a native installation, `BWM_SESSION_BIND=127.0.0.1` also restricts desktop ports to loopback. Forward both TCP and UDP session ports when using NAT. One manager controls one local Linux Docker daemon; remote Docker daemons and rootless Docker are not currently supported.
+
+Existing installations that need loopback-only access should keep explicit bind settings when upgrading. After changing Compose configuration, rebuild and recreate the manager with `docker compose up -d --build`.
 
 Management access grants Docker control. Treat the administrator token and Docker socket as host-administrator credentials. The service stores session tokens in a private `state.json`; back up the complete manager data directory together with session volumes. The frontend retains the administrator token only in the tab's session storage. No cross-origin API access is enabled.
 

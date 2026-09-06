@@ -657,9 +657,10 @@ async fn link(State(app): State<Shared>, Path(id): Path<String>) -> Api<Json<ser
     if s.status != "running" {
         return Err(Error(StatusCode::CONFLICT, "Session is not ready".into()));
     }
-    Ok(Json(
-        serde_json::json!({"url":format!("https://{}:{}/#token={}",app.public_host,s.port,s.token)}),
-    ))
+    Ok(Json(serde_json::json!({
+        "url": format!("https://{}:{}/#token={}", if app.public_host.is_empty() { "localhost" } else { &app.public_host }, s.port, s.token),
+        "use_browser_host": app.public_host.is_empty(),
+    })))
 }
 async fn logs(State(app): State<Shared>, Path(id): Path<String>) -> Api<Json<serde_json::Value>> {
     let s = app.session(&id).await?;
@@ -822,9 +823,9 @@ async fn main() -> Result<()> {
         db: Mutex::new(db),
         dir,
         secret,
-        public_host: env("BWM_PUBLIC_HOST", "localhost"),
+        public_host: env("BWM_PUBLIC_HOST", ""),
         docker_host: env("BWM_DOCKER_HOST", "127.0.0.1"),
-        bind: env("BWM_SESSION_BIND", "127.0.0.1"),
+        bind: env("BWM_SESSION_BIND", "0.0.0.0"),
         assets: PathBuf::from(env("BWM_ASSETS_DIR", "/usr/share/browser-wayland-manager")),
         client: reqwest::Client::builder()
             .danger_accept_invalid_certs(true)
@@ -856,7 +857,7 @@ async fn main() -> Result<()> {
         .fallback(asset)
         .layer(DefaultBodyLimit::max(32 * 1024))
         .with_state(app);
-    let listener = tokio::net::TcpListener::bind(env("BWM_LISTEN", "127.0.0.1:19300")).await?;
+    let listener = tokio::net::TcpListener::bind(env("BWM_LISTEN", "0.0.0.0:19300")).await?;
     eprintln!(
         "browser-wayland-manager listening on {}",
         listener.local_addr()?
