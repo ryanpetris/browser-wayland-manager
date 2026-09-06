@@ -2,12 +2,12 @@ Source: browser-wayland-manager
 Section: admin
 Priority: optional
 Maintainer: Browser Wayland Manager contributors <noreply@localhost>
-Build-Depends: debhelper-compat (= 13), cargo (>= 1.85), rustc (>= 1.85), nodejs (>= 22.12), npm
+Build-Depends: debhelper-compat (= 13), cargo (>= 1.85), rustc (>= 1.85), nodejs (>= 22.12), npm, git
 Standards-Version: 4.7.0
 Rules-Requires-Root: no
 
 Package: browser-wayland-manager
 Architecture: any
-Depends: ${shlibs:Depends}, ${misc:Depends}, docker.io, docker-cli, docker-buildx, git, ca-certificates, systemd
+Depends: ${shlibs:Depends}, ${misc:Depends}, docker.io, docker-cli, curl, ca-certificates, systemd
 Description: Manage browser-wayland Docker desktops
  Creates isolated Arch Linux and Debian desktop sessions with a web interface.

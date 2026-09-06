@@ -14,8 +14,7 @@ override_dh_auto_install:
 	install -Dm644 packaging/browser-wayland-manager.service debian/browser-wayland-manager/usr/lib/systemd/system/browser-wayland-manager.service
 	install -Dm644 packaging/browser-wayland-manager.sysusers debian/browser-wayland-manager/usr/lib/sysusers.d/browser-wayland-manager.conf
 	install -d debian/browser-wayland-manager/usr/share/browser-wayland-manager
-	cp -r sessions .dockerignore debian/browser-wayland-manager/usr/share/browser-wayland-manager/
-	install -Dm755 scripts/build-sessions debian/browser-wayland-manager/usr/share/browser-wayland-manager/scripts/build-sessions
+	cp -r sessions debian/browser-wayland-manager/usr/share/browser-wayland-manager/
 override_dh_auto_clean:
 	rm -rf target web/dist web/node_modules
 override_dh_installsystemd:

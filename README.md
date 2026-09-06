@@ -1,6 +1,6 @@
 # Browser Wayland Manager
 
-A separate Rust/Axum and React/Vite application that creates and manages browser-wayland desktops in Docker. Choose Arch Linux or Debian, add package names, and open a ready desktop in a new tab. List and grid views show authenticated desktop previews. Each session has live image-build, setup, and runtime logs.
+A separate Rust/Axum and React/Vite application that creates and manages browser-wayland desktops in Docker. Choose Arch Linux or Debian, add package names, and open a ready desktop in a new tab. List and grid views show authenticated desktop previews. Each session has live download, setup, and runtime logs.
 
 ## Run with Docker Compose
 
@@ -11,7 +11,7 @@ docker compose exec manager cat /var/lib/browser-wayland-manager/admin-token
 
 Open `http://<server-hostname>:19300` and sign in with that token. The manager generates it once and saves it with mode `0600` in its private data directory. Compose retains manager state in `manager-data` and mounts the Docker socket. Session home directories use separate Docker named volumes, managed by the application.
 
-The first session for a distribution builds its image. This can take several minutes and requires internet access, several gigabytes of disk space, and a Docker daemon with BuildKit. Open **Logs** to follow the build. Later sessions reuse the image. You can also prepare both images with `./scripts/build-sessions`.
+The manager downloads the pinned browser-wayland release package from GitHub and caches it in its data directory. It pulls a stock distribution image if needed, then installs the package and its dependencies inside each new container. Open **Logs** to follow downloads and setup. The manager does not clone or compile browser-wayland at runtime.
 
 Session links use HTTPS and the existing `#token=…` convention. Each session generates a self-signed certificate; accept it when opening that session. WebCodecs needs a secure browser context. The manager uses its viewer token for previews and keeps tokens out of URLs used for API requests and out of returned logs.
 
@@ -26,7 +26,7 @@ The manager listens on port `19300`. Sessions publish matching TCP and UDP ports
 | `BWM_DOCKER_HOST` | `127.0.0.1` | Address where the backend reaches published session ports |
 | `BWM_SESSION_BIND` | `0.0.0.0` | Host address on which Docker publishes session ports |
 | `BWM_DATA_DIR` | `/var/lib/browser-wayland-manager` | Private manager state, administrator token, build logs |
-| `BWM_ASSETS_DIR` | `/usr/share/browser-wayland-manager` | Session recipes and build scripts |
+| `BWM_ASSETS_DIR` | `/usr/share/browser-wayland-manager` | Session setup scripts and pinned browser-wayland version |
 
 The native manager and session ports bind all IPv4 interfaces by default. Compose publishes the manager port on the addresses supported by the Docker daemon. Desktop links use the hostname or IP address in the browser's manager URL, with the session's HTTPS port. Set `BWM_PUBLIC_HOST` to override that hostname. When a reverse proxy runs on another machine, set it to the Docker host's browser-reachable address unless the proxy also forwards the session ports. IPv6 literal overrides must include brackets, for example `[2001:db8::1]`; IPv6 links also require Docker to publish the session ports over IPv6. Compose uses `host.docker.internal:host-gateway` for backend access, independently of browser links. Use an HTTPS reverse proxy to protect management traffic on untrusted networks. To restrict management access to the local machine, change the Compose port mapping to `127.0.0.1:19300:19300`, or set `BWM_LISTEN=127.0.0.1:19300` for a native installation. For a native installation, `BWM_SESSION_BIND=127.0.0.1` also restricts desktop ports to loopback. Forward both TCP and UDP session ports when using NAT. One manager controls one local Linux Docker daemon; remote Docker daemons and rootless Docker are not currently supported.
 
@@ -36,30 +36,34 @@ Management access grants Docker control. Treat the administrator token and Docke
 
 ## Session lifecycle
 
-Creation validates package names, records the session, prepares a distribution-specific image if needed, creates a labeled volume and container, and seeds distinct 64-character hexadecimal control and viewer tokens. Inside the container, setup prepares the user and runtime directories, a separate script installs requested packages, the binary and license assets are copied into place, and browser-wayland starts. The manager publishes an Open action only after an authenticated readiness request succeeds.
+Creation validates package names, records the session, downloads a release package if it is not cached, and prepares a stock base image. It creates a labeled volume and container, then copies the setup scripts, package, and distinct 64-character hexadecimal control and viewer tokens into the stopped container through the Docker API. This also works when the manager runs inside Docker; the source files are read from the manager's filesystem.
 
-Runtime dependencies are installed by each distribution's setup script at image-build time. Arch and Debian compile browser-wayland independently against their own libraries. Image builds check shared-library resolution with `ldd`; the binary embeds its React viewer. Each base includes xterm as a terminal, including sessions created with no extra packages. Sessions use software rendering and encoding, so GPU device mounts are not required.
+Inside the session container, setup installs runtime services, prepares the user and runtime directories, and installs browser-wayland with `apt` or `pacman`. The package manager resolves the package's declared dependencies, including Debian recommendations. A separate script installs requested extra packages before browser-wayland starts. The manager publishes an Open action only after an authenticated readiness request succeeds. Setup and installation markers allow stopped sessions to restart without reinstalling packages.
 
-An empty package list is valid. Package names cannot contain shell syntax, whitespace, paths, version expressions, or leading-dash options. Failed installations stop startup and expose their stage and output in Logs. Setup stages time out after 30 minutes; launch readiness times out after two minutes; image builds time out after two hours. A failed session remains available for Stop and Destroy.
+Both distributions include xterm for sessions with no extra packages. Sessions use software rendering and encoding, so GPU device mounts are not required. Release packages are assumed compatible with the selected distribution; the manager does not perform a separate binary or shared-library compatibility check.
 
-**Stop** terminates the container while retaining the complete session home directory. **Start** relaunches a stopped session with the same tokens and data. **Destroy** removes the owned container, home volume, and manager build log. It permanently deletes that session's data. Shared distribution images and Docker's build cache remain available for reuse. Remove obsolete image tags individually with `docker image rm <exact-tag>` after checking that no retained container uses them; the manager never prunes shared Docker resources. Cancelling a session during image preparation terminates that build process group. A cancelled build has no desktop to restart; destroy its record and create a new session.
+An empty package list is valid. Package names cannot contain shell syntax, whitespace, paths, version expressions, or leading-dash options. Failed installations stop startup and expose their stage and output in Logs. Setup stages time out after 30 minutes; launch readiness times out after two minutes; release download and base-image preparation time out after 30 minutes. A failed session remains available for Stop and Destroy.
 
-Manager restarts preserve sessions. The manager inspects its recorded containers and reconciles exits and readiness; an interrupted image build becomes a visible failure that can be destroyed and recreated. Container and volume deletion require a matching persistent owner label, and cleanup never uses global pruning or name-prefix deletion.
+**Stop** terminates the container while retaining the complete session home directory. **Start** relaunches a stopped session with the same tokens and data. **Destroy** removes the owned container, home volume, and manager preparation log. It permanently deletes that session's data. Shared base images and downloaded packages remain available for reuse. Remove obsolete image tags individually with `docker image rm <exact-tag>` after checking that no retained container uses them; the manager never prunes shared Docker resources. Cancelling a session during download or base-image preparation terminates that preparation process group. A cancelled preparation has no desktop to restart; destroy its record and create a new session.
+
+Manager restarts preserve sessions. The manager inspects its recorded containers and reconciles exits and readiness; an interrupted preparation becomes a visible failure that can be destroyed and recreated. Container and volume deletion require a matching persistent owner label, and cleanup never uses global pruning or name-prefix deletion.
 
 Previews use the shared screenshot API with a width in device pixels, preserving aspect ratio. Visible sessions refresh every five seconds, with at most two requests in flight. Hidden tabs and offscreen previews pause. The backend also limits captures to two concurrent requests and one request per session every two seconds. Unavailable previews leave the session controls usable.
 
-The Logs dialog polls without overlapping requests. It shows the last 128 KiB of image-build output and the last 1,000 Docker log lines. Docker logs rotate at 10 MiB, with three files retained. Exact session tokens are redacted before output reaches the browser, and startup token fragments are redacted before Docker persists them.
+The Logs dialog polls without overlapping requests. It shows the last 128 KiB of download and image-pull output and the last 1,000 Docker log lines. Docker logs rotate at 10 MiB, with three files retained. Exact session tokens are redacted before output reaches the browser, and startup token fragments are redacted before Docker persists them.
 
 ## Supported session images
 
-The current Docker rig and packages target x86_64 Linux.
+Release packages currently support x86_64 Docker hosts. Base images are reused locally; refresh them for future sessions with `docker pull archlinux:base` and `docker pull debian:trixie-slim`.
 
-- Arch Linux `archlinux:base`, rolling repositories as of the image build.
+- Arch Linux `archlinux:base`, rolling repositories.
 - Debian 13 `debian:trixie-slim`, Trixie repositories with `main`, `contrib`, `non-free`, and `non-free-firmware` enabled.
 
-The browser-wayland source revision is pinned in `sessions/revision`. Builds clone that exact revision into a temporary directory, without using or modifying another working checkout. `sessions/recipe-version` versions this application's image recipe; increment it when changing session scripts or the session Dockerfile so existing installations rebuild. Tags include distribution, upstream revision, and recipe version. Distribution tags and package repositories receive upstream updates; rebuilding is not bit-for-bit reproducible.
+The browser-wayland release version is pinned in `sessions/browser-wayland-version`. The manager generates GitHub download URLs and package filenames from that single version using the release package naming convention. Packages are cached under `packages/<version>/x86_64/<distribution>/<asset>` in the manager data directory. Downloads use HTTPS and a temporary file renamed only after a successful transfer. Concurrent session creation shares the preparation lock and reuses completed downloads. Interrupted transfers are retried on the next request.
 
-The upstream binary embeds an audio visualizer with AGPL-3.0-or-later licensing. Session images include its `THIRD_PARTY.txt` notice. The pinned upstream source and its build instructions are available at `https://github.com/ryanpetris/browser-wayland`; the manager's own code uses the accompanying MIT license.
+Update that version file and rebuild the manager to change the pinned release. The new package downloads when first needed. Existing sessions retain their installed browser-wayland version. Cached packages survive manager upgrades and session destruction. Individually remove obsolete version directories from the cache when they are no longer needed; the manager will download a missing package again. `sessions/recipe-version` versions the setup scripts; increment it when changing their behavior. Restart the manager after updating its installed assets.
+
+The release package supplies browser-wayland and its accompanying notices. The manager's own code uses the accompanying MIT license.
 
 ## Arch Linux and Debian packages
 
@@ -82,5 +86,6 @@ Edit `/etc/browser-wayland-manager/environment` to configure native installation
 
 ```sh
 docker build --target check .
-./scripts/build-sessions
 ```
+
+The footer displays the manager's own build version. Builds use `BWM_VERSION` when set, otherwise `git describe` from a `v`-prefixed manager tag, falling back to the Cargo package version when Git tags are unavailable. Docker includes Git metadata only in the build stage. Override the version with `docker build --build-arg BWM_VERSION=1.2.3 .`, `BWM_VERSION=1.2.3 docker compose up -d --build`, or `BWM_VERSION=1.2.3 ./scripts/build-packages`. Browser-wayland's pinned release is independent of the manager version.

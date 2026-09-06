@@ -23,7 +23,7 @@ use tokio::{
 };
 use uuid::Uuid;
 
-const REVISION: &str = include_str!("../sessions/revision");
+const BROWSER_WAYLAND_VERSION: &str = include_str!("../sessions/browser-wayland-version");
 const RECIPE: &str = include_str!("../sessions/recipe-version");
 const LABEL: &str = "io.browser-wayland-manager.owner";
 #[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -57,7 +57,7 @@ struct App {
     bind: String,
     assets: PathBuf,
     client: reqwest::Client,
-    builds: Semaphore,
+    preparations: Semaphore,
     operations: Mutex<HashMap<String, Arc<Mutex<()>>>>,
     previews: Semaphore,
     preview_times: Mutex<HashMap<String, Instant>>,
@@ -201,7 +201,7 @@ fn public_session(s: &Session) -> serde_json::Value {
 }
 async fn list(State(app): State<Shared>) -> Json<serde_json::Value> {
     Json(
-        serde_json::json!({"sessions":app.db.lock().await.sessions.iter().map(public_session).collect::<Vec<_>>(),"revision":REVISION.trim()}),
+        serde_json::json!({"sessions":app.db.lock().await.sessions.iter().map(public_session).collect::<Vec<_>>(),"version":env!("BWM_VERSION")}),
     )
 }
 #[derive(Deserialize)]
@@ -242,7 +242,7 @@ async fn create(State(app): State<Shared>, Json(input): Json<Create>) -> Api<imp
         port,
         started_ms: 0,
         status: "preparing".into(),
-        stage: "image".into(),
+        stage: "download".into(),
         error: None,
         token: random_token(),
         viewer_token: random_token(),
@@ -268,25 +268,49 @@ async fn create(State(app): State<Shared>, Json(input): Json<Create>) -> Api<imp
 }
 async fn prepare(app: Shared, id: &str) -> Result<()> {
     let initial = app.session(id).await.map_err(|e| anyhow::anyhow!(e.1))?;
-    let image = format!(
-        "browser-wayland-manager-session:{}-{}-r{}",
-        initial.distribution,
-        REVISION.trim(),
-        RECIPE.trim()
-    );
-    if std::fs::read_to_string(app.assets.join("sessions/revision"))?.trim() != REVISION.trim()
+    let version = BROWSER_WAYLAND_VERSION.trim();
+    if std::fs::read_to_string(app.assets.join("sessions/browser-wayland-version"))?.trim()
+        != version
         || std::fs::read_to_string(app.assets.join("sessions/recipe-version"))?.trim()
             != RECIPE.trim()
     {
         bail!("Session recipes changed. Restart the manager after upgrading.");
     }
+    let architecture = docker(&["info", "--format", "{{.Architecture}}"]).await?;
+    if !matches!(architecture.trim(), "x86_64" | "amd64") {
+        bail!("Release packages currently support only x86_64 Docker hosts");
+    }
+    let (image, asset) = if initial.distribution == "arch" {
+        (
+            "archlinux:base",
+            format!("browser-wayland-{version}-1-x86_64.pkg.tar.zst"),
+        )
+    } else {
+        (
+            "debian:trixie-slim",
+            format!("browser-wayland_{version}-1_amd64.deb"),
+        )
+    };
+    let package = app
+        .dir
+        .join("packages")
+        .join(version)
+        .join("x86_64")
+        .join(&initial.distribution)
+        .join(&asset);
+    let url = format!(
+        "https://github.com/ryanpetris/browser-wayland/releases/download/v{}/{}",
+        version, asset
+    );
     let started = Instant::now();
-    if docker(&["image", "inspect", &image]).await.is_err() {
+    if !package.metadata().is_ok_and(|m| m.len() > 0)
+        || docker(&["image", "inspect", image]).await.is_err()
+    {
         private_write(
             &app.dir.join(format!("{id}.build.log")),
-            b"Waiting for the image build slot. Other sessions may be building.\n",
+            b"Waiting for release download and base image preparation.\n",
         )?;
-        let _build = app.builds.acquire().await?;
+        let _preparation = app.preparations.acquire().await?;
         if app
             .session(id)
             .await
@@ -295,40 +319,43 @@ async fn prepare(app: Shared, id: &str) -> Result<()> {
         {
             return Ok(());
         }
-        if docker(&["image", "inspect", &image]).await.is_err() {
+        if !package.metadata().is_ok_and(|m| m.len() > 0)
+            || docker(&["image", "inspect", image]).await.is_err()
+        {
             let log = std::fs::OpenOptions::new()
                 .create(true)
                 .append(true)
                 .open(app.dir.join(format!("{id}.build.log")))?;
             log.set_permissions(std::fs::Permissions::from_mode(0o600))?;
-            let mut child = Command::new(app.assets.join("scripts/build-sessions"))
-                .arg(&initial.distribution)
-                .env("BWM_EXPECTED_REVISION", REVISION.trim())
-                .env("BWM_EXPECTED_RECIPE", RECIPE.trim())
+            let mut child = Command::new("sh")
+                .arg(app.assets.join("sessions/prepare.sh"))
+                .arg(&url)
+                .arg(&package)
+                .arg(image)
                 .stdout(log.try_clone()?)
                 .stderr(log)
                 .process_group(0)
                 .kill_on_drop(true)
                 .spawn()?;
-            let pid = child.id().context("Build process has no ID")?;
-            let deadline = Instant::now() + Duration::from_secs(7200);
+            let pid = child.id().context("Preparation process has no ID")?;
+            let deadline = Instant::now() + Duration::from_secs(1800);
             loop {
                 tokio::select! {
                     status = child.wait() => {
-                        if !status?.success() { bail!("Image build failed. Open Logs for build output."); }
+                        if !status?.success() { bail!("Release download or base image pull failed. Open Logs for details."); }
                         break;
                     }
                     _ = tokio::time::sleep(Duration::from_millis(500)) => {
                         let cancelled = app.session(id).await.map(|s| s.status != "preparing").unwrap_or(true);
                         if cancelled || Instant::now() >= deadline {
-                            // This process group is created exclusively for this image build.
+                            // This process group belongs only to this session preparation.
                             unsafe { libc::kill(-(pid as i32), libc::SIGTERM); }
                             if tokio::time::timeout(Duration::from_secs(5), child.wait()).await.is_err() {
                                 unsafe { libc::kill(-(pid as i32), libc::SIGKILL); }
                                 let _ = child.wait().await;
                             }
                             if cancelled { return Ok(()); }
-                            bail!("Image build timed out. Open Logs for build output.");
+                            bail!("Session preparation timed out. Open Logs for details.");
                         }
                     }
                 }
@@ -344,7 +371,7 @@ async fn prepare(app: Shared, id: &str) -> Result<()> {
     app.change(id, |s| {
         s.stage = "container".into();
         s.timings
-            .insert("image".into(), started.elapsed().as_millis() as u64);
+            .insert("download".into(), started.elapsed().as_millis() as u64);
     })
     .await?;
     let container_started = Instant::now();
@@ -373,13 +400,42 @@ async fn prepare(app: Shared, id: &str) -> Result<()> {
         &udp,
         "-v",
         &mount,
-        &image,
+        "--platform",
+        "linux/amd64",
+        "--entrypoint",
+        "sh",
+        image,
+        "/opt/bwm/entrypoint.sh",
     ]
     .into_iter()
     .map(str::to_owned)
     .collect::<Vec<_>>();
     args.extend(s.packages.iter().cloned());
     docker(&args.iter().map(String::as_str).collect::<Vec<_>>()).await?;
+    docker(&[
+        "cp",
+        app.assets
+            .join("sessions")
+            .to_str()
+            .context("Invalid assets path")?,
+        &format!("{}:/opt/bwm", container(id)),
+    ])
+    .await?;
+    docker(&[
+        "cp",
+        package.to_str().context("Invalid package path")?,
+        &format!("{}:/opt/bwm/{}", container(id), asset),
+    ])
+    .await?;
+    docker(&[
+        "cp",
+        app.assets
+            .join(format!("sessions/setup-{}.sh", s.distribution))
+            .to_str()
+            .context("Invalid assets path")?,
+        &format!("{}:/opt/bwm/setup.sh", container(id)),
+    ])
+    .await?;
     let seed = app.dir.join(format!("{id}.seed"));
     std::fs::create_dir_all(&seed)?;
     std::fs::set_permissions(&seed, std::fs::Permissions::from_mode(0o700))?;
@@ -416,7 +472,7 @@ async fn reconcile(app: Shared) {
             let Ok(_guard) = lock.try_lock() else {
                 continue;
             };
-            if s.stage == "image" {
+            if matches!(s.stage.as_str(), "image" | "download") {
                 continue;
             }
             let Ok(s) = app.session(&s.id).await else {
@@ -560,14 +616,14 @@ async fn stop(State(app): State<Shared>, Path(id): Path<String>) -> Api<StatusCo
     let lock = app.lock(&id).await;
     let _guard = lock.lock().await;
     let s = app.session(&id).await?;
-    if s.stage != "image" {
+    if !matches!(s.stage.as_str(), "image" | "download") {
         let info = app.owned(&id).await?;
         if info["State"]["Running"] == true {
             docker(&["stop", "--time", "15", &container(&id)]).await?;
         }
     }
     app.change(&id, |s| {
-        s.status = if s.stage == "image" {
+        s.status = if matches!(s.stage.as_str(), "image" | "download") {
             "cancelled"
         } else {
             "stopped"
@@ -601,7 +657,8 @@ async fn start(State(app): State<Shared>, Path(id): Path<String>) -> Api<StatusC
         s.status = "preparing".into();
         s.stage = "setup".into();
         s.error = None;
-        s.timings.retain(|k, _| k == "image" || k == "container");
+        s.timings
+            .retain(|k, _| k == "image" || k == "download" || k == "container");
     })
     .await?;
     Ok(StatusCode::NO_CONTENT)
@@ -814,9 +871,9 @@ async fn main() -> Result<()> {
         }
     };
     for s in &mut db.sessions {
-        if s.status == "preparing" && s.stage == "image" {
+        if s.status == "preparing" && matches!(s.stage.as_str(), "image" | "download") {
             s.status = "failed".into();
-            s.error=Some("Manager restarted during image preparation. Destroy this session and create it again.".into());
+            s.error=Some("Manager restarted during session preparation. Destroy this session and create it again.".into());
         }
     }
     let app = Arc::new(App {
@@ -831,7 +888,7 @@ async fn main() -> Result<()> {
             .danger_accept_invalid_certs(true)
             .timeout(Duration::from_secs(8))
             .build()?,
-        builds: Semaphore::new(1),
+        preparations: Semaphore::new(1),
         operations: Mutex::new(HashMap::new()),
         previews: Semaphore::new(2),
         preview_times: Mutex::new(HashMap::new()),

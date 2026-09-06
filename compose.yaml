@@ -1,7 +1,10 @@
 name: browser-wayland-manager
 services:
   manager:
-    build: .
+    build:
+      context: .
+      args:
+        BWM_VERSION: "${BWM_VERSION:-}"
     ports:
       - "19300:19300"
     environment:

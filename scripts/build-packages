@@ -6,7 +6,7 @@ for distribution in "${@:-arch debian}"; do
     for target in $distribution; do
         case "$target" in arch|debian) ;; *) echo 'Expected arch or debian' >&2; exit 1;; esac
         image="browser-wayland-manager-package:$target"
-        docker build -f packaging/Dockerfile --target "$target" -t "$image" .
+        docker build --build-arg "BWM_VERSION=${BWM_VERSION:-}" -f packaging/Dockerfile --target "$target" -t "$image" .
         container=$(docker create "$image")
         trap 'docker rm "$container" >/dev/null' EXIT HUP INT TERM
         docker cp "$container:/packages/." dist/

@@ -5,7 +5,10 @@ umask 077
 stage() { echo "Stage: $1"; printf '%s\n' "$1" > /tmp/bwm-stage; printf '%s %s\n' "$(date +%s%3N)" "$1" >> /tmp/bwm-timings; }
 trap 'echo "Setup failed during $(cat /tmp/bwm-stage)" >&2' EXIT
 stage setup
-sh /opt/bwm/setup.sh
+if [ ! -f /opt/bwm/setup-complete ]; then
+    sh /opt/bwm/setup.sh
+    touch /opt/bwm/setup-complete
+fi
 mkdir -p /home/bw/.config/browser-wayland /tmp/runtime-bw /tmp/.X11-unix
 chmod 1777 /tmp/.X11-unix
 if [ -d /seed ]; then
@@ -17,16 +20,21 @@ chown -R bw:bw /home/bw /tmp/runtime-bw
 chmod 700 /tmp/runtime-bw /home/bw/.config/browser-wayland
 chmod 600 /home/bw/.config/browser-wayland/token /home/bw/.config/browser-wayland/viewer-token
 rm -rf /seed
+stage browser-wayland
+if [ ! -f /opt/bwm/browser-wayland-installed ]; then
+    if command -v pacman >/dev/null; then
+        pacman -U --noconfirm --needed /opt/bwm/*.pkg.tar.zst
+    else
+        chmod 644 /opt/bwm/*.deb
+        DEBIAN_FRONTEND=noninteractive apt-get install -y /opt/bwm/*.deb
+    fi
+    touch /opt/bwm/browser-wayland-installed
+fi
 stage packages
 if [ ! -f /opt/bwm/packages-installed ]; then
     sh /opt/bwm/packages.sh "$@"
     touch /opt/bwm/packages-installed
 fi
-stage binary
-install -m 755 /opt/bwm/browser-wayland /usr/local/bin/browser-wayland
-mkdir -p /usr/share/licenses/browser-wayland
-cp /opt/bwm/THIRD_PARTY.txt /usr/share/licenses/browser-wayland/
-ldd /usr/local/bin/browser-wayland
 stage launch
 trap - EXIT
 exec runuser -u bw -- sh /opt/bwm/start.sh

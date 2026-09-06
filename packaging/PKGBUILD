@@ -7,8 +7,8 @@ license=('MIT')
 # Native crypto assembly is incompatible with makepkg's injected C LTO flags.
 options=('!lto')
 backup=('etc/browser-wayland-manager/environment')
-depends=('docker' 'docker-buildx' 'git' 'gcc-libs')
-makedepends=('rust' 'nodejs' 'npm')
+depends=('docker' 'curl' 'ca-certificates' 'gcc-libs')
+makedepends=('rust' 'nodejs' 'npm' 'git')
 source=("$pkgname-$pkgver.tar.gz")
 sha256sums=('SKIP')
 
@@ -31,6 +31,5 @@ package() {
     install -Dm644 packaging/browser-wayland-manager.sysusers "$pkgdir/usr/lib/sysusers.d/browser-wayland-manager.conf"
     install -Dm644 packaging/environment "$pkgdir/etc/browser-wayland-manager/environment"
     install -d "$pkgdir/usr/share/$pkgname"
-    cp -r sessions .dockerignore "$pkgdir/usr/share/$pkgname/"
-    install -Dm755 scripts/build-sessions "$pkgdir/usr/share/$pkgname/scripts/build-sessions"
+    cp -r sessions "$pkgdir/usr/share/$pkgname/"
 }

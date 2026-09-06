@@ -29,6 +29,7 @@ function enqueuePreview(task) {
   drain();
 }
 function App() {
+  const [version, setVersion] = useState("");
   const [token, setToken] = useState(
     () => sessionStorage.getItem("bwm-token") || "",
   );
@@ -76,6 +77,7 @@ function App() {
     const data = await response.json();
     if (currentToken.current !== token || signal?.aborted) return;
     setSessions(data.sessions);
+    setVersion(data.version);
     setAuthenticated(true);
     sessionStorage.setItem("bwm-token", token);
   }
@@ -346,7 +348,7 @@ function App() {
             ))}
           </div>
         )}
-        <footer>Browser Wayland Manager</footer>
+        <footer>Browser Wayland Manager <code>v{version}</code></footer>
       </main>
       {creating && (
         <Dialog title="New session" close={() => setCreating(false)}>
