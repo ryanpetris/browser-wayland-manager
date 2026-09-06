@@ -530,6 +530,7 @@ function SessionForm({ submit, error }) {
   const [height, setHeight] = useState(1080);
   const [text, setText] = useState("");
   const [importError, setImportError] = useState("");
+  const importPanel = useRef(null);
   const [pending, setPending] = useState(false);
   function change(key, value) {
     setProfile((p) => ({ ...p, [key]: value }));
@@ -593,8 +594,11 @@ function SessionForm({ submit, error }) {
       onSubmit={async (event) => {
         event.preventDefault();
         if (text.trim()) {
+          importPanel.current.open = true;
           setImportError(
-            "Apply or clear the pasted profile before creating a session.",
+            (message) =>
+              message ||
+              "Apply or clear the pasted profile before creating a session.",
           );
           return;
         }
@@ -620,14 +624,17 @@ function SessionForm({ submit, error }) {
       }}
     >
       <fieldset disabled={pending} className="session-fields">
-        <details className="profile-import">
+        <details ref={importPanel} className="profile-import">
           <summary>Import profile</summary>
           <label>
             Profile JSON
             <textarea
               rows={6}
               value={text}
-              onChange={(e) => setText(e.target.value)}
+              onChange={(e) => {
+                setText(e.target.value);
+                setImportError("");
+              }}
             />
           </label>
           <button type="button" onClick={importProfile}>
