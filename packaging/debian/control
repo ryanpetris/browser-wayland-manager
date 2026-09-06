@@ -9,5 +9,5 @@ Rules-Requires-Root: no
 Package: elsewhere-innkeeper
 Architecture: any
 Depends: ${shlibs:Depends}, ${misc:Depends}, docker.io, docker-cli, curl, ca-certificates, systemd
-Description: Manage elsewhere Docker desktops
+Description: Manage Elsewhere Docker desktops
  Creates isolated Arch Linux and Debian desktop sessions with a web interface.

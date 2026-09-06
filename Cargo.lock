@@ -79,21 +79,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b588b76d00fde79687d7646a9b5bdf3cc0f655e0bbd080335a95d7e96f3587da"
 
 [[package]]
-name = "elsewhere-innkeeper"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "axum",
- "libc",
- "reqwest",
- "serde",
- "serde_json",
- "subtle",
- "tokio",
- "uuid",
-]
-
-[[package]]
 name = "bumpalo"
 version = "3.20.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -156,6 +141,21 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 3.0.5",
+]
+
+[[package]]
+name = "elsewhere-innkeeper"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "libc",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "subtle",
+ "tokio",
+ "uuid",
 ]
 
 [[package]]

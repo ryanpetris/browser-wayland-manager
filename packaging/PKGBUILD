@@ -1,7 +1,7 @@
 pkgname=elsewhere-innkeeper
 pkgver=0.1.0
 pkgrel=1
-pkgdesc='Manage isolated elsewhere Docker desktops'
+pkgdesc='Manage isolated Elsewhere Docker desktops'
 arch=('x86_64')
 license=('MIT')
 # Native crypto assembly is incompatible with makepkg's injected C LTO flags.
