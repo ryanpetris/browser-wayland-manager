@@ -45,7 +45,6 @@ function App() {
   const [logs, setLogs] = useState(null);
   const [logText, setLogText] = useState("Loading logs…");
   const [busy, setBusy] = useState({});
-  const [revision, setRevision] = useState("");
   const currentToken = useRef(token);
   currentToken.current = token;
   useEffect(() => {
@@ -77,7 +76,6 @@ function App() {
     const data = await response.json();
     if (currentToken.current !== token || signal?.aborted) return;
     setSessions(data.sessions);
-    setRevision(data.revision);
     setAuthenticated(true);
     sessionStorage.setItem("bwm-token", token);
   }
@@ -283,7 +281,6 @@ function App() {
           <div className="empty">
             <Monitor size={44} />
             <h2>Your first desktop starts here</h2>
-            <p>Choose Arch Linux or Debian and add the packages you need.</p>
             <button onClick={() => setCreating(true)}>Create a session</button>
           </div>
         ) : (
@@ -298,13 +295,9 @@ function App() {
                   </div>
                   <p>
                     {s.distribution === "arch" ? "Arch Linux" : "Debian 13"}
-                    <span className="muted">
-                      {" "}
-                      ·{" "}
-                      {s.packages.length
-                        ? s.packages.join(", ")
-                        : "No extra packages"}
-                    </span>
+                    {s.packages.length > 0 && (
+                      <span className="muted"> · {s.packages.join(", ")}</span>
+                    )}
                   </p>
                   {s.status === "preparing" && (
                     <p className="progress" role="status">
@@ -353,10 +346,7 @@ function App() {
             ))}
           </div>
         )}
-        <footer>
-          browser-wayland <code>{revision.slice(0, 12)}</code> · Stop retains
-          data. Destroy deletes it.
-        </footer>
+        <footer>Browser Wayland Manager</footer>
       </main>
       {creating && (
         <Dialog title="New session" close={() => setCreating(false)}>
@@ -410,15 +400,8 @@ function App() {
             <label>
               Extra packages
               <textarea name="packages" rows={3} placeholder="firefox foot" />
-              <small>
-                Optional. Separate package names with spaces. Installation
-                errors appear in Logs.
-              </small>
+              <small>Optional. Separate package names with spaces.</small>
             </label>
-            <p className="muted">
-              The first session may take longer while its distribution image
-              builds.
-            </p>
             {createError && (
               <p role="alert" className="error">
                 {createError}
@@ -432,10 +415,6 @@ function App() {
       )}
       {logs && (
         <Dialog title={`Logs · ${logs.name}`} close={() => setLogs(null)} wide>
-          <p className="muted">
-            Image build, setup, and container output. Refreshes every two
-            seconds. Tokens are redacted. Showing the latest output.
-          </p>
           <p className="muted">
             {Object.entries(
               (sessions.find((s) => s.id === logs.id) || logs).timings || {},
