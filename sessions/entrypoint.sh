@@ -1,11 +1,13 @@
 #!/bin/sh
 set -eu
 umask 077
-stage() { echo "Stage: $1"; printf '%s\n' "$1" > /tmp/bwm-stage; printf '%s %s\n' "$(date +%s)" "$1" >> /tmp/bwm-timings; }
+: > /tmp/bwm-timings
+stage() { echo "Stage: $1"; printf '%s\n' "$1" > /tmp/bwm-stage; printf '%s %s\n' "$(date +%s%3N)" "$1" >> /tmp/bwm-timings; }
 trap 'echo "Setup failed during $(cat /tmp/bwm-stage)" >&2' EXIT
 stage setup
 sh /opt/bwm/setup.sh
-mkdir -p /home/bw/.config/browser-wayland /tmp/runtime-bw
+mkdir -p /home/bw/.config/browser-wayland /tmp/runtime-bw /tmp/.X11-unix
+chmod 1777 /tmp/.X11-unix
 if [ -d /seed ]; then
     cp /seed/token /seed/viewer-token /home/bw/.config/browser-wayland/
 fi

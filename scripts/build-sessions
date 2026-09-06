@@ -3,6 +3,8 @@ set -eu
 cd "$(dirname "$0")/.."
 revision=$(cat sessions/revision)
 recipe=$(cat sessions/recipe-version)
+[ "${BWM_EXPECTED_REVISION:-$revision}" = "$revision" ] && [ "${BWM_EXPECTED_RECIPE:-$recipe}" = "$recipe" ] || { echo 'Session recipes changed. Restart the manager after upgrading.' >&2; exit 1; }
+docker buildx version >/dev/null
 source_dir=$(mktemp -d)
 trap 'rm -rf "$source_dir"' EXIT HUP INT TERM
 git clone --quiet https://github.com/ryanpetris/browser-wayland.git "$source_dir"

@@ -17,13 +17,13 @@ FROM build AS check
 RUN rustup component add rustfmt && cargo test --locked && cargo fmt --check
 
 FROM debian:trixie-slim
-RUN apt-get update && apt-get install -y --no-install-recommends docker-cli docker-buildx git ca-certificates && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends docker-cli docker-buildx git ca-certificates tini && rm -rf /var/lib/apt/lists/*
 COPY --from=build /src/target/release/browser-wayland-manager /usr/bin/browser-wayland-manager
 COPY sessions/ /usr/share/browser-wayland-manager/sessions/
-COPY scripts/ /usr/share/browser-wayland-manager/scripts/
+COPY scripts/build-sessions /usr/share/browser-wayland-manager/scripts/build-sessions
 COPY LICENSE /usr/share/licenses/browser-wayland-manager/LICENSE
 COPY .dockerignore /usr/share/browser-wayland-manager/.dockerignore
 ENV BWM_LISTEN=0.0.0.0:19300 BWM_DOCKER_HOST=host.docker.internal BWM_SESSION_BIND=0.0.0.0
 EXPOSE 19300
 VOLUME /var/lib/browser-wayland-manager
-ENTRYPOINT ["browser-wayland-manager"]
+ENTRYPOINT ["/usr/bin/tini", "--", "browser-wayland-manager"]

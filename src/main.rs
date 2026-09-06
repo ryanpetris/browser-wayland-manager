@@ -26,13 +26,15 @@ use uuid::Uuid;
 const REVISION: &str = include_str!("../sessions/revision");
 const RECIPE: &str = include_str!("../sessions/recipe-version");
 const LABEL: &str = "io.browser-wayland-manager.owner";
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
 struct Session {
     id: String,
     name: String,
     distribution: String,
     packages: Vec<String>,
     port: u16,
+    #[serde(default)]
+    started_ms: u64,
     status: String,
     stage: String,
     error: Option<String>,
@@ -76,6 +78,19 @@ type Api<T> = std::result::Result<T, Error>;
 fn env(name: &str, default: &str) -> String {
     std::env::var(name).unwrap_or_else(|_| default.into())
 }
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
+}
+fn loopback(host: &str) -> bool {
+    host == "localhost"
+        || host
+            .trim_matches(['[', ']'])
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|ip| ip.is_loopback())
+}
 fn random_token() -> String {
     format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple())
 }
@@ -91,6 +106,9 @@ fn private_write(path: &std::path::Path, bytes: &[u8]) -> Result<()> {
     f.write_all(bytes)?;
     f.sync_all()?;
     std::fs::rename(temp, path)?;
+    if let Some(parent) = path.parent() {
+        std::fs::File::open(parent)?.sync_all()?;
+    }
     Ok(())
 }
 impl App {
@@ -121,8 +139,11 @@ impl App {
     async fn change(&self, id: &str, f: impl FnOnce(&mut Session)) -> Result<()> {
         let mut db = self.db.lock().await;
         if let Some(s) = db.sessions.iter_mut().find(|s| s.id == id) {
+            let before = s.clone();
             f(s);
-            self.save(&db)?;
+            if *s != before {
+                self.save(&db)?;
+            }
         }
         Ok(())
     }
@@ -191,6 +212,7 @@ struct Create {
 }
 fn valid_package(p: &str) -> bool {
     !p.is_empty()
+        && !p.ends_with('-')
         && p.len() <= 128
         && p.as_bytes()[0].is_ascii_alphanumeric()
         && p.bytes()
@@ -199,11 +221,11 @@ fn valid_package(p: &str) -> bool {
 async fn create(State(app): State<Shared>, Json(input): Json<Create>) -> Api<impl IntoResponse> {
     if !["arch", "debian"].contains(&input.distribution.as_str())
         || input.name.trim().is_empty()
-        || input.name.len() > 80
+        || input.name.chars().count() > 80
         || input.packages.len() > 100
         || !input.packages.iter().all(|p| valid_package(p))
     {
-        return Err(Error(StatusCode::BAD_REQUEST, "Choose Arch or Debian, a name of 1–80 bytes, and up to 100 valid package names. Shell syntax and options are not allowed.".into()));
+        return Err(Error(StatusCode::BAD_REQUEST, "Choose Arch or Debian, a name of 1–80 characters, and up to 100 valid package names. Shell syntax and options are not allowed.".into()));
     }
     let mut db = app.db.lock().await;
     let port = (19500..20000)
@@ -218,6 +240,7 @@ async fn create(State(app): State<Shared>, Json(input): Json<Create>) -> Api<imp
         distribution: input.distribution,
         packages: input.packages,
         port,
+        started_ms: 0,
         status: "preparing".into(),
         stage: "image".into(),
         error: None,
@@ -251,8 +274,18 @@ async fn prepare(app: Shared, id: &str) -> Result<()> {
         REVISION.trim(),
         RECIPE.trim()
     );
-    let started = Instant::now();
+    if std::fs::read_to_string(app.assets.join("sessions/revision"))?.trim() != REVISION.trim()
+        || std::fs::read_to_string(app.assets.join("sessions/recipe-version"))?.trim()
+            != RECIPE.trim()
     {
+        bail!("Session recipes changed. Restart the manager after upgrading.");
+    }
+    let started = Instant::now();
+    if docker(&["image", "inspect", &image]).await.is_err() {
+        private_write(
+            &app.dir.join(format!("{id}.build.log")),
+            b"Waiting for the image build slot. Other sessions may be building.\n",
+        )?;
         let _build = app.builds.acquire().await?;
         if app
             .session(id)
@@ -270,6 +303,8 @@ async fn prepare(app: Shared, id: &str) -> Result<()> {
             log.set_permissions(std::fs::Permissions::from_mode(0o600))?;
             let mut child = Command::new(app.assets.join("scripts/build-sessions"))
                 .arg(&initial.distribution)
+                .env("BWM_EXPECTED_REVISION", REVISION.trim())
+                .env("BWM_EXPECTED_RECIPE", RECIPE.trim())
                 .stdout(log.try_clone()?)
                 .stderr(log)
                 .process_group(0)
@@ -312,6 +347,7 @@ async fn prepare(app: Shared, id: &str) -> Result<()> {
             .insert("image".into(), started.elapsed().as_millis() as u64);
     })
     .await?;
+    let container_started = Instant::now();
     let owner = app.db.lock().await.owner.clone();
     let label = format!("{LABEL}={owner}");
     docker(&["volume", "create", "--label", &label, &volume(id)]).await?;
@@ -357,7 +393,15 @@ async fn prepare(app: Shared, id: &str) -> Result<()> {
     .await;
     std::fs::remove_dir_all(seed)?;
     result?;
+    app.change(id, |s| s.started_ms = now_ms()).await?;
     docker(&["start", &container(id)]).await?;
+    app.change(id, |s| {
+        s.timings.insert(
+            "container".into(),
+            container_started.elapsed().as_millis() as u64,
+        );
+    })
+    .await?;
     Ok(())
 }
 fn redact(text: &str, s: &Session) -> String {
@@ -372,15 +416,12 @@ async fn reconcile(app: Shared) {
             let Ok(_guard) = lock.try_lock() else {
                 continue;
             };
-            if s.status == "preparing" && s.stage == "image" {
+            if s.stage == "image" {
                 continue;
             }
             let Ok(s) = app.session(&s.id).await else {
                 continue;
             };
-            if s.status == "stopped" || s.status == "failed" {
-                continue;
-            }
             let inspect = match app.owned(&s.id).await {
                 Ok(v) => v,
                 Err(e) => {
@@ -395,7 +436,26 @@ async fn reconcile(app: Shared) {
             };
             let running = inspect["State"]["Running"].as_bool() == Some(true);
             if s.status == "running" && running {
+                if s.error.is_some() {
+                    let _ = app.change(&s.id, |s| s.error = None).await;
+                }
                 continue;
+            }
+            if !running {
+                let code = inspect["State"]["ExitCode"].as_i64().unwrap_or(-1);
+                let normal = [0, 137, 143].contains(&code) && inspect["State"]["OOMKilled"] != true;
+                if s.status == "stopped" && normal && s.error.is_none() {
+                    continue;
+                }
+                if s.status == "failed"
+                    && s.error.as_deref()
+                        == Some(&format!(
+                            "Container exited with code {code} during {}. Open Logs for details.",
+                            s.stage
+                        ))
+                {
+                    continue;
+                }
             }
             let stage_path = app.dir.join(format!("{}.stage", s.id));
             let stage = if docker(&[
@@ -412,12 +472,17 @@ async fn reconcile(app: Shared) {
             } else {
                 s.stage.clone()
             };
+            if !running && inspect["State"]["Status"] == "created" {
+                let _=app.change(&s.id,|s| {s.status="failed".into();s.error=Some("Container initialization was interrupted. Destroy this session and create it again.".into());}).await;
+                continue;
+            }
             if !running {
                 let code = inspect["State"]["ExitCode"].as_i64().unwrap_or(-1);
+                let normal = [0, 137, 143].contains(&code) && inspect["State"]["OOMKilled"] != true;
                 let _ = app.change(&s.id, |s| {
                     s.stage = stage;
-                    s.status = if code == 0 { "stopped" } else { "failed" }.into();
-                    if code != 0 { s.error = Some(format!("Container exited with code {code} during {}. Open Logs for details.", s.stage)); }
+                    s.status = if normal { "stopped" } else { "failed" }.into();
+                    s.error = if normal {None} else {Some(format!("Container exited with code {code} during {}. Open Logs for details.", s.stage))};
                 }).await;
                 continue;
             }
@@ -448,28 +513,36 @@ async fn reconcile(app: Shared) {
                         s.stage = stage.clone();
                     }
                     for pair in entries.windows(2) {
-                        s.timings.insert(
-                            pair[0].1.clone(),
-                            pair[1].0.saturating_sub(pair[0].0) * 1000,
-                        );
+                        s.timings
+                            .insert(pair[0].1.clone(), pair[1].0.saturating_sub(pair[0].0));
                     }
+                    s.status = "preparing".into();
+                    s.error = None;
                     if ready {
                         if let Some((launch, _)) = entries.last() {
                             let now = std::time::SystemTime::now()
                                 .duration_since(std::time::UNIX_EPOCH)
                                 .unwrap()
-                                .as_secs();
+                                .as_millis() as u64;
                             s.timings
-                                .insert("readiness".into(), now.saturating_sub(*launch) * 1000);
+                                .insert("readiness".into(), now.saturating_sub(*launch));
                         }
                         s.status = "running".into();
                         s.stage = "ready".into();
+                        s.error = None;
                     } else if let Some((since, _)) = entries.last() {
                         let now = std::time::SystemTime::now()
                             .duration_since(std::time::UNIX_EPOCH)
                             .unwrap()
-                            .as_secs();
-                        if now.saturating_sub(*since) > if stage == "launch" { 120 } else { 1800 } {
+                            .as_millis() as u64;
+                        if *since >= s.started_ms
+                            && now.saturating_sub(*since)
+                                > if stage == "launch" {
+                                    120_000
+                                } else {
+                                    1_800_000
+                                }
+                        {
                             s.status = "failed".into();
                             s.error = Some(format!(
                                 "{} timed out. Stop or destroy the session; Logs has the output.",
@@ -493,7 +566,15 @@ async fn stop(State(app): State<Shared>, Path(id): Path<String>) -> Api<StatusCo
             docker(&["stop", "--time", "15", &container(&id)]).await?;
         }
     }
-    app.change(&id, |s| s.status = "stopped".into()).await?;
+    app.change(&id, |s| {
+        s.status = if s.stage == "image" {
+            "cancelled"
+        } else {
+            "stopped"
+        }
+        .into()
+    })
+    .await?;
     Ok(StatusCode::NO_CONTENT)
 }
 async fn start(State(app): State<Shared>, Path(id): Path<String>) -> Api<StatusCode> {
@@ -506,12 +587,21 @@ async fn start(State(app): State<Shared>, Path(id): Path<String>) -> Api<StatusC
             "Only stopped sessions can be started".into(),
         ));
     }
-    app.owned(&id).await?;
+    let info = app.owned(&id).await?;
+    if info["State"]["Status"] == "created" {
+        return Err(Error(
+            StatusCode::CONFLICT,
+            "Container initialization was interrupted. Destroy this session and create it again."
+                .into(),
+        ));
+    }
+    app.change(&id, |s| s.started_ms = now_ms()).await?;
     docker(&["start", &container(&id)]).await?;
     app.change(&id, |s| {
         s.status = "preparing".into();
         s.stage = "setup".into();
         s.error = None;
+        s.timings.retain(|k, _| k == "image" || k == "container");
     })
     .await?;
     Ok(StatusCode::NO_CONTENT)
@@ -556,6 +646,10 @@ async fn destroy(State(app): State<Shared>, Path(id): Path<String>) -> Api<Statu
     app.save(&db)?;
     let _ = std::fs::remove_file(app.dir.join(format!("{id}.build.log")));
     let _ = std::fs::remove_dir_all(app.dir.join(format!("{id}.seed")));
+    let _ = std::fs::remove_file(app.dir.join(format!("{id}.stage")));
+    app.preview_times.lock().await.remove(&id);
+    // Keep the action mutex until outstanding requests have released their Arc.
+    // Reusing a different mutex before then would let a stale request race cleanup.
     Ok(StatusCode::NO_CONTENT)
 }
 async fn link(State(app): State<Shared>, Path(id): Path<String>) -> Api<Json<serde_json::Value>> {
@@ -582,8 +676,15 @@ async fn logs(State(app): State<Shared>, Path(id): Path<String>) -> Api<Json<ser
         output.push_str(&String::from_utf8_lossy(&bytes));
     }
     if app.owned(&id).await.is_ok() {
-        let raw = Command::new("docker")
-            .args(["logs", "--tail", "1000", &container(&id)])
+        output.push_str("\n--- Container output ---\n");
+        // The generated container name is a positional argument, never shell source.
+        let raw = Command::new("sh")
+            .args([
+                "-c",
+                "exec docker logs --tail 1000 \"$1\" 2>&1",
+                "bwm-logs",
+                &container(&id),
+            ])
             .kill_on_drop(true)
             .output();
         if let Ok(Ok(raw)) = tokio::time::timeout(Duration::from_secs(10), raw).await {
@@ -669,6 +770,8 @@ async fn asset(uri: axum::http::Uri) -> Response {
             (header::CONTENT_TYPE, kind),
             (header::REFERRER_POLICY, "no-referrer"),
             (header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
+            (header::X_FRAME_OPTIONS, "DENY"),
+            (header::CONTENT_SECURITY_POLICY, "default-src 'self'; img-src 'self' blob:; style-src 'self' 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'"),
         ],
         Body::from(data),
     )
@@ -679,6 +782,16 @@ async fn main() -> Result<()> {
     let dir = PathBuf::from(env("BWM_DATA_DIR", "/var/lib/browser-wayland-manager"));
     std::fs::create_dir_all(&dir)?;
     std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700))?;
+    use std::os::fd::AsRawFd;
+    let data_lock = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(dir.join("manager.lock"))?;
+    // The open file holds this exclusive lock for the lifetime of the server.
+    if unsafe { libc::flock(data_lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+        bail!("Another manager is using this data directory");
+    }
     let secret_path = dir.join("admin-token");
     let secret = if secret_path.exists() {
         std::fs::read_to_string(&secret_path)?.trim().to_owned()
@@ -722,6 +835,11 @@ async fn main() -> Result<()> {
         previews: Semaphore::new(2),
         preview_times: Mutex::new(HashMap::new()),
     });
+    if loopback(&app.bind) && !loopback(&app.docker_host) {
+        bail!(
+            "Loopback session binding requires a loopback BWM_DOCKER_HOST. In Compose use BWM_SESSION_BIND=0.0.0.0."
+        );
+    }
     app.save(&*app.db.lock().await)?;
     tokio::spawn(reconcile(app.clone()));
     let api = Router::new()
@@ -755,11 +873,18 @@ mod tests {
     use super::*;
     #[test]
     fn package_boundary() {
-        for p in ["firefox", "libgtk-3-0", "foo+bar", "libc6:amd64"] {
+        for p in [
+            "firefox",
+            "libgtk-3-0",
+            "foo+bar",
+            "libc6:amd64",
+            "g++",
+            "libstdc++-14-dev",
+        ] {
             assert!(valid_package(p));
         }
         for p in [
-            "", "-y", "--help", "x;id", "$(id)", "x y", "x\ny", "../x", "foo=1", "a/b",
+            "", "-y", "--help", "x;id", "$(id)", "x y", "x\ny", "../x", "foo=1", "a/b", "dbus-",
         ] {
             assert!(!valid_package(p), "{p}");
         }
@@ -772,6 +897,7 @@ mod tests {
             distribution: "".into(),
             packages: vec![],
             port: 0,
+            started_ms: 0,
             status: "".into(),
             stage: "".into(),
             error: None,
