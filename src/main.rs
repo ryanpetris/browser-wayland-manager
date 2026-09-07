@@ -24,7 +24,6 @@ use tokio::{
 use uuid::Uuid;
 
 const ELSEWHERE_VERSION: &str = include_str!("../sessions/elsewhere-version");
-const RECIPE: &str = include_str!("../sessions/recipe-version");
 const LABEL: &str = "io.innkeeper.owner";
 #[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
 struct Session {
@@ -310,11 +309,8 @@ async fn create(State(app): State<Shared>, Json(input): Json<Create>) -> Api<imp
 async fn prepare(app: Shared, id: &str) -> Result<()> {
     let initial = app.session(id).await.map_err(|e| anyhow::anyhow!(e.1))?;
     let version = ELSEWHERE_VERSION.trim();
-    if std::fs::read_to_string(app.assets.join("sessions/elsewhere-version"))?.trim() != version
-        || std::fs::read_to_string(app.assets.join("sessions/recipe-version"))?.trim()
-            != RECIPE.trim()
-    {
-        bail!("Session recipes changed. Restart Innkeeper after upgrading.");
+    if std::fs::read_to_string(app.assets.join("sessions/elsewhere-version"))?.trim() != version {
+        bail!("Pinned Elsewhere release changed. Restart Innkeeper after upgrading.");
     }
     let architecture = docker(&["info", "--format", "{{.Architecture}}"]).await?;
     if !matches!(architecture.trim(), "x86_64" | "amd64") {
