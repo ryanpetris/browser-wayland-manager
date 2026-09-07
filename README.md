@@ -72,8 +72,8 @@ After changing Compose configuration, rebuild and recreate Innkeeper with `docke
 Management access grants Docker control. Treat the administrator token and Docker socket as host-administrator credentials. Elsewhere owns session credentials in each session home volume. Innkeeper retrieves them on demand and does not store copies in the SQLite database. Back up the complete Innkeeper data directory together with session volumes. The frontend retains the administrator token only in the tab's session storage. No cross-origin API access is enabled.
 
 Session state lives in `state.sqlite3` inside the data directory. SQLite stores sessions, launch
-settings, package lists, timings, and the ownership ID in relational tables. Each session update is
-transactional. The database uses WAL with full synchronization; the data directory is private and
+settings, package lists, ordered Docker options, timings, and the ownership ID in relational tables.
+Each session update is transactional. The database uses WAL with full synchronization; the data directory is private and
 the database is readable only by its owner.
 
 Schema migrations are embedded in the binary and applied by `rusqlite_migration` before Innkeeper
@@ -235,12 +235,40 @@ Review the settings and choose **Create session**. See [the 0 A.D. profile](prof
 for a game that starts in kiosk mode at 1920 × 1080.
 
 Profiles support `name`, `distribution` (`arch` or `debian`), `packages` (an array of
-package names), `startup_command`, `screen_size`, and `kiosk`. Omitted fields use the
+package names), `startup_command`, `screen_size`, `kiosk`, and `docker_args`. Omitted fields use the
 form defaults. Unknown fields are rejected. `screen_size` is `null` for dynamic sizing, or an object with `width`
 and `height`, both even integers from 2 to 8192. Kiosk mode defaults to `false`.
 The startup command runs through `sh -c` as the desktop user on each session start,
 with the desktop's display and audio environment. An empty command starts no application.
 Settings are saved with the session and retained when it is stopped and started.
+
+Expand **Advanced Docker options** in New session to configure the Elsewhere session
+container. Enter one complete `--flag=value` argument per line. Supported flags are
+`--security-opt`, `--cap-add`, and `--cap-drop`; each can appear more than once.
+Profiles and `POST /api/sessions` accept these options as a `docker_args` array:
+
+```json
+{
+  "docker_args": [
+    "--security-opt=seccomp=unconfined",
+    "--security-opt=apparmor=unconfined",
+    "--cap-add=SYS_ADMIN"
+  ]
+}
+```
+
+This fragment supplies the Docker options for a Steam session; configure its packages
+and startup command separately. Omitted `docker_args` defaults to an empty array.
+Arguments allow up to 64 entries and 4096 bytes total, with nonempty values and no NUL
+characters or line breaks. Innkeeper passes each argument directly to Docker without
+shell expansion. Docker validates option values; a rejected value appears in the
+session's startup error. Seccomp profile paths refer to files where Innkeeper's Docker
+client runs. For containerized Innkeeper, mount custom seccomp profiles into that container.
+
+Docker options apply when the session container is created and remain in effect through
+Start, Relaunch, Upgrade, Repair, and Innkeeper restarts. They are read-only in Edit
+settings and are separate from pending desktop settings. Create a new session to use
+different Docker options.
 
 Use **Edit settings** on a running or stopped session to change its name, screen size,
 kiosk mode, or startup command. **Save** updates the name immediately and saves the
@@ -335,6 +363,18 @@ docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
 ```
 
 The proxy fixture creates two disposable containers and checks TLS, UUID routing, ownership, authorization, a large upload, an unbuffered stream longer than eight seconds, WebSocket binary/ping/close frames, and restart routing. It selects two ports in `19500`–`19999` that are not published by running Docker containers. Set `PROXY_TEST_HTTP=1` to check the plaintext listener used behind an HTTPS gateway. Set `PROXY_TEST_TIMEOUTS=1` to check a stalled backend and an active upload longer than the response-header idle timeout. Repeat on a custom bridge by adding `--network NETWORK -e PROXY_TEST_NETWORK=NETWORK`, or check native mode with `--network host -e INNKEEPER_IN_DOCKER=0`.
+
+`scripts/check-session-refresh.py` checks session upgrades, settings, and Docker options
+with disposable Arch and Debian containers. Run it in `proxy-rig` with the Docker socket
+and the checkout mounted at `/src`, using `python3 /src/scripts/check-session-refresh.py`.
+The Docker options browser check uses the built frontend and a fixture API:
+
+```sh
+docker build --target proxy-browser -t innkeeper-proxy-browser .
+docker run --rm --entrypoint node \
+  -v "$PWD/scripts/check-docker-options-browser.mjs:/src/scripts/check-docker-options-browser.mjs:ro" \
+  innkeeper-proxy-browser /src/scripts/check-docker-options-browser.mjs
+```
 
 `scripts/check-proxy-desktops.py` checks fresh real Arch and Debian packages through the production creation and launch flow. Mount the script at `/check.py`; `proxy-rig` includes its SQLite fixture helper. Run it in `proxy-rig` with the Docker socket, the session scripts, a writable directory at `/work`, and a local package manifest and artifacts at `/local`. Mount `/dev/dri` to exercise the host GPU. Publish `127.0.0.1:29301:29301` for a local browser rig. Leave `INNKEEPER_RTC_ADDR` unset to check hostname fallback, or set it to check an explicit override. It reserves ports used by unrelated Docker containers and removes only its own sessions.
 

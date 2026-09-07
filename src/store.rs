@@ -166,7 +166,7 @@ fn read_session(db: &Connection, id: &str) -> Result<Option<Session>> {
             started_ms: unsigned(row, 4)?, status: row.get(5)?, stage: row.get(6)?, error: row.get(7)?,
             installed_version: row.get(8)?, repair_available: row.get(9)?, version_error: row.get(10)?,
             upgrade_started_ms: unsigned(row, 11)?, upgrade_target: row.get(12)?,
-            packages: vec![], timings: Default::default(), startup_command: String::new(),
+            packages: vec![], docker_args: vec![], timings: Default::default(), startup_command: String::new(),
             screen_size: None, kiosk: false, applied_settings: None, launching_settings: None,
         }),
     ).optional()?;
@@ -210,6 +210,12 @@ fn read_session(db: &Connection, id: &str) -> Result<Option<Session>> {
         )?
         .query_map([id], |row| row.get(0))?
         .collect::<rusqlite::Result<_>>()?;
+    session.docker_args = db
+        .prepare_cached(
+            "SELECT argument FROM session_docker_args WHERE session_id = ?1 ORDER BY position",
+        )?
+        .query_map([id], |row| row.get(0))?
+        .collect::<rusqlite::Result<_>>()?;
     session.timings = db
         .prepare_cached("SELECT stage, elapsed_ms FROM session_timings WHERE session_id = ?1")?
         .query_map([id], |row| Ok((row.get(0)?, unsigned(row, 1)?)))?
@@ -229,7 +235,12 @@ fn write_session(db: &Connection, s: &Session) -> Result<()> {
         params![s.id, s.name, s.distribution, s.port, i64::try_from(s.started_ms)?, s.status, s.stage, s.error,
                 s.installed_version, s.repair_available, s.version_error, i64::try_from(s.upgrade_started_ms)?, s.upgrade_target],
     )?;
-    for table in ["session_settings", "session_packages", "session_timings"] {
+    for table in [
+        "session_settings",
+        "session_packages",
+        "session_timings",
+        "session_docker_args",
+    ] {
         db.execute(
             &format!("DELETE FROM {table} WHERE session_id = ?1"),
             [&s.id],
@@ -258,6 +269,12 @@ fn write_session(db: &Connection, s: &Session) -> Result<()> {
         db.execute(
             "INSERT INTO session_packages VALUES (?1, ?2, ?3)",
             params![s.id, position as i64, package],
+        )?;
+    }
+    for (position, argument) in s.docker_args.iter().enumerate() {
+        db.execute(
+            "INSERT INTO session_docker_args VALUES (?1, ?2, ?3)",
+            params![s.id, position as i64, argument],
         )?;
     }
     for (stage, elapsed) in &s.timings {
@@ -340,6 +357,12 @@ mod tests {
             name: "SQLite session".into(),
             distribution: "arch".into(),
             packages: vec!["foot".into(), "firefox".into(), "foot".into()],
+            docker_args: vec![
+                "--security-opt=seccomp=unconfined".into(),
+                "--security-opt=apparmor=unconfined".into(),
+                "--cap-add=SYS_ADMIN".into(),
+                "--cap-add=SYS_ADMIN".into(),
+            ],
             startup_command: settings.startup_command.clone(),
             screen_size: settings.screen_size,
             kiosk: settings.kiosk,
@@ -365,11 +388,14 @@ mod tests {
         let db = Store::open(directory.database()).await.unwrap();
         let owner = db.owner.clone();
         let first = db.create(session()).await.unwrap().unwrap();
-        let second = db.create(session()).await.unwrap().unwrap();
+        let mut without_options = session();
+        without_options.docker_args.clear();
+        let second = db.create(without_options).await.unwrap().unwrap();
         assert!(db.session(&first.id).await.unwrap().unwrap() == first);
         assert!(
             db.change(&first.id, |s| {
                 s.name = "Should roll back".into();
+                s.docker_args.clear();
                 s.screen_size = Some(ScreenSize {
                     width: 3,
                     height: 480,
@@ -396,7 +422,12 @@ mod tests {
         db.delete(&first.id).await.unwrap();
         let id = first.id.clone();
         db.run(move |connection| {
-            for table in ["session_settings", "session_packages", "session_timings"] {
+            for table in [
+                "session_settings",
+                "session_packages",
+                "session_timings",
+                "session_docker_args",
+            ] {
                 let count: i64 = connection.query_row(
                     &format!("SELECT count(*) FROM {table} WHERE session_id = ?1"),
                     [&id],

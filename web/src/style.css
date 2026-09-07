@@ -353,10 +353,10 @@ small {
   margin: 0;
   min-width: 0;
 }
-.profile-import {
+.session-fields details {
   margin-bottom: 18px;
 }
-.profile-import summary {
+.session-fields summary {
   cursor: pointer;
   margin-bottom: 12px;
 }

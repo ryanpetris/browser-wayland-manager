@@ -575,6 +575,7 @@ const defaultProfile = {
   name: "",
   distribution: "arch",
   packages: [],
+  docker_args: [],
   startup_command: "",
   screen_size: null,
   kiosk: false,
@@ -584,6 +585,7 @@ const screenPresets = ["1280x720", "1920x1080", "2560x1440", "3840x2160"];
 function SessionForm({ submit, error, initial }) {
   const [profile, setProfile] = useState(initial || defaultProfile);
   const [packages, setPackages] = useState(initial?.packages.join(" ") || "");
+  const [dockerArgs, setDockerArgs] = useState(initial?.docker_args?.join("\n") || "");
   const initialSize = initial?.screen_size;
   const initialPreset = initialSize ? `${initialSize.width}x${initialSize.height}` : "dynamic";
   const [screen, setScreen] = useState(initialSize && !screenPresets.includes(initialPreset) ? "custom" : initialPreset);
@@ -617,6 +619,8 @@ function SessionForm({ submit, error, initial }) {
         p.packages.some(
           (item) => typeof item !== "string" || /\s/.test(item),
         ) ||
+        !Array.isArray(p.docker_args) ||
+        p.docker_args.some((arg) => typeof arg !== "string" || /[\r\n\0]/.test(arg)) ||
         typeof p.startup_command !== "string" ||
         typeof p.kiosk !== "boolean"
       ) {
@@ -639,6 +643,7 @@ function SessionForm({ submit, error, initial }) {
       }
       setProfile(p);
       setPackages(p.packages.join(" "));
+      setDockerArgs(p.docker_args.join("\n"));
       const size = p.screen_size;
       const preset = size ? `${size.width}x${size.height}` : "dynamic";
       setScreen(size && !screenPresets.includes(preset) ? "custom" : preset);
@@ -677,6 +682,7 @@ function SessionForm({ submit, error, initial }) {
           await submit({
             ...profile,
             packages: packages.trim().split(/\s+/).filter(Boolean),
+            docker_args: dockerArgs.split("\n").map((line) => line.trim()).filter(Boolean),
             screen_size: size,
           });
         } finally {
@@ -743,6 +749,21 @@ function SessionForm({ submit, error, initial }) {
           />
           <small>{initial ? "Distribution and packages are set at creation." : "Optional. Separate package names with spaces."}</small>
         </label>
+        <details>
+          <summary>Advanced Docker options</summary>
+          <label>
+            Docker options
+            <textarea
+              name="docker_args"
+              rows={4}
+              readOnly={!!initial}
+              value={dockerArgs}
+              onChange={(e) => setDockerArgs(e.target.value)}
+              placeholder={"--security-opt=seccomp=unconfined\n--security-opt=apparmor=unconfined\n--cap-add=SYS_ADMIN"}
+            />
+            <small>{initial ? "Docker options are set at creation. Create a new session to change them." : "Optional. One --flag=value per line. Supports --security-opt, --cap-add, and --cap-drop. Repeated options are allowed."}</small>
+          </label>
+        </details>
         <label>
           Screen size
           <select value={screen} onChange={(e) => setScreen(e.target.value)}>

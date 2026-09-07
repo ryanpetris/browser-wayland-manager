@@ -64,6 +64,8 @@ with tempfile.TemporaryDirectory(prefix="innkeeper-refresh-") as temporary:
 import os, sys
 from pathlib import Path
 args = sys.argv[1:]
+if args[:1] == ['create'] or args[:2] == ['volume', 'create']:
+    Path(__file__).with_name('resource-created').touch()
 if args[:1] in (['image'], ['pull']) and Path(__file__).with_name('no-base').exists():
     Path(__file__).with_name('image-attempt').touch()
     sys.exit(1)
@@ -208,8 +210,46 @@ exec sleep 10000
             assert error.code == code, error.code
             return error.read().decode()
 
+    docker_args = ["--security-opt=seccomp=unconfined", "--security-opt=apparmor=unconfined",
+                   "--cap-add=SYS_ADMIN", "--cap-drop=NET_RAW"]
+
+    def check_docker_args(sid, expected):
+        assert state(sid)["docker_args"] == expected
+        with database(data) as db:
+            stored = [row["argument"] for row in db.execute(
+                "SELECT argument FROM session_docker_args WHERE session_id = ? ORDER BY position", [sid])]
+        assert stored == expected
+        config = json.loads(run("docker", "inspect", "innkeeper-" + sid))[0]["HostConfig"]
+        assert sorted(config["SecurityOpt"] or []) == sorted(
+            arg.split("=", 1)[1] for arg in expected if arg.startswith("--security-opt=")), config
+        for flag, field in (("--cap-add=", "CapAdd"), ("--cap-drop=", "CapDrop")):
+            assert sorted(config[field] or []) == sorted(
+                arg.split("=", 1)[1] for arg in expected if arg.startswith(flag)), config
+
+    def rejected(path, method, body, status):
+        try:
+            api(path, method, body)
+        except urllib.error.HTTPError as error:
+            assert error.code == status, (error.code, error.read())
+            return error.read().decode()
+        raise AssertionError("Request unexpectedly succeeded")
+
     try:
         wait(lambda: (data / "admin-token").exists())
+        for invalid in (["--privileged=true"], ["--name=override"], ["--network=host"],
+                        ["--entrypoint=sh"], ["--security-opt", "seccomp=unconfined"],
+                        ["--cap-add="], ["--cap-add=SYS_ADMIN\n"], ["--cap-add=SYS_ADMIN\r"],
+                        ["--cap-add=SYS_ADMIN\0"], ["--cap-add=SYS_ADMIN"] * 65,
+                        ["--security-opt=" + "x" * 4096]):
+            error = rejected("/sessions", "POST", {"name": "Invalid options",
+                             "distribution": "debian", "packages": [], "docker_args": invalid}, 400)
+            assert "Docker" in error or "docker" in error, error
+        for invalid in (None, "--cap-add=SYS_ADMIN", [42]):
+            rejected("/sessions", "POST", {"name": "Invalid option type", "distribution": "debian",
+                     "packages": [], "docker_args": invalid}, 422)
+        assert api("/sessions")["sessions"] == []
+        assert not (tools / "resource-created").exists()
+        print("Invalid Docker options rejected before session or Docker resource creation", flush=True)
         (tools / "fail-create").touch()
         probe = api("/sessions", "POST", {"name": "Container creation failure", "distribution": "debian", "packages": []})["id"]
         created.append(probe)
@@ -229,6 +269,7 @@ exec sleep 10000
                           "distribution": distro, "packages": []})["id"]
                 created.append(sid)
                 wait(lambda: state(sid)["status"] == "running", timeout=90)
+                check_docker_args(sid, [])
                 logging = json.loads(run("docker", "inspect", "innkeeper-" + sid))[0]["HostConfig"]["LogConfig"]
                 assert logging == {"Type": "json-file", "Config": {"max-size": "10m", "max-file": "3"}}, logging
                 assert state(sid)["expected_version"] == version
@@ -294,7 +335,10 @@ exec sleep 10000
             # A failed initial install has an explicit repair, with no install on Start.
             installer = (recipes / "install.sh").read_text()
             (recipes / "install.sh").write_text("echo 'Fixture create install failure'\nexit 7\n")
-            probe = api("/sessions", "POST", {"name": "Install recovery", "distribution": distro, "packages": []})["id"]
+            recovery = {"name": "Install recovery", "distribution": distro, "packages": []}
+            if distro == "arch":
+                recovery["docker_args"] = docker_args
+            probe = api("/sessions", "POST", recovery)["id"]
             created.append(probe)
             wait(lambda: state(probe)["status"] == "failed")
             api(f"/sessions/{probe}/stop", "POST")
@@ -310,6 +354,7 @@ exec sleep 10000
             assert not state(probe)["repair_available"]
             api(f"/sessions/{probe}/start", "POST")
             wait(lambda: state(probe)["status"] == "running")
+            check_docker_args(probe, docker_args if distro == "arch" else [])
             probe_name = "innkeeper-" + probe
             if distro == "arch":
                 run("docker", "exec", probe_name, "ln", "-s", "/tmp/unreadable", "/var/lib/pacman/local/elsewhere-invalid")
@@ -354,10 +399,11 @@ exec sleep 10000
             created.remove(probe)
             print(f"{distro}: cancelled/failed creation and explicit initial-install repair passed", flush=True)
             sid = api("/sessions", "POST", {"name": "Refresh " + distro,
-                      "distribution": distro, "packages": []})["id"]
+                      "distribution": distro, "packages": [], "docker_args": docker_args})["id"]
             created.append(sid)
             name = "innkeeper-" + sid
             wait(lambda: state(sid)["status"] == "running")
+            check_docker_args(sid, docker_args)
             assert state(sid)["installed_version"] == version + "-1"
             assert state(sid)["version_status"] == "current"
             identity = run("docker", "inspect", name, "--format", "{{.Id}}")
@@ -378,11 +424,13 @@ exec sleep 10000
             # Reload forces immediate metadata detection on the stopped container.
             restart_manager()
             wait(lambda: state(sid)["version_status"] == "older")
+            check_docker_args(sid, docker_args)
             assert state(sid)["installed_version"] == "0.0.1-1"
             (tools / "no-base").touch()
             api(f"/sessions/{sid}/start", "POST")
             wait(lambda: state(sid)["status"] == "running")
             assert run("docker", "exec", name, "cat", "/home/elsewhere/launches").splitlines() == ["first", "old"]
+            check_docker_args(sid, docker_args)
             api(f"/sessions/{sid}/stop", "POST")
             cached.unlink()
             (recipes / "prepare.sh").write_text("echo 'Fixture download failure'\nexit 1\n")
@@ -409,6 +457,7 @@ exec sleep 10000
             wait(lambda: state(sid)["status"] == "stopped")
             assert state(sid)["installed_version"] == version + "-1"
             assert state(sid)["settings_pending"]
+            check_docker_args(sid, docker_args)
             assert run("docker", "inspect", name, "--format", "{{.State.Running}}") == "false"
             api(f"/sessions/{sid}/start", "POST")
             wait(lambda: state(sid)["status"] == "running")
@@ -516,13 +565,6 @@ exec sleep 10000
                 return api(f"/sessions/{sid}/settings", "PUT", settings)
             def pending():
                 return state(sid)["settings_pending"]
-            def rejected(path, method, body, status):
-                try:
-                    api(path, method, body)
-                except urllib.error.HTTPError as e:
-                    assert e.code == status, (e.code, e.read())
-                else:
-                    raise AssertionError("Request unexpectedly succeeded")
             # Saving and renaming never restart the desktop; reverting clears pending.
             renamed = dict(original, name="Renamed")
             assert not save(renamed)["settings_pending"]
@@ -540,6 +582,7 @@ exec sleep 10000
             del missing["screen_size"]
             rejected(f"/sessions/{sid}/settings", "PUT", missing, 422)
             rejected(f"/sessions/{sid}/settings", "PUT", dict(edited, packages=[]), 422)
+            rejected(f"/sessions/{sid}/settings", "PUT", dict(edited, docker_args=[]), 422)
             # A failed write cannot publish edits in memory.
             reject_updates(data, sid, True)
             rejected(f"/sessions/{sid}/settings", "PUT", renamed, 500)
@@ -580,6 +623,7 @@ exec sleep 10000
                             "--screen-size", "1280x720", "--kiosk", "--exec", command], args
             run("docker", "exec", name, "test", "!", "-e", "/tmp/unexpected")
             assert run("docker", "inspect", name, "--format", "{{.Id}}") == identity
+            check_docker_args(sid, docker_args)
             assert run("docker", "exec", name, "cat", "/root/settings-sentinel") == "retained"
             assert stored_settings(data, sid, "launching") is None, stored_settings(data, sid, "launching")
             assert stored_settings(data, sid, "applied") == {k: edited[k] for k in ("screen_size", "kiosk", "startup_command")}
@@ -612,6 +656,8 @@ exec sleep 10000
             wait(lambda: state(sid)["status"] == "stopped")
             api(f"/sessions/{sid}/start", "POST")
             wait(lambda: state(sid)["status"] == "running" and not pending())
+            check_docker_args(sid, docker_args)
+            print(f"{distro}: Docker security options and capabilities survive restart, upgrade and relaunch", flush=True)
             print(f"{distro}: saved settings, resets, quoting, pending state, persistence, serialized relaunch and failure retry passed", flush=True)
             print(f"{distro}: explicit upgrade, stopped version detection, newer warning, launch-only start, cancellation, opaque token commands and restart persistence passed", flush=True)
     except BaseException:

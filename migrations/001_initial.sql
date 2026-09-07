@@ -47,3 +47,10 @@ CREATE TABLE session_timings (
     elapsed_ms INTEGER NOT NULL CHECK (elapsed_ms >= 0),
     PRIMARY KEY (session_id, stage)
 ) STRICT;
+
+CREATE TABLE session_docker_args (
+    session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    position INTEGER NOT NULL CHECK (position >= 0),
+    argument TEXT NOT NULL,
+    PRIMARY KEY (session_id, position)
+) STRICT;

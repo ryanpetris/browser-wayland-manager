@@ -92,6 +92,7 @@ struct Session {
     name: String,
     distribution: String,
     packages: Vec<String>,
+    docker_args: Vec<String>,
     startup_command: String,
     screen_size: Option<ScreenSize>,
     kiosk: bool,
@@ -229,7 +230,7 @@ async fn auth(State(app): State<Shared>, req: axum::extract::Request, next: Next
     response
 }
 fn public_session(s: &Session) -> serde_json::Value {
-    serde_json::json!({"id":s.id,"name":s.name,"distribution":s.distribution,"packages":s.packages,"startup_command":s.startup_command,"screen_size":s.screen_size,"kiosk":s.kiosk,"settings_pending":s.applied_settings.as_ref().is_some_and(|applied| *applied != LaunchSettings::from(s)),"installed_version":s.installed_version,"repair_available":s.repair_available,"version_error":s.version_error,"expected_version":elsewhere_version(),"version_status":version_status(s.installed_version.as_deref()),"port":s.port,"status":s.status,"stage":s.stage,"error":s.error,"timings":s.timings})
+    serde_json::json!({"id":s.id,"name":s.name,"distribution":s.distribution,"packages":s.packages,"docker_args":s.docker_args,"startup_command":s.startup_command,"screen_size":s.screen_size,"kiosk":s.kiosk,"settings_pending":s.applied_settings.as_ref().is_some_and(|applied| *applied != LaunchSettings::from(s)),"installed_version":s.installed_version,"repair_available":s.repair_available,"version_error":s.version_error,"expected_version":elsewhere_version(),"version_status":version_status(s.installed_version.as_deref()),"port":s.port,"status":s.status,"stage":s.stage,"error":s.error,"timings":s.timings})
 }
 async fn list(State(app): State<Shared>) -> Api<Json<serde_json::Value>> {
     Ok(Json(
@@ -255,6 +256,8 @@ struct Create {
     name: String,
     distribution: String,
     packages: Vec<String>,
+    #[serde(default)]
+    docker_args: Vec<String>,
     #[serde(default)]
     startup_command: String,
     #[serde(default)]
@@ -361,6 +364,32 @@ fn launch_config(settings: &LaunchSettings) -> String {
         u8::from(settings.kiosk)
     )
 }
+fn validate_docker_args(args: &[String]) -> Api<()> {
+    if args.len() > 64 || args.iter().map(String::len).sum::<usize>() > 4096 {
+        return Err(Error(
+            StatusCode::BAD_REQUEST,
+            "Docker options allow at most 64 arguments and 4096 bytes in total.".into(),
+        ));
+    }
+    for arg in args {
+        let Some((flag, value)) = arg.split_once('=') else {
+            return Err(Error(
+                StatusCode::BAD_REQUEST,
+                "Use one complete --flag=value Docker option per entry.".into(),
+            ));
+        };
+        if !matches!(flag, "--security-opt" | "--cap-add" | "--cap-drop") {
+            return Err(Error(
+                StatusCode::BAD_REQUEST,
+                "Supported Docker options are --security-opt, --cap-add, and --cap-drop.".into(),
+            ));
+        }
+        if value.trim().is_empty() || arg.contains(['\0', '\r', '\n']) {
+            return Err(Error(StatusCode::BAD_REQUEST, "Docker option values must be nonempty and contain no NUL characters or line breaks.".into()));
+        }
+    }
+    Ok(())
+}
 fn valid_package(p: &str) -> bool {
     !p.is_empty()
         && !p.ends_with('-')
@@ -380,11 +409,13 @@ async fn create(State(app): State<Shared>, Json(input): Json<Create>) -> Api<imp
             return Err(Error(StatusCode::BAD_REQUEST, "Choose Arch or Debian, a name of 1–80 characters, and up to 100 valid package names. Shell syntax and options are not allowed.".into()));
         }
         validate_settings(&input.name, input.screen_size, &input.startup_command)?;
+        validate_docker_args(&input.docker_args)?;
         let s = Session {
             id: Uuid::new_v4().to_string(),
             name: input.name.trim().into(),
             distribution: input.distribution,
             packages: input.packages,
+            docker_args: input.docker_args,
             startup_command: input.startup_command.clone(),
             screen_size: input.screen_size,
             kiosk: input.kiosk,
@@ -586,6 +617,7 @@ async fn prepare(app: Shared, id: &str, new_container: bool, attempt_ms: u64) ->
             .into_iter()
             .map(str::to_owned)
             .collect::<Vec<_>>();
+            args.splice(1..1, s.docker_args.iter().cloned());
             if let Some(network) = &app.network.id {
                 args.splice(1..1, ["--network".into(), network.clone()]);
             } else {
@@ -1680,6 +1712,41 @@ async fn main() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn docker_options_validate_complete_arguments() {
+        let valid = [
+            "--security-opt=seccomp=unconfined",
+            "--security-opt=apparmor=unconfined",
+            "--cap-add=SYS_ADMIN",
+            "--cap-drop=NET_RAW",
+        ];
+        assert!(validate_docker_args(&valid.map(str::to_owned)).is_ok());
+        assert!(validate_docker_args(&[]).is_ok());
+        for invalid in [
+            "--privileged=true",
+            "--name=other",
+            "image",
+            "--cap-add",
+            "--cap-add=",
+            "--cap-add=  ",
+            "--cap-add=SYS_ADMIN\n",
+            "--cap-add=SYS_ADMIN\0",
+            "--cap-add=SYS_ADMIN\r",
+        ] {
+            assert!(
+                validate_docker_args(&[invalid.into()]).is_err(),
+                "{invalid:?}"
+            );
+        }
+        assert!(validate_docker_args(&vec!["--cap-add=SYS_ADMIN".into(); 65]).is_err());
+        assert!(validate_docker_args(&[format!("--security-opt={}", "x".repeat(4096))]).is_err());
+        let legacy: Create = serde_json::from_value(
+            serde_json::json!({"name":"Desktop", "distribution":"arch", "packages":[]}),
+        )
+        .unwrap();
+        assert!(legacy.docker_args.is_empty());
+    }
+
     #[test]
     fn package_boundary() {
         for p in [
