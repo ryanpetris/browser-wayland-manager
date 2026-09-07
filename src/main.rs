@@ -595,6 +595,8 @@ async fn prepare(app: Shared, id: &str, new_container: bool, attempt_ms: u64) ->
                 "--init",
                 "--shm-size",
                 "1g",
+                "--log-driver",
+                "json-file",
                 "--log-opt",
                 "max-size=10m",
                 "--log-opt",
@@ -1026,6 +1028,9 @@ async fn reconcile(app: Shared) {
                 Err(e) => {
                     let _ = app
                         .change(&s.id, |s| {
+                            if s.status == "failed" && s.error.is_some() {
+                                return;
+                            }
                             s.status = "failed".into();
                             s.error = Some(redact(&e.to_string()));
                         })

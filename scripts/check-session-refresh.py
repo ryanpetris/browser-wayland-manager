@@ -69,6 +69,11 @@ if args[:1] in (['image'], ['pull']) and Path(__file__).with_name('no-base').exi
 if args and args[0] in ('cp', 'start', 'stop') and Path(__file__).with_name('fail-' + args[0]).exists():
     sys.exit(1)
 if args and args[0] == 'create':
+    # Model a daemon whose default logging driver is journald.
+    if '--log-driver' not in args:
+        args[1:1] = ['--log-driver', 'journald']
+    if Path(__file__).with_name('fail-create').exists():
+        args[args.index('--log-driver') + 1] = 'journald'
     args[1:1] = ['--env', 'INNKEEPER_SCREEN_SIZE=640x480', '--env', 'INNKEEPER_KIOSK=1', '--env', 'INNKEEPER_STARTUP_COMMAND=stale']
     for i, arg in enumerate(args):
         if arg == '-p':
@@ -204,6 +209,18 @@ exec sleep 10000
 
     try:
         wait(lambda: (data / "admin-token").exists())
+        (tools / "fail-create").touch()
+        probe = api("/sessions", "POST", {"name": "Container creation failure", "distribution": "debian", "packages": []})["id"]
+        created.append(probe)
+        wait(lambda: state(probe)["status"] == "failed")
+        cause = state(probe)["error"]
+        assert "unknown log opt" in cause and "journald" in cause, cause
+        time.sleep(7)
+        assert state(probe)["error"] == cause
+        (tools / "fail-create").unlink()
+        api(f"/sessions/{probe}", "DELETE")
+        created.remove(probe)
+        print("Container creation error survives status polling", flush=True)
         if local_mode:
             assert api("/sessions")["local_elsewhere"] is True
             for distro in ("arch", "debian"):
@@ -211,6 +228,8 @@ exec sleep 10000
                           "distribution": distro, "packages": []})["id"]
                 created.append(sid)
                 wait(lambda: state(sid)["status"] == "running", timeout=90)
+                logging = json.loads(run("docker", "inspect", "innkeeper-" + sid))[0]["HostConfig"]["LogConfig"]
+                assert logging == {"Type": "json-file", "Config": {"max-size": "10m", "max-file": "3"}}, logging
                 assert state(sid)["expected_version"] == version
                 assert state(sid)["installed_version"] == version + "-1"
                 assert state(sid)["version_status"] == "current"
