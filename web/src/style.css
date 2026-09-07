@@ -179,7 +179,8 @@ small {
   border-color: #305c4b;
   background: #17382d;
 }
-.status.preparing {
+.status.preparing,
+.status.upgrading {
   color: #f3cd85;
   border-color: #6d5733;
 }

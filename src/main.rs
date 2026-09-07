@@ -50,6 +50,12 @@ struct Session {
     #[serde(default)]
     installed_version: Option<String>,
     #[serde(default)]
+    repair_available: bool,
+    #[serde(default)]
+    version_error: Option<String>,
+    #[serde(default)]
+    upgrade_started_ms: u64,
+    #[serde(default)]
     upgrade_target: Option<String>,
     #[serde(default)]
     timings: HashMap<String, u64>,
@@ -211,7 +217,7 @@ async fn auth(State(app): State<Shared>, req: axum::extract::Request, next: Next
     response
 }
 fn public_session(s: &Session) -> serde_json::Value {
-    serde_json::json!({"id":s.id,"name":s.name,"distribution":s.distribution,"packages":s.packages,"startup_command":s.startup_command,"screen_size":s.screen_size,"kiosk":s.kiosk,"settings_pending":s.applied_settings.as_ref().is_some_and(|applied| *applied != LaunchSettings::from(s)),"installed_version":s.installed_version,"expected_version":ELSEWHERE_VERSION,"version_status":version_status(s.installed_version.as_deref()),"port":s.port,"status":s.status,"stage":s.stage,"error":s.error,"timings":s.timings})
+    serde_json::json!({"id":s.id,"name":s.name,"distribution":s.distribution,"packages":s.packages,"startup_command":s.startup_command,"screen_size":s.screen_size,"kiosk":s.kiosk,"settings_pending":s.applied_settings.as_ref().is_some_and(|applied| *applied != LaunchSettings::from(s)),"installed_version":s.installed_version,"repair_available":s.repair_available,"version_error":s.version_error,"expected_version":ELSEWHERE_VERSION,"version_status":version_status(s.installed_version.as_deref()),"port":s.port,"status":s.status,"stage":s.stage,"error":s.error,"timings":s.timings})
 }
 async fn list(State(app): State<Shared>) -> Json<serde_json::Value> {
     Json(
@@ -376,6 +382,9 @@ async fn create(State(app): State<Shared>, Json(input): Json<Create>) -> Api<imp
         stage: "download".into(),
         error: None,
         installed_version: None,
+        repair_available: false,
+        version_error: None,
+        upgrade_started_ms: 0,
         upgrade_target: None,
         timings: HashMap::new(),
     };
@@ -573,12 +582,12 @@ async fn prepare(app: Shared, id: &str, new_container: bool, attempt_ms: u64) ->
         } else {
             let info = app.owned(id).await?;
             if upgrading {
-                let installed = installed_version(&app, &s).await?;
-                if version_status(Some(&installed)) != "older" {
-                    bail!("Installed Elsewhere version no longer needs an upgrade");
-                }
                 if info["State"]["Running"] == true {
                     docker(&["stop", "--time", "15", &container(id)]).await?;
+                }
+                let installed = package_metadata(&app, &s).await?;
+                if !installed.can_install() {
+                    bail!("Installed Elsewhere version no longer needs an upgrade or repair");
                 }
             } else if info["State"]["Running"] == true {
                 bail!("Container is already running");
@@ -638,7 +647,11 @@ async fn prepare(app: Shared, id: &str, new_container: bool, attempt_ms: u64) ->
         };
         copy_text(&app, id, "operation", &operation, 0o600).await?;
         if upgrading {
-            app.change(id, |s| s.stage = "upgrade".into()).await?;
+            app.change(id, |s| {
+                s.stage = "upgrade".into();
+                s.upgrade_started_ms = now_ms();
+            })
+            .await?;
             docker(&["start", &container(id)]).await?;
             return Ok(());
         }
@@ -747,14 +760,38 @@ fn version_status(installed: Option<&str>) -> &'static str {
         None => "unknown",
     }
 }
-fn debian_version(text: &str) -> Option<String> {
-    text.split("\n\n").find_map(|entry| {
+#[derive(Default)]
+struct PackageMetadata {
+    version: Option<String>,
+    complete: bool,
+}
+impl PackageMetadata {
+    fn repair_available(&self) -> bool {
+        !self.complete
+            && (self.version.is_none()
+                || matches!(version_status(self.version.as_deref()), "older" | "current"))
+    }
+    fn can_install(&self) -> bool {
+        self.repair_available() || version_status(self.version.as_deref()) == "older"
+    }
+}
+fn debian_metadata(text: &str) -> Result<PackageMetadata> {
+    for entry in text.split("\n\n").filter(|entry| !entry.trim().is_empty()) {
         let field = |name| entry.lines().find_map(|line| line.strip_prefix(name));
-        if field("Package: ")? != "elsewhere" || field("Status: ")? != "install ok installed" {
-            return None;
+        let name = field("Package: ").context("Invalid package metadata")?;
+        if name == "elsewhere" {
+            let status = field("Status: ").context("Missing package status")?;
+            return Ok(PackageMetadata {
+                version: Some(
+                    field("Version: ")
+                        .context("Missing package version")?
+                        .to_owned(),
+                ),
+                complete: status == "install ok installed",
+            });
         }
-        Some(field("Version: ")?.to_owned())
-    })
+    }
+    Ok(PackageMetadata::default())
 }
 fn arch_version(text: &str) -> Option<String> {
     let field = |name| {
@@ -766,7 +803,7 @@ fn arch_version(text: &str) -> Option<String> {
     }
     Some(field("%VERSION%\n")?.to_owned())
 }
-async fn installed_version(app: &App, s: &Session) -> Result<String> {
+async fn package_metadata(app: &App, s: &Session) -> Result<PackageMetadata> {
     app.owned(&s.id).await?;
     let path = app.dir.join(format!("{}.version", s.id));
     if path.exists() {
@@ -774,7 +811,7 @@ async fn installed_version(app: &App, s: &Session) -> Result<String> {
     }
     std::fs::create_dir_all(&path)?;
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700))?;
-    let result: Result<String> = async {
+    let result: Result<PackageMetadata> = async {
         let source = if s.distribution == "arch" {
             "/var/lib/pacman/local"
         } else {
@@ -790,35 +827,64 @@ async fn installed_version(app: &App, s: &Session) -> Result<String> {
             if !std::fs::symlink_metadata(path.join("local"))?.is_dir() {
                 bail!("Package metadata is not a directory");
             }
+            let mut metadata = PackageMetadata::default();
             for entry in std::fs::read_dir(path.join("local"))? {
                 let entry = entry?;
-                if entry.file_type()?.is_dir()
-                    && entry
-                        .file_name()
-                        .to_string_lossy()
-                        .starts_with("elsewhere-")
+                if entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with("elsewhere-")
                 {
-                    if !std::fs::symlink_metadata(entry.path().join("desc"))?.is_file() {
-                        continue;
+                    if !entry.file_type()?.is_dir() {
+                        bail!("Package metadata is not a directory");
                     }
-                    if let Some(version) =
-                        arch_version(&std::fs::read_to_string(entry.path().join("desc"))?)
-                    {
-                        return Ok(version);
+                    if !std::fs::symlink_metadata(entry.path().join("desc"))?.is_file() {
+                        bail!("Package metadata is not a regular file");
+                    }
+                    let text = std::fs::read_to_string(entry.path().join("desc"))?;
+                    let name = text
+                        .split("\n\n")
+                        .find_map(|entry| entry.strip_prefix("%NAME%\n"))
+                        .context("Missing package name")?;
+                    if name == "elsewhere" {
+                        if metadata.version.is_some() {
+                            bail!("Ambiguous Elsewhere package metadata");
+                        }
+                        metadata.version =
+                            Some(arch_version(&text).context("Missing package version")?);
+                        metadata.complete = true;
                     }
                 }
             }
-            bail!("Elsewhere package metadata is unavailable");
+            return Ok(metadata);
+        }
+        docker(&[
+            "cp", &format!("{}:/var/lib/dpkg/updates", container(&s.id)),
+            path.to_str().context("Invalid data path")?,
+        ]).await?;
+        if !std::fs::symlink_metadata(path.join("updates"))?.is_dir() {
+            bail!("Package journal is not a directory");
+        }
+        if std::fs::read_dir(path.join("updates"))?.next().is_some() {
+            bail!("Debian package journal is pending. Manual package-manager recovery is required before Innkeeper can determine the version or repair it.");
         }
         if !std::fs::symlink_metadata(path.join("status"))?.is_file() {
             bail!("Package metadata is not a regular file");
         }
-        debian_version(&std::fs::read_to_string(path.join("status"))?)
-            .context("Elsewhere package metadata is unavailable")
+        debian_metadata(&std::fs::read_to_string(path.join("status"))?)
     }
     .await;
     let _ = std::fs::remove_dir_all(path);
     result
+}
+async fn installed_version(app: &App, s: &Session) -> Result<String> {
+    let metadata = package_metadata(app, s).await?;
+    if !metadata.complete {
+        bail!("Elsewhere package installation is incomplete");
+    }
+    metadata
+        .version
+        .context("Elsewhere package metadata is unavailable")
 }
 async fn session_token(app: &App, id: &str, viewer: bool) -> Result<String> {
     app.owned(id).await?;
@@ -878,6 +944,7 @@ async fn reconcile(app: Shared) {
     let mut version_checks = HashMap::<String, Instant>::new();
     loop {
         let sessions = app.db.lock().await.sessions.clone();
+        version_checks.retain(|id, _| sessions.iter().any(|s| &s.id == id));
         for s in sessions {
             let lock = app.lock(&s.id).await;
             let Ok(_guard) = lock.try_lock() else {
@@ -886,8 +953,8 @@ async fn reconcile(app: Shared) {
             let Ok(s) = app.session(&s.id).await else {
                 continue;
             };
-            if matches!(s.status.as_str(), "preparing" | "upgrading")
-                && matches!(s.stage.as_str(), "image" | "download")
+            if matches!(s.stage.as_str(), "image" | "download" | "queued")
+                && !matches!(s.status.as_str(), "running" | "stopped")
             {
                 continue;
             }
@@ -909,7 +976,14 @@ async fn reconcile(app: Shared) {
             }
             if s.status == "upgrading" {
                 if !running {
-                    let version = installed_version(&app, &s).await.ok();
+                    let metadata = package_metadata(&app, &s).await;
+                    let version_error = metadata.as_ref().err().map(|e| redact(&e.to_string()));
+                    let metadata = metadata.ok();
+                    let repair_available = metadata
+                        .as_ref()
+                        .is_some_and(PackageMetadata::repair_available);
+                    let complete = metadata.as_ref().is_some_and(|m| m.complete);
+                    let version = metadata.and_then(|m| m.version);
                     let marker = app.dir.join(format!("{}.upgrade-complete", s.id));
                     let copied = docker(&[
                         "cp",
@@ -922,7 +996,8 @@ async fn reconcile(app: Shared) {
                             .ok()
                             .is_some_and(|v| v.trim() == s.started_ms.to_string());
                     let _ = std::fs::remove_file(marker);
-                    let success = completed
+                    let success = complete
+                        && completed
                         && inspect["State"]["ExitCode"] == 0
                         && version.as_deref().is_some_and(|v| {
                             release_version(v)
@@ -930,17 +1005,21 @@ async fn reconcile(app: Shared) {
                         });
                     let _ = app.change(&s.id, |s| {
                         s.installed_version = version;
+                        s.repair_available = repair_available;
+                        s.version_error = version_error;
                         s.status = if success { "stopped" } else { "failed" }.into();
                         s.stage = "upgrade".into();
                         s.upgrade_target = None;
                         s.error = if success { None } else { Some("Upgrade did not complete. Open Logs for details; stop the session before retrying or starting it.".into()) };
                     }).await;
-                } else if now_ms().saturating_sub(s.started_ms) > 1_800_000 {
+                } else if s.upgrade_started_ms != 0
+                    && now_ms().saturating_sub(s.upgrade_started_ms) > 1_800_000
+                    && s.error.is_none()
+                {
                     let _ = app
                         .change(&s.id, |s| {
-                            s.status = "failed".into();
                             s.error = Some(
-                                "Upgrade timed out. Stop the session and inspect Logs.".into(),
+                                "Upgrade is taking longer than 30 minutes. Still monitoring; inspect Logs before stopping it.".into(),
                             );
                         })
                         .await;
@@ -952,8 +1031,18 @@ async fn reconcile(app: Shared) {
                     .get(&s.id)
                     .is_none_or(|last| last.elapsed() >= Duration::from_secs(30))
             {
-                let version = installed_version(&app, &s).await.ok();
-                let _ = app.change(&s.id, |s| s.installed_version = version).await;
+                let metadata = package_metadata(&app, &s).await;
+                let version_error = metadata.as_ref().err().map(|e| redact(&e.to_string()));
+                let metadata = metadata.ok();
+                let _ = app
+                    .change(&s.id, |s| {
+                        s.repair_available = metadata
+                            .as_ref()
+                            .is_some_and(PackageMetadata::repair_available);
+                        s.installed_version = metadata.and_then(|m| m.version);
+                        s.version_error = version_error;
+                    })
+                    .await;
                 version_checks.insert(s.id.clone(), Instant::now());
             }
             if s.status == "running" && running {
@@ -1053,6 +1142,8 @@ async fn reconcile(app: Shared) {
                     s.error = readiness_error;
                     if ready {
                         s.installed_version = version;
+                        s.repair_available = false;
+                        s.version_error = None;
                         if let Some((launch, _)) = entries.last() {
                             let now = std::time::SystemTime::now()
                                 .duration_since(std::time::UNIX_EPOCH)
@@ -1157,6 +1248,15 @@ async fn begin_start(app: &Shared, id: &str, relaunch: bool) -> Api<StatusCode> 
                 .into(),
         ));
     }
+    if let Ok(metadata) = package_metadata(app, &s).await {
+        if !metadata.complete {
+            return Err(Error(StatusCode::CONFLICT, if metadata.repair_available() {
+                "Elsewhere installation is incomplete. Use Repair before starting."
+            } else {
+                "Elsewhere installation is incomplete. Manual package-manager recovery is required before starting."
+            }.into()));
+        }
+    }
     if info["State"]["Running"] == true {
         if !relaunch {
             return Err(Error(
@@ -1171,7 +1271,7 @@ async fn begin_start(app: &Shared, id: &str, relaunch: bool) -> Api<StatusCode> 
         s.started_ms = attempt_ms;
         s.upgrade_target = None;
         s.status = "preparing".into();
-        s.stage = "download".into();
+        s.stage = "queued".into();
         s.error = None;
         s.timings
             .retain(|k, _| k == "image" || k == "download" || k == "container");
@@ -1190,8 +1290,8 @@ async fn upgrade(State(app): State<Shared>, Path(id): Path<String>) -> Api<Statu
             "Only running or stopped sessions can be upgraded".into(),
         ));
     }
-    let installed = installed_version(&app, &s).await?;
-    if version_status(Some(&installed)) != "older" {
+    let installed = package_metadata(&app, &s).await?;
+    if !installed.can_install() {
         return Err(Error(
             StatusCode::CONFLICT,
             "Installed Elsewhere version does not need an upgrade".into(),
@@ -1199,7 +1299,10 @@ async fn upgrade(State(app): State<Shared>, Path(id): Path<String>) -> Api<Statu
     }
     let attempt_ms = now_ms().max(s.started_ms.saturating_add(1));
     app.change(&id, |s| {
-        s.installed_version = Some(installed);
+        s.repair_available = installed.repair_available();
+        s.version_error = None;
+        s.installed_version = installed.version;
+        s.upgrade_started_ms = 0;
         s.upgrade_target = Some(ELSEWHERE_VERSION.into());
         s.started_ms = attempt_ms;
         s.status = "upgrading".into();
@@ -1439,12 +1542,21 @@ async fn main() -> Result<()> {
             sessions: vec![],
         }
     };
+    let interrupted_downloads = db
+        .sessions
+        .iter()
+        .filter(|s| s.status == "upgrading" && matches!(s.stage.as_str(), "image" | "download"))
+        .map(|s| s.id.clone())
+        .collect::<Vec<_>>();
     for s in &mut db.sessions {
         if s.applied_settings.is_none() {
             s.applied_settings = Some(LaunchSettings::from(&*s));
         }
         if matches!(s.status.as_str(), "preparing" | "upgrading")
-            && matches!(s.stage.as_str(), "image" | "download" | "container")
+            && matches!(
+                s.stage.as_str(),
+                "image" | "download" | "container" | "queued"
+            )
         {
             s.status = "failed".into();
             s.error=Some("Innkeeper restarted during session preparation. Stop and start to retry an existing session; destroy and recreate a session whose container was not initialized.".into());
@@ -1474,6 +1586,21 @@ async fn main() -> Result<()> {
         bail!(
             "Loopback session binding requires a loopback INNKEEPER_DOCKER_HOST. In Compose use INNKEEPER_SESSION_BIND=0.0.0.0."
         );
+    }
+    for id in interrupted_downloads {
+        if let Ok(info) = app.owned(&id).await {
+            app.change(&id, |s| {
+                s.status = if info["State"]["Running"] == true {
+                    "running"
+                } else {
+                    "stopped"
+                }
+                .into();
+                s.upgrade_target = None;
+                s.error = None;
+            })
+            .await?;
+        }
     }
     app.save(&*app.db.lock().await)?;
     tokio::spawn(reconcile(app.clone()));
@@ -1561,13 +1688,16 @@ mod tests {
     #[test]
     fn installed_package_metadata_and_ordering() {
         assert_eq!(
-            debian_version("Package: elsewhere\nStatus: install ok installed\nVersion: 0.4.4-1\n")
-                .as_deref(),
+            debian_metadata("Package: elsewhere-extras\nStatus: install ok installed\nVersion: 9.0.0-1\n\nPackage: elsewhere\nStatus: install ok installed\nVersion: 0.4.4-1\n")
+                .unwrap().version.as_deref(),
             Some("0.4.4-1")
         );
         assert!(
-            debian_version("Package: elsewhere\nStatus: install ok unpacked\nVersion: 0.4.4-1\n")
-                .is_none()
+            debian_metadata(&format!(
+                "Package: elsewhere\nStatus: install ok unpacked\nVersion: {ELSEWHERE_VERSION}-1\n"
+            ))
+            .unwrap()
+            .repair_available()
         );
         assert_eq!(
             arch_version("%NAME%\nelsewhere\n\n%VERSION%\n0.4.4-1\n\n").as_deref(),
@@ -1578,5 +1708,18 @@ mod tests {
         assert!(release_version("v0.4.4.2-1") > release_version("0.4.4-1"));
         assert_eq!(version_status(Some(ELSEWHERE_VERSION)), "current");
         assert_eq!(version_status(None), "unknown");
+        assert_eq!(version_status(Some("0.5.0~rc1-1")), "unknown");
+        assert!(release_version("1:0.1.0-1") > release_version("0:99.0.0-1"));
+        assert!(arch_version("%NAME%\nelsewhere-extras\n\n%VERSION%\n1.0.0-1\n\n").is_none());
+        assert!(debian_metadata("invalid").is_err());
+        assert!(debian_metadata("Package: elsewhere\nStatus: install ok unpacked\n").is_err());
+        assert!(debian_metadata("").unwrap().repair_available());
+        for version in ["99.0.0-1", "0.5.0~rc1-1"] {
+            let metadata = debian_metadata(&format!(
+                "Package: elsewhere\nStatus: install ok unpacked\nVersion: {version}\n"
+            ))
+            .unwrap();
+            assert!(!metadata.can_install());
+        }
     }
 }

@@ -12,17 +12,17 @@ if [ -f /opt/innkeeper/operation ]; then
 fi
 # An ordinary container start cannot repeat a maintenance request.
 printf 'launch\n' > /opt/innkeeper/operation
+stage setup
+if [ ! -f /opt/innkeeper/setup-complete ]; then
+    sh /opt/innkeeper/setup.sh
+    touch /opt/innkeeper/setup-complete
+fi
 if [ "$mode" = upgrade ]; then
     stage upgrade
     sh /opt/innkeeper/install.sh "$expected"
     printf '%s\n' "$attempt" > /opt/innkeeper/upgrade-complete
     trap - EXIT
     exit 0
-fi
-stage setup
-if [ ! -f /opt/innkeeper/setup-complete ]; then
-    sh /opt/innkeeper/setup.sh
-    touch /opt/innkeeper/setup-complete
 fi
 mkdir -p /home/elsewhere/.config/elsewhere /tmp/runtime-elsewhere /tmp/.X11-unix
 chmod 1777 /tmp/.X11-unix

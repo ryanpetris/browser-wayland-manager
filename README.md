@@ -113,10 +113,15 @@ session stopped so the user can choose **Start**. Upgrading does not run the sta
 or apply pending desktop settings. It retains the container and session home volume.
 
 Installation failures remain visible in Logs and the session error. Stop a failed session
-before retrying Upgrade. Start selects a normal launch and never retries an interrupted
-upgrade automatically. An interrupted package-manager transaction may need repair before
-the installed application can run. Installation success requires a successful maintenance
-exit and verification of the installed version.
+before retrying Upgrade or Repair. Start selects a normal launch and never retries an interrupted
+upgrade automatically. **Repair** is available when package metadata confirms that Elsewhere is absent or
+incompletely installed at the expected version or an older version. Unreadable metadata and
+newer or unrecognized versions never authorize a repair. Repair installs the expected package
+and leaves the session stopped. A pending Debian package-manager journal requires manual
+recovery; Innkeeper reports this and blocks maintenance until it can read settled metadata.
+Installation success requires a successful maintenance exit and verification of the installed version. After 30 minutes of installation, Innkeeper
+shows a warning and continues monitoring completion. Restarting Innkeeper during an upgrade
+download reconnects to the existing desktop; the user can request Upgrade again.
 
 ## Hardware encoding
 

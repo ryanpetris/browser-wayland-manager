@@ -310,6 +310,8 @@ function App() {
                     {s.version_status === "newer" && ` · Newer than expected (${s.expected_version})`}
                     {s.installed_version && s.version_status === "unknown" && " · Version comparison unavailable"}
                   </p>
+                  {s.version_error && <p className="muted">{s.version_error}</p>}
+                  {s.repair_available && <p className="muted">Elsewhere installation is incomplete. Repair installs the expected package and leaves the session stopped.</p>}
                   {["preparing", "upgrading"].includes(s.status) && (
                     <p className="progress" role="status">
                       {s.status === "upgrading" ? "Upgrading" : "Preparing"}: {s.stage}…
@@ -317,7 +319,7 @@ function App() {
                   )}
                   {s.settings_pending && (
                     <p role="status" className="muted">
-                      Settings pending · {s.status === "stopped" ? "Applies on next start" : s.status === "preparing" ? "Applying on launch" : s.status === "failed" ? "Stop, then start to apply" : "Relaunch to apply"}
+                      Settings pending · {["stopped", "upgrading"].includes(s.status) ? "Applies on next start" : s.status === "preparing" ? "Applying on launch" : s.status === "failed" ? "Stop, then start to apply" : "Relaunch to apply"}
                     </p>
                   )}
                   {s.version_status === "older" && <p className="muted">Upgrade closes running applications and leaves the session stopped.</p>}
@@ -327,11 +329,11 @@ function App() {
                       onClick={() => { setEditError(""); setEditing(s); }}>
                       Edit settings
                     </button>
-                    {s.version_status === "older" && (
+                    {(s.version_status === "older" || s.repair_available) && (
                       <button disabled={busy[s.id] || !["running", "stopped"].includes(s.status)}
                         title="Install the expected Elsewhere version and leave the session stopped."
                         onClick={() => action(s, "upgrade")}>
-                        Upgrade
+                        {s.repair_available ? "Repair" : "Upgrade"}
                       </button>
                     )}
                     <button disabled={busy[s.id] || s.status !== "running"}

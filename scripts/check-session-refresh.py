@@ -174,9 +174,111 @@ exec sleep 10000
         )
         return result.returncode == 0 and len(result.stdout.splitlines()) == count
 
+    def restart_manager():
+        global manager
+        manager.send_signal(signal.SIGINT)
+        manager.wait(timeout=10)
+        manager = subprocess.Popen(["elsewhere-innkeeper"], env=env, stdout=log, stderr=log)
+        def online():
+            try: return api("/sessions")
+            except OSError: return False
+        wait(online)
+
+    def rejected_action(sid, action, code):
+        try:
+            api(f"/sessions/{sid}/{action}", "POST")
+            raise AssertionError(f"Unexpectedly accepted {action}")
+        except urllib.error.HTTPError as error:
+            assert error.code == code, error.code
+            return error.read().decode()
+
     try:
         wait(lambda: (data / "admin-token").exists())
         for distro in ("arch", "debian"):
+            # Creation failures retain their cause even when no container exists.
+            cached = package(distro, "first")
+            cached.unlink()
+            prepare_script = (recipes / "prepare.sh").read_text()
+            for script, cancelled in [("echo 'Fixture download failure'\nexit 1\n", False),
+                                      ("echo 'Fixture waiting'\nexec sleep 60\n", True)]:
+                (recipes / "prepare.sh").write_text(script)
+                probe = api("/sessions", "POST", {"name": "Creation recovery", "distribution": distro, "packages": []})["id"]
+                created.append(probe)
+                wait(lambda: "Fixture" in api(f"/sessions/{probe}/logs")["text"])
+                if cancelled:
+                    api(f"/sessions/{probe}/stop", "POST")
+                else:
+                    wait(lambda: state(probe)["status"] == "failed")
+                expected = state(probe)
+                time.sleep(4)
+                assert state(probe)["status"] == ("cancelled" if cancelled else "failed")
+                assert state(probe)["error"] == expected["error"]
+                api(f"/sessions/{probe}", "DELETE")
+                created.remove(probe)
+            (recipes / "prepare.sh").write_text(prepare_script)
+            package(distro, "first")
+            # A failed initial install has an explicit repair, with no install on Start.
+            installer = (recipes / "install.sh").read_text()
+            (recipes / "install.sh").write_text("echo 'Fixture create install failure'\nexit 7\n")
+            probe = api("/sessions", "POST", {"name": "Install recovery", "distribution": distro, "packages": []})["id"]
+            created.append(probe)
+            wait(lambda: state(probe)["status"] == "failed")
+            api(f"/sessions/{probe}/stop", "POST")
+            restart_manager()
+            wait(lambda: state(probe)["repair_available"])
+            rejected_action(probe, "start", 409)
+            (tools / "fail-cp").touch()
+            rejected_action(probe, "upgrade", 500)
+            (tools / "fail-cp").unlink()
+            (recipes / "install.sh").write_text(installer)
+            api(f"/sessions/{probe}/upgrade", "POST")
+            wait(lambda: state(probe)["status"] == "stopped", timeout=90)
+            assert not state(probe)["repair_available"]
+            api(f"/sessions/{probe}/start", "POST")
+            wait(lambda: state(probe)["status"] == "running")
+            probe_name = "innkeeper-" + probe
+            if distro == "arch":
+                run("docker", "exec", probe_name, "ln", "-s", "/tmp/unreadable", "/var/lib/pacman/local/elsewhere-invalid")
+                restart_manager()
+                wait(lambda: state(probe)["installed_version"] is None)
+                assert not state(probe)["repair_available"]
+                rejected_action(probe, "upgrade", 500)
+                run("docker", "exec", probe_name, "rm", "/var/lib/pacman/local/elsewhere-invalid")
+            else:
+                # A pending journal can supersede status; never authorize from stale metadata.
+                run("docker", "exec", probe_name, "sh", "-c", "printf 'Package: elsewhere\\nStatus: install ok unpacked\\nVersion: 99.0.0-1\\nArchitecture: amd64\\nDescription: Pending fixture\\n' > /var/lib/dpkg/updates/0000")
+                restart_manager()
+                wait(lambda: state(probe)["version_error"] is not None)
+                assert "journal is pending" in state(probe)["version_error"]
+                assert state(probe)["installed_version"] is None and not state(probe)["repair_available"]
+                rejected_action(probe, "upgrade", 500)
+                run("docker", "exec", probe_name, "rm", "/var/lib/dpkg/updates/0000")
+                # Settled dpkg metadata can describe an incomplete installation.
+                archive = package(distro, "first")
+                run("docker", "cp", str(archive), probe_name + ":/tmp/fixture.deb")
+                run("docker", "exec", probe_name, "dpkg", "--unpack", "/tmp/fixture.deb")
+                api(f"/sessions/{probe}/stop", "POST")
+                restart_manager()
+                wait(lambda: state(probe)["repair_available"])
+                assert state(probe)["installed_version"] == version + "-1"
+                api(f"/sessions/{probe}/upgrade", "POST")
+                wait(lambda: state(probe)["status"] == "stopped", timeout=90)
+                assert not state(probe)["repair_available"]
+                api(f"/sessions/{probe}/start", "POST")
+                wait(lambda: state(probe)["status"] == "running")
+                archive = package(distro, "newer", "99.0.0")
+                run("docker", "cp", str(archive), probe_name + ":/tmp/fixture.deb")
+                run("docker", "exec", probe_name, "dpkg", "--unpack", "/tmp/fixture.deb")
+                api(f"/sessions/{probe}/stop", "POST")
+                restart_manager()
+                wait(lambda: state(probe)["version_status"] == "newer")
+                assert not state(probe)["repair_available"]
+                rejected_action(probe, "upgrade", 409)
+                assert "Manual package-manager recovery" in rejected_action(probe, "start", 409)
+                package(distro, "first")
+            api(f"/sessions/{probe}", "DELETE")
+            created.remove(probe)
+            print(f"{distro}: cancelled/failed creation and explicit initial-install repair passed", flush=True)
             sid = api("/sessions", "POST", {"name": "Refresh " + distro,
                       "distribution": distro, "packages": []})["id"]
             created.append(sid)
@@ -200,15 +302,6 @@ exec sleep 10000
             run("docker", "exec", name, "sh", "-c", "printf 'exit 99\\n' > /opt/innkeeper/entrypoint.sh")
             api(f"/sessions/{sid}/stop", "POST")
             # Reload forces immediate metadata detection on the stopped container.
-            def restart_manager():
-                global manager
-                manager.send_signal(signal.SIGINT)
-                manager.wait(timeout=10)
-                manager = subprocess.Popen(["elsewhere-innkeeper"], env=env, stdout=log, stderr=log)
-                def online():
-                    try: return state(sid)
-                    except OSError: return False
-                wait(online)
             restart_manager()
             wait(lambda: state(sid)["version_status"] == "older")
             assert state(sid)["installed_version"] == "0.0.1-1"
@@ -263,8 +356,18 @@ exec sleep 10000
             api(f"/sessions/{sid}/start", "POST")
             wait(lambda: state(sid)["status"] == "running")
             assert run("docker", "exec", name, "cat", "/home/elsewhere/launches").splitlines()[-1] == "old-again"
-            # A manager restart during installation preserves maintenance, including timeout.
-            (recipes / "install.sh").write_text("echo 'Fixture install waiting'\nexec sleep 60\n")
+            # Restart during a running desktop's upgrade download reconnects without a relaunch.
+            cached.unlink()
+            (recipes / "prepare.sh").write_text("echo 'Fixture interrupted download'\nexec sleep 60\n")
+            api(f"/sessions/{sid}/upgrade", "POST")
+            wait(lambda: "Fixture interrupted download" in api(f"/sessions/{sid}/logs")["text"])
+            restart_manager()
+            wait(lambda: state(sid)["status"] == "running")
+            assert api(f"/sessions/{sid}/link", "POST")["url"]
+            assert run("docker", "exec", name, "cat", "/home/elsewhere/launches").splitlines()[-1] == "old-again"
+            package(distro, "upgraded")
+            # A slow maintenance operation stays monitored across restart and late success.
+            (recipes / "install.sh").write_text("echo 'Fixture install waiting'\nwhile [ ! -f /tmp/finish-upgrade ]; do sleep 1; done\n" + installer)
             api(f"/sessions/{sid}/upgrade", "POST")
             wait(lambda: "Fixture install waiting" in api(f"/sessions/{sid}/logs")["text"])
             manager.send_signal(signal.SIGINT)
@@ -272,20 +375,23 @@ exec sleep 10000
             interrupted = json.loads((data / "state.json").read_text())
             for session in interrupted["sessions"]:
                 if session["id"] == sid:
-                    session["started_ms"] = 1
+                    session["upgrade_started_ms"] = 1
             (data / "state.json").write_text(json.dumps(interrupted))
             manager = subprocess.Popen(["elsewhere-innkeeper"], env=env, stdout=log, stderr=log)
-            def timed_out():
-                try: return state(sid)["status"] == "failed"
+            def warned():
+                try: return "longer than 30 minutes" in (state(sid)["error"] or "")
                 except OSError: return False
-            wait(timed_out)
+            wait(warned)
             time.sleep(4)
-            assert state(sid)["status"] == "failed" and "timed out" in state(sid)["error"]
-            api(f"/sessions/{sid}/stop", "POST")
+            assert state(sid)["status"] == "upgrading"
+            assert run("docker", "inspect", name, "--format", "{{.State.Running}}") == "true"
+            run("docker", "exec", name, "touch", "/tmp/finish-upgrade")
+            wait(lambda: state(sid)["status"] == "stopped", timeout=90)
+            assert state(sid)["error"] is None
+            assert state(sid)["installed_version"] == version + "-1"
             (recipes / "install.sh").write_text(installer)
             api(f"/sessions/{sid}/start", "POST")
             wait(lambda: state(sid)["status"] == "running")
-            assert state(sid)["installed_version"] == "0.0.1-1"
             # Newer packages are shown as newer and cannot be downgraded by Upgrade or Start.
             install_fixture("newer", "99.0.0")
             api(f"/sessions/{sid}/stop", "POST")
