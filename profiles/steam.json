@@ -1,0 +1,13 @@
+{
+  "name": "Steam",
+  "distribution": "arch",
+  "packages": ["steam", "vulkan-intel", "vulkan-radeon", "lib32-vulkan-intel", "lib32-vulkan-radeon"],
+  "startup_command": "steam",
+  "screen_size": { "width": 1920, "height": 1080 },
+  "kiosk": false,
+  "docker_args": [
+    "--security-opt=seccomp=unconfined",
+    "--security-opt=apparmor=unconfined",
+    "--cap-add=SYS_ADMIN"
+  ]
+}
