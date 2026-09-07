@@ -230,9 +230,10 @@ to add GPU access to a container created without it.
 
 ## Session profiles
 
-In **New session**, expand **Import profile**, paste JSON, and choose **Apply profile**.
-Review the settings and choose **Create session**. See [the 0 A.D. profile](profiles/0ad.json)
-for a game that starts in kiosk mode at 1920 × 1080.
+The [profiles directory](profiles/) contains ready-to-import JSON session configurations.
+They specify packages, startup commands, display settings, and Docker options.
+In **New session**, expand **Import profile**, paste a profile's JSON, and choose **Apply profile**.
+Review the settings and choose **Create session**.
 
 Profiles support `name`, `distribution` (`arch` or `debian`), `packages` (an array of
 package names), `startup_command`, `screen_size`, `kiosk`, and `docker_args`. Omitted fields use the
@@ -245,20 +246,8 @@ Settings are saved with the session and retained when it is stopped and started.
 Expand **Advanced Docker options** in New session to configure the Elsewhere session
 container. Enter one complete `--flag=value` argument per line. Supported flags are
 `--security-opt`, `--cap-add`, and `--cap-drop`; each can appear more than once.
-Profiles and `POST /api/sessions` accept these options as a `docker_args` array:
-
-```json
-{
-  "docker_args": [
-    "--security-opt=seccomp=unconfined",
-    "--security-opt=apparmor=unconfined",
-    "--cap-add=SYS_ADMIN"
-  ]
-}
-```
-
-This fragment supplies the Docker options for a Steam session; configure its packages
-and startup command separately. Omitted `docker_args` defaults to an empty array.
+Profiles and `POST /api/sessions` accept these options as a `docker_args` array of
+complete `--flag=value` strings. Omitted `docker_args` defaults to an empty array.
 Arguments allow up to 64 entries and 4096 bytes total, with nonempty values and no NUL
 characters or line breaks. Innkeeper passes each argument directly to Docker without
 shell expansion. Docker validates option values; a rejected value appears in the
