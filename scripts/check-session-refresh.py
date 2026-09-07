@@ -11,6 +11,7 @@ from pathlib import Path
 import shutil
 import signal
 import ssl
+import sys
 import threading
 import subprocess
 import tempfile
@@ -84,6 +85,10 @@ os.execv('/usr/bin/docker', ['docker', *args])
 """)
     wrapper.chmod(0o755)
     version = tomllib.loads((Path(__file__).resolve().parent.parent / "Cargo.toml").read_text())["package"]["metadata"]["elsewhere"]["version"]
+    local_mode = sys.argv[1:] == ["--local"]
+    if local_mode:
+        version = "0.4.4.7.dirty"
+
 
     def package(distro, label, installed=None):
         installed = installed or version
@@ -141,6 +146,19 @@ exec sleep 10000
     env = dict(os.environ, PATH=f"{tools}:{os.environ['PATH']}",
                INNKEEPER_DATA_DIR=str(data), INNKEEPER_ASSETS_DIR=str(assets),
                INNKEEPER_LISTEN="127.0.0.1:29300", INNKEEPER_DOCKER_HOST="127.0.0.1")
+    if local_mode:
+        local = work / "local"
+        generation = local / "build-fixture"
+        generation.mkdir(parents=True)
+        for distro in ("arch", "debian"):
+            archive = package(distro, "first")
+            shutil.copyfile(archive, generation / archive.name)
+        manifest = local / "manifest.json"
+        manifest.write_text(json.dumps({"version": version, "directory": generation.name}))
+        env["INNKEEPER_LOCAL_ELSEWHERE"] = str(manifest)
+        curl = tools / "curl"
+        curl.write_text("#!/bin/sh\ntouch " + str(work / "download-attempt") + "\nexit 1\n")
+        curl.chmod(0o755)
     log = (work / "manager.log").open("w+")
     manager = subprocess.Popen(["elsewhere-innkeeper"], env=env, stdout=log, stderr=log)
     created = []
@@ -194,7 +212,51 @@ exec sleep 10000
 
     try:
         wait(lambda: (data / "admin-token").exists())
-        for distro in ("arch", "debian"):
+        if local_mode:
+            assert api("/sessions")["local_elsewhere"] is True
+            for distro in ("arch", "debian"):
+                sid = api("/sessions", "POST", {"name": "Local " + distro,
+                          "distribution": distro, "packages": []})["id"]
+                created.append(sid)
+                wait(lambda: state(sid)["status"] == "running", timeout=90)
+                assert state(sid)["expected_version"] == version
+                assert state(sid)["installed_version"] == version + "-1"
+                assert state(sid)["version_status"] == "current"
+                assert api(f"/sessions/{sid}/link", "POST")["url"]
+                rejected_action(sid, "upgrade", 409)
+                # Start uses the installed package even if the local artifact disappears.
+                cached = package(distro, "first")
+                artifact = generation / cached.name
+                artifact.unlink()
+                api(f"/sessions/{sid}/stop", "POST")
+                api(f"/sessions/{sid}/start", "POST")
+                wait(lambda: state(sid)["status"] == "running")
+                missing = api("/sessions", "POST", {"name": "Missing package",
+                              "distribution": distro, "packages": []})["id"]
+                created.append(missing)
+                wait(lambda: state(missing)["status"] == "failed")
+                assert "Local Elsewhere package is missing" in api(f"/sessions/{missing}/logs")["text"]
+                assert not (work / "download-attempt").exists()
+                api(f"/sessions/{missing}", "DELETE")
+                created.remove(missing)
+                invalid = subprocess.run(["elsewhere-innkeeper"], env=dict(env, INNKEEPER_DATA_DIR=str(work / "invalid")),
+                                         capture_output=True, text=True, timeout=10)
+                assert invalid.returncode != 0 and "Local Elsewhere package is missing" in invalid.stderr
+                shutil.copyfile(cached, artifact)
+                api(f"/sessions/{sid}/stop", "POST")
+                print(f"{distro}: local dirty package, exact version, token CLI, launch-only Start and missing-package failure passed", flush=True)
+            manager.send_signal(signal.SIGINT)
+            manager.wait(timeout=10)
+            env.pop("INNKEEPER_LOCAL_ELSEWHERE")
+            manager = subprocess.Popen(["elsewhere-innkeeper"], env=env, stdout=log, stderr=log)
+            def normal_mode():
+                try: return api("/sessions")["local_elsewhere"] is False
+                except OSError: return False
+            wait(normal_mode)
+            pinned = tomllib.loads((Path(__file__).resolve().parent.parent / "Cargo.toml").read_text())["package"]["metadata"]["elsewhere"]["version"]
+            assert all(s["expected_version"] == pinned for s in api("/sessions")["sessions"])
+            print("Ordinary startup restores the Cargo release pin without changing installed packages", flush=True)
+        for distro in (() if local_mode else ("arch", "debian")):
             # Creation failures retain their cause even when no container exists.
             cached = package(distro, "first")
             cached.unlink()

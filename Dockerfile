@@ -17,6 +17,8 @@ RUN if [ -z "$INNKEEPER_VERSION" ]; then unset INNKEEPER_VERSION; fi; \
     rustup component add rustfmt && cargo test --locked && cargo fmt --check && \
     test "$(target/release/elsewhere-innkeeper --version)" = "elsewhere-innkeeper ${INNKEEPER_VERSION:-0.0.0-dev}"
 
+RUN useradd --create-home local-check && runuser -u local-check -- python3 scripts/check-elsewhere-local.py
+
 FROM debian:trixie-slim
 RUN apt-get update && apt-get install -y --no-install-recommends docker-cli curl ca-certificates tini && rm -rf /var/lib/apt/lists/*
 COPY --from=build /src/target/release/elsewhere-innkeeper /usr/bin/elsewhere-innkeeper

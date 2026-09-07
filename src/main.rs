@@ -13,7 +13,7 @@ use std::{
     collections::HashMap,
     os::unix::fs::PermissionsExt,
     path::PathBuf,
-    sync::Arc,
+    sync::{Arc, OnceLock},
     time::{Duration, Instant},
 };
 use subtle::ConstantTimeEq;
@@ -24,6 +24,64 @@ use tokio::{
 use uuid::Uuid;
 
 const ELSEWHERE_VERSION: &str = env!("ELSEWHERE_VERSION");
+static LOCAL_ELSEWHERE: OnceLock<LocalElsewhere> = OnceLock::new();
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LocalElsewhere {
+    version: String,
+    directory: String,
+    #[serde(skip)]
+    root: PathBuf,
+}
+impl LocalElsewhere {
+    fn read(path: &std::path::Path) -> Result<Self> {
+        let mut local: Self =
+            serde_json::from_slice(&std::fs::read(path).context("Read local Elsewhere manifest")?)
+                .context("Parse local Elsewhere manifest")?;
+        let parts = local
+            .version
+            .strip_suffix(".dirty")
+            .unwrap_or(&local.version)
+            .split('.')
+            .collect::<Vec<_>>();
+        if parts.len() < 3
+            || parts
+                .iter()
+                .any(|p| p.is_empty() || !p.bytes().all(|c| c.is_ascii_digit()))
+        {
+            bail!("Invalid local Elsewhere package version");
+        }
+        if !local.directory.starts_with("build-")
+            || !local
+                .directory
+                .bytes()
+                .all(|c| c.is_ascii_alphanumeric() || c == b'-' || c == b'_')
+        {
+            bail!("Invalid local Elsewhere package directory");
+        }
+        local.root = path
+            .parent()
+            .context("Local manifest has no parent")?
+            .join(&local.directory);
+        for asset in [
+            format!("elsewhere-{}-1-x86_64.pkg.tar.zst", local.version),
+            format!("elsewhere_{}-1_amd64.deb", local.version),
+        ] {
+            let metadata = std::fs::metadata(local.root.join(asset))
+                .context("Local Elsewhere package is missing")?;
+            if !metadata.is_file() || metadata.len() == 0 {
+                bail!("Local Elsewhere package is empty or not a file");
+            }
+        }
+        Ok(local)
+    }
+}
+fn elsewhere_version() -> &'static str {
+    LOCAL_ELSEWHERE
+        .get()
+        .map(|local| local.version.as_str())
+        .unwrap_or(ELSEWHERE_VERSION)
+}
 const LABEL: &str = "io.innkeeper.owner";
 #[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
 struct Session {
@@ -217,11 +275,11 @@ async fn auth(State(app): State<Shared>, req: axum::extract::Request, next: Next
     response
 }
 fn public_session(s: &Session) -> serde_json::Value {
-    serde_json::json!({"id":s.id,"name":s.name,"distribution":s.distribution,"packages":s.packages,"startup_command":s.startup_command,"screen_size":s.screen_size,"kiosk":s.kiosk,"settings_pending":s.applied_settings.as_ref().is_some_and(|applied| *applied != LaunchSettings::from(s)),"installed_version":s.installed_version,"repair_available":s.repair_available,"version_error":s.version_error,"expected_version":ELSEWHERE_VERSION,"version_status":version_status(s.installed_version.as_deref()),"port":s.port,"status":s.status,"stage":s.stage,"error":s.error,"timings":s.timings})
+    serde_json::json!({"id":s.id,"name":s.name,"distribution":s.distribution,"packages":s.packages,"startup_command":s.startup_command,"screen_size":s.screen_size,"kiosk":s.kiosk,"settings_pending":s.applied_settings.as_ref().is_some_and(|applied| *applied != LaunchSettings::from(s)),"installed_version":s.installed_version,"repair_available":s.repair_available,"version_error":s.version_error,"expected_version":elsewhere_version(),"version_status":version_status(s.installed_version.as_deref()),"port":s.port,"status":s.status,"stage":s.stage,"error":s.error,"timings":s.timings})
 }
 async fn list(State(app): State<Shared>) -> Json<serde_json::Value> {
     Json(
-        serde_json::json!({"sessions":app.db.lock().await.sessions.iter().map(public_session).collect::<Vec<_>>(),"version":env!("INNKEEPER_VERSION")}),
+        serde_json::json!({"sessions":app.db.lock().await.sessions.iter().map(public_session).collect::<Vec<_>>(),"version":env!("INNKEEPER_VERSION"),"local_elsewhere":LOCAL_ELSEWHERE.get().is_some()}),
     )
 }
 #[derive(Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -419,7 +477,7 @@ async fn prepare(app: Shared, id: &str, new_container: bool, attempt_ms: u64) ->
     }
     let upgrading = initial.upgrade_target.is_some();
     let install = new_container || upgrading;
-    let version = ELSEWHERE_VERSION;
+    let version = elsewhere_version();
     if install {
         let architecture = docker(&["info", "--format", "{{.Architecture}}"]).await?;
         if !matches!(architecture.trim(), "x86_64" | "amd64") {
@@ -437,17 +495,21 @@ async fn prepare(app: Shared, id: &str, new_container: bool, attempt_ms: u64) ->
             format!("elsewhere_{version}-1_amd64.deb"),
         )
     };
-    let package = app
-        .dir
-        .join("packages")
-        .join(version)
-        .join("x86_64")
-        .join(&initial.distribution)
-        .join(&asset);
-    let url = format!(
-        "https://github.com/ryanpetris/elsewhere/releases/download/v{}/{}",
-        version, asset
-    );
+    let package = if let Some(local) = LOCAL_ELSEWHERE.get() {
+        local.root.join(&asset)
+    } else {
+        app.dir
+            .join("packages")
+            .join(version)
+            .join("x86_64")
+            .join(&initial.distribution)
+            .join(&asset)
+    };
+    let url = if LOCAL_ELSEWHERE.get().is_some() {
+        String::new()
+    } else {
+        format!("https://github.com/ryanpetris/elsewhere/releases/download/v{version}/{asset}")
+    };
     let started = Instant::now();
     if install
         && (!package.metadata().is_ok_and(|m| m.len() > 0)
@@ -492,7 +554,7 @@ async fn prepare(app: Shared, id: &str, new_container: bool, attempt_ms: u64) ->
             loop {
                 tokio::select! {
                     status = child.wait() => {
-                        if !status?.success() { bail!("Release download or base image pull failed. Open Logs for details."); }
+                        if !status?.success() { bail!("Package or base image preparation failed. Open Logs for details."); }
                         break;
                     }
                     _ = tokio::time::sleep(Duration::from_millis(500)) => {
@@ -639,9 +701,9 @@ async fn prepare(app: Shared, id: &str, new_container: bool, attempt_ms: u64) ->
         ])
         .await?;
         let operation = if upgrading {
-            format!("upgrade {attempt_ms} {ELSEWHERE_VERSION}-1\n")
+            format!("upgrade {attempt_ms} {version}-1\n")
         } else if new_container {
-            format!("create {attempt_ms} {ELSEWHERE_VERSION}-1\n")
+            format!("create {attempt_ms} {version}-1\n")
         } else {
             "launch\n".into()
         };
@@ -748,9 +810,15 @@ fn release_version(value: &str) -> Option<(u64, Vec<u64>, Vec<u64>)> {
     Some((epoch, version, numbers(revision)?))
 }
 fn version_status(installed: Option<&str>) -> &'static str {
+    compare_versions(installed, elsewhere_version())
+}
+fn compare_versions(installed: Option<&str>, expected: &str) -> &'static str {
+    if installed.is_some_and(|v| v == expected || v == format!("{expected}-1")) {
+        return "current";
+    }
     match installed
         .and_then(release_version)
-        .zip(release_version(ELSEWHERE_VERSION))
+        .zip(release_version(expected))
     {
         Some((installed, expected)) => match installed.cmp(&expected) {
             std::cmp::Ordering::Less => "older",
@@ -1000,8 +1068,9 @@ async fn reconcile(app: Shared) {
                         && completed
                         && inspect["State"]["ExitCode"] == 0
                         && version.as_deref().is_some_and(|v| {
-                            release_version(v)
-                                == s.upgrade_target.as_deref().and_then(release_version)
+                            s.upgrade_target.as_deref().is_some_and(|target| {
+                                compare_versions(Some(v), target) == "current"
+                            })
                         });
                     let _ = app.change(&s.id, |s| {
                         s.installed_version = version;
@@ -1303,7 +1372,7 @@ async fn upgrade(State(app): State<Shared>, Path(id): Path<String>) -> Api<Statu
         s.version_error = None;
         s.installed_version = installed.version;
         s.upgrade_started_ms = 0;
-        s.upgrade_target = Some(ELSEWHERE_VERSION.into());
+        s.upgrade_target = Some(elsewhere_version().into());
         s.started_ms = attempt_ms;
         s.status = "upgrading".into();
         s.stage = "download".into();
@@ -1509,6 +1578,13 @@ async fn main() -> Result<()> {
         println!("elsewhere-innkeeper {}", env!("INNKEEPER_VERSION"));
         return Ok(());
     }
+    if let Some(path) = std::env::var_os("INNKEEPER_LOCAL_ELSEWHERE") {
+        let local = LocalElsewhere::read(std::path::Path::new(&path))?;
+        eprintln!("Using local Elsewhere packages: {}", local.version);
+        LOCAL_ELSEWHERE
+            .set(local)
+            .expect("Local Elsewhere initialized once");
+    }
     let dir = PathBuf::from(env("INNKEEPER_DATA_DIR", "/var/lib/elsewhere-innkeeper"));
     std::fs::create_dir_all(&dir)?;
     std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700))?;
@@ -1686,6 +1762,42 @@ mod tests {
         );
     }
     #[test]
+    fn local_manifest_requires_valid_version_and_both_packages() {
+        let root = std::env::temp_dir().join(format!("innkeeper-local-{}", Uuid::new_v4()));
+        let generation = root.join("build-with_underscore");
+        std::fs::create_dir_all(&generation).unwrap();
+        let manifest = root.join("manifest.json");
+        std::fs::write(
+            &manifest,
+            r#"{"version":"0.4.4.7.dirty","directory":"build-with_underscore"}"#,
+        )
+        .unwrap();
+        assert!(LocalElsewhere::read(&manifest).is_err());
+        for asset in [
+            "elsewhere-0.4.4.7.dirty-1-x86_64.pkg.tar.zst",
+            "elsewhere_0.4.4.7.dirty-1_amd64.deb",
+        ] {
+            std::fs::write(generation.join(asset), "fixture").unwrap();
+        }
+        assert_eq!(
+            LocalElsewhere::read(&manifest).unwrap().version,
+            "0.4.4.7.dirty"
+        );
+        for (version, directory) in [
+            ("../escape", "build-with_underscore"),
+            ("0.4.4", "build-../escape"),
+        ] {
+            std::fs::write(
+                &manifest,
+                serde_json::to_vec(&serde_json::json!({"version":version,"directory":directory}))
+                    .unwrap(),
+            )
+            .unwrap();
+            assert!(LocalElsewhere::read(&manifest).is_err());
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
     fn installed_package_metadata_and_ordering() {
         assert_eq!(
             debian_metadata("Package: elsewhere-extras\nStatus: install ok installed\nVersion: 9.0.0-1\n\nPackage: elsewhere\nStatus: install ok installed\nVersion: 0.4.4-1\n")
@@ -1708,6 +1820,14 @@ mod tests {
         assert!(release_version("v0.4.4.2-1") > release_version("0.4.4-1"));
         assert_eq!(version_status(Some(ELSEWHERE_VERSION)), "current");
         assert_eq!(version_status(None), "unknown");
+        assert_eq!(
+            compare_versions(Some("0.4.4.7.dirty-1"), "0.4.4.7.dirty"),
+            "current"
+        );
+        assert_eq!(
+            compare_versions(Some("0.4.4.8.dirty-1"), "0.4.4.7.dirty"),
+            "unknown"
+        );
         assert_eq!(version_status(Some("0.5.0~rc1-1")), "unknown");
         assert!(release_version("1:0.1.0-1") > release_version("0:99.0.0-1"));
         assert!(arch_version("%NAME%\nelsewhere-extras\n\n%VERSION%\n1.0.0-1\n\n").is_none());

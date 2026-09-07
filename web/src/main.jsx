@@ -30,6 +30,7 @@ function enqueuePreview(task) {
 }
 function App() {
   const [version, setVersion] = useState("");
+  const [localElsewhere, setLocalElsewhere] = useState(false);
   const [token, setToken] = useState(
     () => sessionStorage.getItem("innkeeper-token") || "",
   );
@@ -80,6 +81,7 @@ function App() {
     if (currentToken.current !== token || signal?.aborted) return;
     setSessions(data.sessions);
     setVersion(data.version);
+    setLocalElsewhere(Boolean(data.local_elsewhere));
     setAuthenticated(true);
     sessionStorage.setItem("innkeeper-token", token);
   }
@@ -383,6 +385,7 @@ function App() {
         )}
         <footer>
           Elsewhere Innkeeper <code>v{version}</code>
+          {localElsewhere && " · Local Elsewhere build"}
         </footer>
       </main>
       {creating && (

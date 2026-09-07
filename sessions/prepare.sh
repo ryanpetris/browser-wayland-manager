@@ -4,6 +4,10 @@ umask 077
 url=$1
 package=$2
 image=$3
+if [ -z "$url" ] && [ ! -s "$package" ]; then
+    echo "Local Elsewhere package is missing; rebuild with make elsewhere-local." >&2
+    exit 1
+fi
 mkdir -p "$(dirname "$package")"
 if [ ! -s "$package" ]; then
     partial="$package.part"
@@ -15,6 +19,8 @@ if [ ! -s "$package" ]; then
     test -s "$partial"
     mv "$partial" "$package"
     trap - EXIT HUP INT TERM
+elif [ -z "$url" ]; then
+    echo "Using local $(basename "$package")"
 else
     echo "Using cached $(basename "$package")"
 fi
