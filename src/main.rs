@@ -1,5 +1,6 @@
 mod network;
 mod proxy;
+mod store;
 use anyhow::{Context, Result, bail};
 use axum::{
     Json, Router,
@@ -85,48 +86,31 @@ fn elsewhere_version() -> &'static str {
         .unwrap_or(ELSEWHERE_VERSION)
 }
 const LABEL: &str = "io.innkeeper.owner";
-#[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 struct Session {
     id: String,
     name: String,
     distribution: String,
     packages: Vec<String>,
-    #[serde(default)]
     startup_command: String,
-    #[serde(default)]
     screen_size: Option<ScreenSize>,
-    #[serde(default)]
     kiosk: bool,
-    #[serde(default)]
     applied_settings: Option<LaunchSettings>,
-    #[serde(default)]
     launching_settings: Option<LaunchSettings>,
     port: u16,
-    #[serde(default)]
     started_ms: u64,
     status: String,
     stage: String,
     error: Option<String>,
-    #[serde(default)]
     installed_version: Option<String>,
-    #[serde(default)]
     repair_available: bool,
-    #[serde(default)]
     version_error: Option<String>,
-    #[serde(default)]
     upgrade_started_ms: u64,
-    #[serde(default)]
     upgrade_target: Option<String>,
-    #[serde(default)]
     timings: HashMap<String, u64>,
 }
-#[derive(Serialize, Deserialize)]
-struct Database {
-    owner: String,
-    sessions: Vec<Session>,
-}
 struct App {
-    db: Mutex<Database>,
+    db: store::Store,
     dir: PathBuf,
     secret: String,
     network: network::Network,
@@ -181,20 +165,10 @@ fn private_write(path: &std::path::Path, bytes: &[u8]) -> Result<()> {
     Ok(())
 }
 impl App {
-    fn save(&self, db: &Database) -> Result<()> {
-        private_write(
-            &self.dir.join("state.json"),
-            &serde_json::to_vec_pretty(db)?,
-        )
-    }
     async fn session(&self, id: &str) -> Api<Session> {
         self.db
-            .lock()
-            .await
-            .sessions
-            .iter()
-            .find(|s| s.id == id)
-            .cloned()
+            .session(id)
+            .await?
             .ok_or(Error(StatusCode::NOT_FOUND, "Session not found".into()))
     }
     async fn lock(&self, id: &str) -> Arc<Mutex<()>> {
@@ -205,24 +179,13 @@ impl App {
             .or_default()
             .clone()
     }
-    async fn change(&self, id: &str, f: impl FnOnce(&mut Session)) -> Result<()> {
-        let mut db = self.db.lock().await;
-        if let Some(s) = db.sessions.iter_mut().find(|s| s.id == id) {
-            let before = s.clone();
-            f(s);
-            if *s != before {
-                if let Err(e) = self.save(&db) {
-                    *db.sessions.iter_mut().find(|s| s.id == id).unwrap() = before;
-                    return Err(e);
-                }
-            }
-        }
-        Ok(())
+    async fn change(&self, id: &str, f: impl FnOnce(&mut Session) + Send + 'static) -> Result<()> {
+        self.db.change(id, f).await
     }
     async fn owned(&self, id: &str) -> Result<serde_json::Value> {
         let raw = docker(&["inspect", &container(id)]).await?;
         let v: serde_json::Value = serde_json::from_str(&raw)?;
-        if v[0]["Config"]["Labels"][LABEL].as_str() != Some(&self.db.lock().await.owner) {
+        if v[0]["Config"]["Labels"][LABEL].as_str() != Some(&self.db.owner) {
             bail!("Container ownership does not match");
         }
         Ok(v[0].clone())
@@ -268,10 +231,10 @@ async fn auth(State(app): State<Shared>, req: axum::extract::Request, next: Next
 fn public_session(s: &Session) -> serde_json::Value {
     serde_json::json!({"id":s.id,"name":s.name,"distribution":s.distribution,"packages":s.packages,"startup_command":s.startup_command,"screen_size":s.screen_size,"kiosk":s.kiosk,"settings_pending":s.applied_settings.as_ref().is_some_and(|applied| *applied != LaunchSettings::from(s)),"installed_version":s.installed_version,"repair_available":s.repair_available,"version_error":s.version_error,"expected_version":elsewhere_version(),"version_status":version_status(s.installed_version.as_deref()),"port":s.port,"status":s.status,"stage":s.stage,"error":s.error,"timings":s.timings})
 }
-async fn list(State(app): State<Shared>) -> Json<serde_json::Value> {
-    Json(
-        serde_json::json!({"sessions":app.db.lock().await.sessions.iter().map(public_session).collect::<Vec<_>>(),"version":env!("INNKEEPER_VERSION"),"local_elsewhere":LOCAL_ELSEWHERE.get().is_some()}),
-    )
+async fn list(State(app): State<Shared>) -> Api<Json<serde_json::Value>> {
+    Ok(Json(
+        serde_json::json!({"sessions":app.db.list().await?.iter().map(public_session).collect::<Vec<_>>(),"version":env!("INNKEEPER_VERSION"),"local_elsewhere":LOCAL_ELSEWHERE.get().is_some()}),
+    ))
 }
 #[derive(Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
@@ -351,29 +314,41 @@ fn validate_settings(name: &str, screen_size: Option<ScreenSize>, command: &str)
     }
     Ok(())
 }
+// Finish accepted operations even if the client disconnects while SQLite is committing.
+async fn finish_operation<T: Send + 'static>(
+    work: impl std::future::Future<Output = Api<T>> + Send + 'static,
+) -> Api<T> {
+    tokio::spawn(work)
+        .await
+        .context("Session operation task failed")?
+}
+
 async fn settings(
     State(app): State<Shared>,
     Path(id): Path<String>,
     Json(input): Json<Settings>,
 ) -> Api<Json<serde_json::Value>> {
-    validate_settings(&input.name, input.screen_size, &input.startup_command)?;
-    let lock = app.lock(&id).await;
-    let _guard = lock.lock().await;
-    let s = app.session(&id).await?;
-    if !matches!(s.status.as_str(), "running" | "stopped") {
-        return Err(Error(
-            StatusCode::CONFLICT,
-            "Settings can be saved only for running or stopped sessions.".into(),
-        ));
-    }
-    app.change(&id, |s| {
-        s.name = input.name.trim().into();
-        s.screen_size = input.screen_size;
-        s.kiosk = input.kiosk;
-        s.startup_command = input.startup_command;
+    finish_operation(async move {
+        validate_settings(&input.name, input.screen_size, &input.startup_command)?;
+        let lock = app.lock(&id).await;
+        let _guard = lock.lock().await;
+        let s = app.session(&id).await?;
+        if !matches!(s.status.as_str(), "running" | "stopped") {
+            return Err(Error(
+                StatusCode::CONFLICT,
+                "Settings can be saved only for running or stopped sessions.".into(),
+            ));
+        }
+        app.change(&id, move |s| {
+            s.name = input.name.trim().into();
+            s.screen_size = input.screen_size;
+            s.kiosk = input.kiosk;
+            s.startup_command = input.startup_command;
+        })
+        .await?;
+        Ok(Json(public_session(&app.session(&id).await?)))
     })
-    .await?;
-    Ok(Json(public_session(&app.session(&id).await?)))
+    .await
 }
 fn launch_config(settings: &LaunchSettings) -> String {
     let size = settings
@@ -395,59 +370,55 @@ fn valid_package(p: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || b"@._+:-".contains(&b))
 }
 async fn create(State(app): State<Shared>, Json(input): Json<Create>) -> Api<impl IntoResponse> {
-    if !["arch", "debian"].contains(&input.distribution.as_str())
-        || input.name.trim().is_empty()
-        || input.name.chars().count() > 80
-        || input.packages.len() > 100
-        || !input.packages.iter().all(|p| valid_package(p))
-    {
-        return Err(Error(StatusCode::BAD_REQUEST, "Choose Arch or Debian, a name of 1–80 characters, and up to 100 valid package names. Shell syntax and options are not allowed.".into()));
-    }
-    validate_settings(&input.name, input.screen_size, &input.startup_command)?;
-    let mut db = app.db.lock().await;
-    let port = (19500..20000)
-        .find(|p| db.sessions.iter().all(|s| s.port != *p))
-        .ok_or(Error(
+    finish_operation(async move {
+        if !["arch", "debian"].contains(&input.distribution.as_str())
+            || input.name.trim().is_empty()
+            || input.name.chars().count() > 80
+            || input.packages.len() > 100
+            || !input.packages.iter().all(|p| valid_package(p))
+        {
+            return Err(Error(StatusCode::BAD_REQUEST, "Choose Arch or Debian, a name of 1–80 characters, and up to 100 valid package names. Shell syntax and options are not allowed.".into()));
+        }
+        validate_settings(&input.name, input.screen_size, &input.startup_command)?;
+        let s = Session {
+            id: Uuid::new_v4().to_string(),
+            name: input.name.trim().into(),
+            distribution: input.distribution,
+            packages: input.packages,
+            startup_command: input.startup_command.clone(),
+            screen_size: input.screen_size,
+            kiosk: input.kiosk,
+            applied_settings: Some(LaunchSettings {
+                screen_size: input.screen_size,
+                kiosk: input.kiosk,
+                startup_command: input.startup_command.clone(),
+            }),
+            launching_settings: None,
+            port: 0,
+            started_ms: now_ms(),
+            status: "preparing".into(),
+            stage: "download".into(),
+            error: None,
+            installed_version: None,
+            repair_available: false,
+            version_error: None,
+            upgrade_started_ms: 0,
+            upgrade_target: None,
+            timings: HashMap::new(),
+        };
+        let s = app.db.create(s).await?.ok_or(Error(
             StatusCode::CONFLICT,
             "Session port range is full".into(),
         ))?;
-    let s = Session {
-        id: Uuid::new_v4().to_string(),
-        name: input.name.trim().into(),
-        distribution: input.distribution,
-        packages: input.packages,
-        startup_command: input.startup_command.clone(),
-        screen_size: input.screen_size,
-        kiosk: input.kiosk,
-        applied_settings: Some(LaunchSettings {
-            screen_size: input.screen_size,
-            kiosk: input.kiosk,
-            startup_command: input.startup_command.clone(),
-        }),
-        launching_settings: None,
-        port,
-        started_ms: now_ms(),
-        status: "preparing".into(),
-        stage: "download".into(),
-        error: None,
-        installed_version: None,
-        repair_available: false,
-        version_error: None,
-        upgrade_started_ms: 0,
-        upgrade_target: None,
-        timings: HashMap::new(),
-    };
-    db.sessions.push(s.clone());
-    app.save(&db)?;
-    drop(db);
-    prepare_in_background(app, s.id.clone(), true, s.started_ms);
-    Ok((StatusCode::ACCEPTED, Json(public_session(&s))))
+        prepare_in_background(app, s.id.clone(), true, s.started_ms);
+        Ok((StatusCode::ACCEPTED, Json(public_session(&s))))
+    }).await
 }
 fn prepare_in_background(app: Shared, id: String, new_container: bool, attempt_ms: u64) {
     tokio::spawn(async move {
         if let Err(e) = prepare(app.clone(), &id, new_container, attempt_ms).await {
             let _ = app
-                .change(&id, |s| {
+                .change(&id, move |s| {
                     if matches!(s.status.as_str(), "preparing" | "upgrading")
                         && s.started_ms == attempt_ms
                     {
@@ -572,7 +543,7 @@ async fn prepare(app: Shared, id: &str, new_container: bool, attempt_ms: u64) ->
         return Ok(());
     }
     let result: Result<()> = async {
-        app.change(id, |s| {
+        app.change(id, move |s| {
             s.stage = "container".into();
             s.timings
                 .insert("download".into(), started.elapsed().as_millis() as u64);
@@ -580,7 +551,7 @@ async fn prepare(app: Shared, id: &str, new_container: bool, attempt_ms: u64) ->
         .await?;
         let container_started = Instant::now();
         if new_container {
-            let owner = app.db.lock().await.owner.clone();
+            let owner = app.db.owner.clone();
             let label = format!("{LABEL}={owner}");
             docker(&["volume", "create", "--label", &label, &volume(id)]).await?;
             let tcp = format!("127.0.0.1:{}:19443/tcp", s.port);
@@ -705,7 +676,7 @@ async fn prepare(app: Shared, id: &str, new_container: bool, attempt_ms: u64) ->
         };
         copy_text(&app, id, "operation", &operation, 0o600).await?;
         if upgrading {
-            app.change(id, |s| {
+            app.change(id, move |s| {
                 s.stage = "upgrade".into();
                 s.upgrade_started_ms = now_ms();
             })
@@ -736,10 +707,10 @@ async fn prepare(app: Shared, id: &str, new_container: bool, attempt_ms: u64) ->
             &format!("{}:/opt/innkeeper/start.sh", container(id)),
         ])
         .await?;
-        app.change(id, |s| s.launching_settings = Some(launch))
+        app.change(id, move |s| s.launching_settings = Some(launch))
             .await?;
         docker(&["start", &container(id)]).await?;
-        app.change(id, |s| {
+        app.change(id, move |s| {
             s.timings.insert(
                 "container".into(),
                 container_started.elapsed().as_millis() as u64,
@@ -750,9 +721,10 @@ async fn prepare(app: Shared, id: &str, new_container: bool, attempt_ms: u64) ->
     }
     .await;
     if let Err(e) = &result {
-        app.change(id, |s| {
+        let error = redact(&e.to_string());
+        app.change(id, move |s| {
             s.status = "failed".into();
-            s.error = Some(redact(&e.to_string()));
+            s.error = Some(error);
         })
         .await?;
     }
@@ -1008,7 +980,14 @@ async fn viewer_get(app: &App, id: &str, url: &str) -> Result<reqwest::Response>
 async fn reconcile(app: Shared) {
     let mut version_checks = HashMap::<String, Instant>::new();
     loop {
-        let sessions = app.db.lock().await.sessions.clone();
+        let sessions = match app.db.list().await {
+            Ok(sessions) => sessions,
+            Err(error) => {
+                eprintln!("Read sessions for reconciliation: {error:#}");
+                tokio::time::sleep(Duration::from_secs(3)).await;
+                continue;
+            }
+        };
         version_checks.retain(|id, _| sessions.iter().any(|s| &s.id == id));
         for s in sessions {
             let lock = app.lock(&s.id).await;
@@ -1027,7 +1006,7 @@ async fn reconcile(app: Shared) {
                 Ok(v) => v,
                 Err(e) => {
                     let _ = app
-                        .change(&s.id, |s| {
+                        .change(&s.id, move |s| {
                             if s.status == "failed" && s.error.is_some() {
                                 return;
                             }
@@ -1072,7 +1051,7 @@ async fn reconcile(app: Shared) {
                                 compare_versions(Some(v), target) == "current"
                             })
                         });
-                    let _ = app.change(&s.id, |s| {
+                    let _ = app.change(&s.id, move |s| {
                         s.installed_version = version;
                         s.repair_available = repair_available;
                         s.version_error = version_error;
@@ -1086,7 +1065,7 @@ async fn reconcile(app: Shared) {
                     && s.error.is_none()
                 {
                     let _ = app
-                        .change(&s.id, |s| {
+                        .change(&s.id, move |s| {
                             s.error = Some(
                                 "Upgrade is taking longer than 30 minutes. Still monitoring; inspect Logs before stopping it.".into(),
                             );
@@ -1104,7 +1083,7 @@ async fn reconcile(app: Shared) {
                 let version_error = metadata.as_ref().err().map(|e| redact(&e.to_string()));
                 let metadata = metadata.ok();
                 let _ = app
-                    .change(&s.id, |s| {
+                    .change(&s.id, move |s| {
                         s.repair_available = metadata
                             .as_ref()
                             .is_some_and(PackageMetadata::repair_available);
@@ -1116,7 +1095,7 @@ async fn reconcile(app: Shared) {
             }
             if s.status == "running" && running {
                 if s.error.is_some() {
-                    let _ = app.change(&s.id, |s| s.error = None).await;
+                    let _ = app.change(&s.id, move |s| s.error = None).await;
                 }
                 continue;
             }
@@ -1142,13 +1121,13 @@ async fn reconcile(app: Shared) {
                 s.stage.clone()
             };
             if !running && inspect["State"]["Status"] == "created" {
-                let _=app.change(&s.id,|s| {s.status="failed".into();s.error=Some("Container initialization was interrupted. Destroy this session and create it again.".into());}).await;
+                let _=app.change(&s.id,move |s| {s.status="failed".into();s.error=Some("Container initialization was interrupted. Destroy this session and create it again.".into());}).await;
                 continue;
             }
             if !running {
                 let code = inspect["State"]["ExitCode"].as_i64().unwrap_or(-1);
                 let normal = [0, 137, 143].contains(&code) && inspect["State"]["OOMKilled"] != true;
-                let _ = app.change(&s.id, |s| {
+                let _ = app.change(&s.id, move |s| {
                     s.stage = stage;
                     s.status = if normal { "stopped" } else { "failed" }.into();
                     s.error = if normal {None} else {Some(format!("Container exited with code {code} during {}. Open Logs for details.", s.stage))};
@@ -1202,7 +1181,7 @@ async fn reconcile(app: Shared) {
                 })
                 .collect::<Vec<_>>();
             let _ = app
-                .change(&s.id, |s| {
+                .change(&s.id, move |s| {
                     if !stage.is_empty() {
                         s.stage = stage.clone();
                     }
@@ -1257,47 +1236,56 @@ async fn reconcile(app: Shared) {
     }
 }
 async fn stop(State(app): State<Shared>, Path(id): Path<String>) -> Api<StatusCode> {
-    let lock = app.lock(&id).await;
-    let _guard = lock.lock().await;
-    let s = app.session(&id).await?;
-    let downloading = matches!(s.stage.as_str(), "image" | "download");
-    let has_container = !docker(&[
-        "ps",
-        "-aq",
-        "--filter",
-        &format!("name=^/{}$", container(&id)),
-    ])
-    .await?
-    .trim()
-    .is_empty();
-    if !downloading || has_container {
-        let info = app.owned(&id).await?;
-        if info["State"]["Running"] == true {
-            docker(&["stop", "--time", "15", &container(&id)]).await?;
+    finish_operation(async move {
+        let lock = app.lock(&id).await;
+        let _guard = lock.lock().await;
+        let s = app.session(&id).await?;
+        let downloading = matches!(s.stage.as_str(), "image" | "download");
+        let has_container = !docker(&[
+            "ps",
+            "-aq",
+            "--filter",
+            &format!("name=^/{}$", container(&id)),
+        ])
+        .await?
+        .trim()
+        .is_empty();
+        if !downloading || has_container {
+            let info = app.owned(&id).await?;
+            if info["State"]["Running"] == true {
+                docker(&["stop", "--time", "15", &container(&id)]).await?;
+            }
         }
-    }
-    app.change(&id, |s| {
-        s.upgrade_target = None;
-        s.error = None;
-        s.status = if downloading && !has_container {
-            "cancelled"
-        } else {
-            "stopped"
-        }
-        .into();
+        app.change(&id, move |s| {
+            s.upgrade_target = None;
+            s.error = None;
+            s.status = if downloading && !has_container {
+                "cancelled"
+            } else {
+                "stopped"
+            }
+            .into();
+        })
+        .await?;
+        Ok(StatusCode::NO_CONTENT)
     })
-    .await?;
-    Ok(StatusCode::NO_CONTENT)
+    .await
 }
 async fn start(State(app): State<Shared>, Path(id): Path<String>) -> Api<StatusCode> {
-    let lock = app.lock(&id).await;
-    let _guard = lock.lock().await;
-    begin_start(&app, &id, false).await
+    finish_operation(async move {
+        let lock = app.lock(&id).await;
+        let _guard = lock.lock().await;
+        begin_start(&app, &id, false).await
+    })
+    .await
 }
 async fn relaunch(State(app): State<Shared>, Path(id): Path<String>) -> Api<StatusCode> {
-    let lock = app.lock(&id).await;
-    let _guard = lock.lock().await;
-    begin_start(&app, &id, true).await
+    finish_operation(async move {
+        let lock = app.lock(&id).await;
+        let _guard = lock.lock().await;
+        begin_start(&app, &id, true).await
+    })
+    .await
 }
 async fn begin_start(app: &Shared, id: &str, relaunch: bool) -> Api<StatusCode> {
     let s = app.session(id).await?;
@@ -1339,7 +1327,7 @@ async fn begin_start(app: &Shared, id: &str, relaunch: bool) -> Api<StatusCode> 
         docker(&["stop", "--time", "15", &container(id)]).await?;
     }
     let attempt_ms = now_ms().max(s.started_ms.saturating_add(1));
-    app.change(&id, |s| {
+    app.change(&id, move |s| {
         s.started_ms = attempt_ms;
         s.upgrade_target = None;
         s.status = "preparing".into();
@@ -1353,83 +1341,87 @@ async fn begin_start(app: &Shared, id: &str, relaunch: bool) -> Api<StatusCode> 
     Ok(StatusCode::ACCEPTED)
 }
 async fn upgrade(State(app): State<Shared>, Path(id): Path<String>) -> Api<StatusCode> {
-    let lock = app.lock(&id).await;
-    let _guard = lock.lock().await;
-    let s = app.session(&id).await?;
-    if !matches!(s.status.as_str(), "running" | "stopped") {
-        return Err(Error(
-            StatusCode::CONFLICT,
-            "Only running or stopped sessions can be upgraded".into(),
-        ));
-    }
-    let installed = package_metadata(&app, &s).await?;
-    if !installed.can_install() {
-        return Err(Error(
-            StatusCode::CONFLICT,
-            "Installed Elsewhere version does not need an upgrade".into(),
-        ));
-    }
-    let attempt_ms = now_ms().max(s.started_ms.saturating_add(1));
-    app.change(&id, |s| {
-        s.repair_available = installed.repair_available();
-        s.version_error = None;
-        s.installed_version = installed.version;
-        s.upgrade_started_ms = 0;
-        s.upgrade_target = Some(elsewhere_version().into());
-        s.started_ms = attempt_ms;
-        s.status = "upgrading".into();
-        s.stage = "download".into();
-        s.error = None;
-    })
-    .await?;
-    prepare_in_background(app.clone(), id, false, attempt_ms);
-    Ok(StatusCode::ACCEPTED)
-}
-async fn destroy(State(app): State<Shared>, Path(id): Path<String>) -> Api<StatusCode> {
-    let lock = app.lock(&id).await;
-    let _guard = lock.lock().await;
-    app.session(&id).await?;
-    let ids = docker(&[
-        "ps",
-        "-aq",
-        "--filter",
-        &format!("name=^/{}$", container(&id)),
-    ])
-    .await?;
-    if !ids.trim().is_empty() {
-        app.owned(&id).await?;
-        docker(&["rm", "-f", &container(&id)]).await?;
-    }
-    let vols = docker(&[
-        "volume",
-        "ls",
-        "-q",
-        "--filter",
-        &format!("name=^{}$", volume(&id)),
-    ])
-    .await?;
-    if !vols.trim().is_empty() {
-        let raw = docker(&["volume", "inspect", &volume(&id)]).await?;
-        let v: serde_json::Value =
-            serde_json::from_str(&raw).context("Invalid volume inspection")?;
-        if v[0]["Labels"][LABEL].as_str() != Some(&app.db.lock().await.owner) {
+    finish_operation(async move {
+        let lock = app.lock(&id).await;
+        let _guard = lock.lock().await;
+        let s = app.session(&id).await?;
+        if !matches!(s.status.as_str(), "running" | "stopped") {
             return Err(Error(
                 StatusCode::CONFLICT,
-                "Volume ownership does not match".into(),
+                "Only running or stopped sessions can be upgraded".into(),
             ));
         }
-        docker(&["volume", "rm", &volume(&id)]).await?;
-    }
-    let mut db = app.db.lock().await;
-    db.sessions.retain(|s| s.id != id);
-    app.save(&db)?;
-    let _ = std::fs::remove_file(app.dir.join(format!("{id}.build.log")));
-    let _ = std::fs::remove_dir_all(app.dir.join(format!("{id}.seed")));
-    let _ = std::fs::remove_file(app.dir.join(format!("{id}.stage")));
-    app.preview_times.lock().await.remove(&id);
-    // Keep the action mutex until outstanding requests have released their Arc.
-    // Reusing a different mutex before then would let a stale request race cleanup.
-    Ok(StatusCode::NO_CONTENT)
+        let installed = package_metadata(&app, &s).await?;
+        if !installed.can_install() {
+            return Err(Error(
+                StatusCode::CONFLICT,
+                "Installed Elsewhere version does not need an upgrade".into(),
+            ));
+        }
+        let attempt_ms = now_ms().max(s.started_ms.saturating_add(1));
+        app.change(&id, move |s| {
+            s.repair_available = installed.repair_available();
+            s.version_error = None;
+            s.installed_version = installed.version;
+            s.upgrade_started_ms = 0;
+            s.upgrade_target = Some(elsewhere_version().into());
+            s.started_ms = attempt_ms;
+            s.status = "upgrading".into();
+            s.stage = "download".into();
+            s.error = None;
+        })
+        .await?;
+        prepare_in_background(app.clone(), id, false, attempt_ms);
+        Ok(StatusCode::ACCEPTED)
+    })
+    .await
+}
+async fn destroy(State(app): State<Shared>, Path(id): Path<String>) -> Api<StatusCode> {
+    finish_operation(async move {
+        let lock = app.lock(&id).await;
+        let _guard = lock.lock().await;
+        app.session(&id).await?;
+        let ids = docker(&[
+            "ps",
+            "-aq",
+            "--filter",
+            &format!("name=^/{}$", container(&id)),
+        ])
+        .await?;
+        if !ids.trim().is_empty() {
+            app.owned(&id).await?;
+            docker(&["rm", "-f", &container(&id)]).await?;
+        }
+        let vols = docker(&[
+            "volume",
+            "ls",
+            "-q",
+            "--filter",
+            &format!("name=^{}$", volume(&id)),
+        ])
+        .await?;
+        if !vols.trim().is_empty() {
+            let raw = docker(&["volume", "inspect", &volume(&id)]).await?;
+            let v: serde_json::Value =
+                serde_json::from_str(&raw).context("Invalid volume inspection")?;
+            if v[0]["Labels"][LABEL].as_str() != Some(&app.db.owner) {
+                return Err(Error(
+                    StatusCode::CONFLICT,
+                    "Volume ownership does not match".into(),
+                ));
+            }
+            docker(&["volume", "rm", &volume(&id)]).await?;
+        }
+        app.db.delete(&id).await?;
+        let _ = std::fs::remove_file(app.dir.join(format!("{id}.build.log")));
+        let _ = std::fs::remove_dir_all(app.dir.join(format!("{id}.seed")));
+        let _ = std::fs::remove_file(app.dir.join(format!("{id}.stage")));
+        app.preview_times.lock().await.remove(&id);
+        // Keep the action mutex until outstanding requests have released their Arc.
+        // Reusing a different mutex before then would let a stale request race cleanup.
+        Ok(StatusCode::NO_CONTENT)
+    })
+    .await
 }
 async fn link(State(app): State<Shared>, Path(id): Path<String>) -> Api<Json<serde_json::Value>> {
     let s = app.session(&id).await?;
@@ -1607,37 +1599,28 @@ async fn main() -> Result<()> {
     if secret.len() < 32 {
         bail!("Administrator token must be at least 32 characters");
     }
-    let db_path = dir.join("state.json");
-    let mut db: Database = if db_path.exists() {
-        serde_json::from_slice(&std::fs::read(&db_path)?)?
-    } else {
-        Database {
-            owner: Uuid::new_v4().to_string(),
-            sessions: vec![],
-        }
-    };
-    let interrupted_downloads = db
-        .sessions
+    let db = store::Store::open(dir.join("state.sqlite3")).await?;
+    let sessions = db.list().await?;
+    let interrupted_downloads = sessions
         .iter()
         .filter(|s| s.status == "upgrading" && matches!(s.stage.as_str(), "image" | "download"))
         .map(|s| s.id.clone())
         .collect::<Vec<_>>();
-    for s in &mut db.sessions {
-        if s.applied_settings.is_none() {
-            s.applied_settings = Some(LaunchSettings::from(&*s));
-        }
+    for s in &sessions {
         if matches!(s.status.as_str(), "preparing" | "upgrading")
             && matches!(
                 s.stage.as_str(),
                 "image" | "download" | "container" | "queued"
             )
         {
-            s.status = "failed".into();
-            s.error=Some("Innkeeper restarted during session preparation. Stop and start to retry an existing session; destroy and recreate a session whose container was not initialized.".into());
+            db.change(&s.id, move |s| {
+                s.status = "failed".into();
+                s.error=Some("Innkeeper restarted during session preparation. Stop and start to retry an existing session; destroy and recreate a session whose container was not initialized.".into());
+            }).await?;
         }
     }
     let app = Arc::new(App {
-        db: Mutex::new(db),
+        db,
         dir,
         secret,
         network: network::Network::discover().await?,
@@ -1658,7 +1641,7 @@ async fn main() -> Result<()> {
     });
     for id in interrupted_downloads {
         if let Ok(info) = app.owned(&id).await {
-            app.change(&id, |s| {
+            app.change(&id, move |s| {
                 s.status = if info["State"]["Running"] == true {
                     "running"
                 } else {
@@ -1671,7 +1654,6 @@ async fn main() -> Result<()> {
             .await?;
         }
     }
-    app.save(&*app.db.lock().await)?;
     tokio::spawn(reconcile(app.clone()));
     let api = Router::new()
         .route("/sessions", get(list).post(create))

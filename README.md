@@ -69,7 +69,21 @@ Restart Innkeeper after renewing certificates. An external HTTPS gateway must co
 
 After changing Compose configuration, rebuild and recreate Innkeeper with `docker compose up -d --build`.
 
-Management access grants Docker control. Treat the administrator token and Docker socket as host-administrator credentials. Elsewhere owns session credentials in each session home volume. Innkeeper retrieves them on demand and does not store copies in `state.json`. Back up the complete Innkeeper data directory together with session volumes. The frontend retains the administrator token only in the tab's session storage. No cross-origin API access is enabled.
+Management access grants Docker control. Treat the administrator token and Docker socket as host-administrator credentials. Elsewhere owns session credentials in each session home volume. Innkeeper retrieves them on demand and does not store copies in the SQLite database. Back up the complete Innkeeper data directory together with session volumes. The frontend retains the administrator token only in the tab's session storage. No cross-origin API access is enabled.
+
+Session state lives in `state.sqlite3` inside the data directory. SQLite stores sessions, launch
+settings, package lists, timings, and the ownership ID in relational tables. Each session update is
+transactional. The database uses WAL with full synchronization; the data directory is private and
+the database is readable only by its owner.
+
+Schema migrations are embedded in the binary and applied by `rusqlite_migration` before Innkeeper
+starts serving requests. Startup fails on migration errors or a schema newer than the binary
+supports. Add schema changes as new migrations; published migrations keep their original contents
+and ordering. The migration library owns SQLite's `user_version` field.
+
+Stop Innkeeper before copying its data directory for a backup or restore. Keep the database and any
+`state.sqlite3-wal` and `state.sqlite3-shm` files together, along with session volumes. Restoring the
+ownership ID together with its sessions preserves Docker ownership checks.
 
 ## Session lifecycle
 
@@ -320,8 +334,8 @@ docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
   innkeeper-proxy-rig /check-proxy.py
 ```
 
-The proxy fixture creates two disposable containers and checks TLS, UUID routing, ownership, authorization, a large upload, an unbuffered stream longer than eight seconds, WebSocket binary/ping/close frames, and restart routing. It uses UDP ports `29550` and `29551`. Set `PROXY_TEST_HTTP=1` to check the plaintext listener used behind an HTTPS gateway. Set `PROXY_TEST_TIMEOUTS=1` to check a stalled backend and an active upload longer than the response-header idle timeout. Repeat on a custom bridge by adding `--network NETWORK -e PROXY_TEST_NETWORK=NETWORK`, or check native mode with `--network host -e INNKEEPER_IN_DOCKER=0`.
+The proxy fixture creates two disposable containers and checks TLS, UUID routing, ownership, authorization, a large upload, an unbuffered stream longer than eight seconds, WebSocket binary/ping/close frames, and restart routing. It selects two ports in `19500`–`19999` that are not published by running Docker containers. Set `PROXY_TEST_HTTP=1` to check the plaintext listener used behind an HTTPS gateway. Set `PROXY_TEST_TIMEOUTS=1` to check a stalled backend and an active upload longer than the response-header idle timeout. Repeat on a custom bridge by adding `--network NETWORK -e PROXY_TEST_NETWORK=NETWORK`, or check native mode with `--network host -e INNKEEPER_IN_DOCKER=0`.
 
-`scripts/check-proxy-desktops.py` checks fresh real Arch and Debian packages through the production creation and launch flow. Run it in `proxy-rig` with the Docker socket, the session scripts, a writable directory at `/work`, and a local package manifest and artifacts at `/local`. Mount `/dev/dri` to exercise the host GPU. Publish `127.0.0.1:29301:29301` for a local browser rig. Leave `INNKEEPER_RTC_ADDR` unset to check hostname fallback, or set it to check an explicit override. It reserves ports used by unrelated Docker containers and removes only its own sessions.
+`scripts/check-proxy-desktops.py` checks fresh real Arch and Debian packages through the production creation and launch flow. Mount the script at `/check.py`; `proxy-rig` includes its SQLite fixture helper. Run it in `proxy-rig` with the Docker socket, the session scripts, a writable directory at `/work`, and a local package manifest and artifacts at `/local`. Mount `/dev/dri` to exercise the host GPU. Publish `127.0.0.1:29301:29301` for a local browser rig. Leave `INNKEEPER_RTC_ADDR` unset to check hostname fallback, or set it to check an explicit override. It reserves ports used by unrelated Docker containers and removes only its own sessions.
 
 For browser checks, set `PROXY_WAIT_BROWSER=1` on that desktop rig, build the `proxy-browser` target, and run `node /src/scripts/check-proxy-browser.mjs` with host networking and the same `/work` directory after `/work/browser.json` appears. Set `PROXY_BROWSER_ORIGIN=https://localhost:29301` to exercise hostname resolution. This covers simultaneous desktops, Open and token isolation, decoded frames, file transfers, MCP, terminals, viewer access, direct WebRTC and WebSocket fallback. The browser writes `/work/browser-done` so the desktop rig can clean up.

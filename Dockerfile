@@ -33,6 +33,7 @@ FROM runtime AS proxy-rig
 RUN apt-get update && apt-get install -y --no-install-recommends python3 openssl zstd \
     && rm -rf /var/lib/apt/lists/* && useradd -m elsewhere
 COPY --chmod=755 scripts/check-proxy.py /check-proxy.py
+COPY scripts/sqlite_fixture.py /sqlite_fixture.py
 RUN ln -s /check-proxy.py /usr/local/bin/elsewhere
 
 FROM web AS proxy-browser

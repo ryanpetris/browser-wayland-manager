@@ -6,6 +6,7 @@ Uses tiny real Arch/Debian packages and disposable sessions to check upgrades an
 import concurrent.futures
 import http.server
 import json
+from sqlite_fixture import database, settings as stored_settings, reject_updates
 import os
 from pathlib import Path
 import shutil
@@ -41,8 +42,8 @@ with tempfile.TemporaryDirectory(prefix="innkeeper-refresh-") as temporary:
     class Ready(http.server.BaseHTTPRequestHandler):
         def do_GET(self):
             try:
-                records = json.loads((data / "state.json").read_text())["sessions"]
-                sid = next(s["id"] for s in records if s["port"] == self.server.server_port)
+                with database(data) as db:
+                    sid = db.execute("SELECT id FROM sessions WHERE port = ?", [self.server.server_port]).fetchone()[0]
                 token = run("docker", "exec", "--user", "elsewhere", "--env", "HOME=/home/elsewhere", "innkeeper-" + sid, "elsewhere", "token", "--viewer")
                 authenticated = self.headers.get("Authorization") == "Bearer " + token
             except Exception:
@@ -445,11 +446,8 @@ exec sleep 10000
             wait(lambda: "Fixture install waiting" in api(f"/sessions/{sid}/logs")["text"])
             manager.send_signal(signal.SIGINT)
             manager.wait(timeout=10)
-            interrupted = json.loads((data / "state.json").read_text())
-            for session in interrupted["sessions"]:
-                if session["id"] == sid:
-                    session["upgrade_started_ms"] = 1
-            (data / "state.json").write_text(json.dumps(interrupted))
+            with database(data) as db:
+                db.execute("UPDATE sessions SET upgrade_started_ms = 1 WHERE id = ?", [sid])
             manager = subprocess.Popen(["elsewhere-innkeeper"], env=env, stdout=log, stderr=log)
             def warned():
                 try: return "longer than 30 minutes" in (state(sid)["error"] or "")
@@ -509,28 +507,9 @@ exec sleep 10000
             run("docker", "exec", name, "rm", "/home/elsewhere/token-command-fails")
             wait(lambda: state(sid)["status"] == "running")
             baseline = len(run("docker", "exec", name, "cat", "/home/elsewhere/launches").splitlines())
-            private = next(s for s in json.loads((data / "state.json").read_text())["sessions"] if s["id"] == sid)
             run("docker", "exec", name, "sh", "-c", "echo retained > /root/settings-sentinel")
-            assert "token" not in private and "viewer_token" not in private
-            run("docker", "exec", name, "test", "!", "-d", "/seed")
-            # Legacy state has no snapshots. Its stored settings describe its last launch.
-            manager.send_signal(signal.SIGINT)
-            manager.wait(timeout=10)
-            legacy = json.loads((data / "state.json").read_text())
-            for session in legacy["sessions"]:
-                if session["id"] == sid:
-                    session["token"] = "stale credential"
-                    session["viewer_token"] = "stale viewer credential"
-                    session.pop("applied_settings", None)
-                    session.pop("launching_settings", None)
-            (data / "state.json").write_text(json.dumps(legacy))
-            manager = subprocess.Popen(["elsewhere-innkeeper"], env=env, stdout=log, stderr=log)
-            def legacy_ready():
-                try:
-                    return state(sid)["status"] == "running"
-                except OSError:
-                    return False
-            wait(legacy_ready)
+            restart_manager()
+            wait(lambda: state(sid)["status"] == "running")
             assert not state(sid)["settings_pending"]
             original = {k: state(sid)[k] for k in ("name", "screen_size", "kiosk", "startup_command")}
             def save(settings):
@@ -562,10 +541,10 @@ exec sleep 10000
             rejected(f"/sessions/{sid}/settings", "PUT", missing, 422)
             rejected(f"/sessions/{sid}/settings", "PUT", dict(edited, packages=[]), 422)
             # A failed write cannot publish edits in memory.
-            (data / "state.tmp").mkdir()
+            reject_updates(data, sid, True)
             rejected(f"/sessions/{sid}/settings", "PUT", renamed, 500)
             assert pending() and state(sid)["kiosk"]
-            (data / "state.tmp").rmdir()
+            reject_updates(data, sid, False)
             manager.send_signal(signal.SIGINT)
             manager.wait(timeout=10)
             manager = subprocess.Popen(["elsewhere-innkeeper"], env=env, stdout=log, stderr=log)
@@ -601,10 +580,9 @@ exec sleep 10000
                             "--screen-size", "1280x720", "--kiosk", "--exec", command], args
             run("docker", "exec", name, "test", "!", "-e", "/tmp/unexpected")
             assert run("docker", "inspect", name, "--format", "{{.Id}}") == identity
-            current = next(s for s in json.loads((data / "state.json").read_text())["sessions"] if s["id"] == sid)
-            assert all(current[k] == private[k] for k in ("id", "port"))
-            assert "token" not in current and "viewer_token" not in current
             assert run("docker", "exec", name, "cat", "/root/settings-sentinel") == "retained"
+            assert stored_settings(data, sid, "launching") is None, stored_settings(data, sid, "launching")
+            assert stored_settings(data, sid, "applied") == {k: edited[k] for k in ("screen_size", "kiosk", "startup_command")}
             # Copy and Docker start failures retain edits for a later start.
             for failure in ("cp", "start"):
                 save(renamed)
@@ -626,17 +604,19 @@ exec sleep 10000
                 wait(lambda: state(sid)["status"] == "running" and not pending())
             # A persistence failure after stopping leaves settings available for retry.
             save(renamed)
-            (data / "state.tmp").mkdir()
+            reject_updates(data, sid, True)
             rejected(f"/sessions/{sid}/relaunch", "POST", None, 500)
             assert run("docker", "inspect", name, "--format", "{{.State.Running}}") == "false"
             assert pending()
-            (data / "state.tmp").rmdir()
+            reject_updates(data, sid, False)
             wait(lambda: state(sid)["status"] == "stopped")
             api(f"/sessions/{sid}/start", "POST")
             wait(lambda: state(sid)["status"] == "running" and not pending())
             print(f"{distro}: saved settings, resets, quoting, pending state, persistence, serialized relaunch and failure retry passed", flush=True)
-            print(f"{distro}: explicit upgrade, stopped version detection, newer warning, launch-only start, cancellation, opaque token commands and migration passed", flush=True)
+            print(f"{distro}: explicit upgrade, stopped version detection, newer warning, launch-only start, cancellation, opaque token commands and restart persistence passed", flush=True)
     except BaseException:
+        with database(data) as db:
+            print("Stored settings:", [dict(row) for row in db.execute("SELECT * FROM session_settings")], flush=True)
         for sid in created:
             subprocess.run(["docker", "logs", "--tail", "80", "innkeeper-" + sid])
         raise

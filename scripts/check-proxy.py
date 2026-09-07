@@ -19,6 +19,7 @@ import sys
 import tempfile
 import time
 import uuid
+from sqlite_fixture import seed
 
 TOKEN = "opaque+/=?%:token"
 
@@ -124,6 +125,12 @@ def check():
     network = os.environ.get("PROXY_TEST_NETWORK", "bridge")
     created = []
     manager = None
+    existing = run("docker", "ps", "-q").split()
+    used_ports = {int(binding["HostPort"])
+                  for info in (json.loads(run("docker", "inspect", *existing)) if existing else [])
+                  for bindings in info["NetworkSettings"]["Ports"].values()
+                  for binding in (bindings or [])}
+    available_ports = iter(port for port in range(19999, 19499, -1) if port not in used_ports)
     with tempfile.TemporaryDirectory(prefix="innkeeper-proxy-") as temporary:
         work = Path(temporary)
         owner = str(uuid.uuid4())
@@ -131,7 +138,7 @@ def check():
         try:
             for index in range(2):
                 sid = str(uuid.uuid4())
-                port = 29550 + index
+                port = next(available_ports)
                 name = "innkeeper-" + sid
                 args = ["docker", "run", "-d", "--name", name, "--label", "io.innkeeper.owner=" + owner,
                         "--network", network, "-e", "SESSION_ID=" + sid, "-p", f"0.0.0.0:{port}:{port}/udp"]
@@ -149,7 +156,7 @@ def check():
                                      port=port, status="running", stage="launch", error=None))
             data = work / "data"
             data.mkdir()
-            (data / "state.json").write_text(json.dumps(dict(owner=owner, sessions=sessions)))
+            seed(data, sessions, owner)
             cert, key = work / "cert.pem", work / "key.pem"
             subprocess.run(["openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "1",
                             "-subj", "/CN=localhost", "-keyout", str(key), "-out", str(cert)],
