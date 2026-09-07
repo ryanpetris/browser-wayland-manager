@@ -37,6 +37,10 @@ struct Session {
     screen_size: Option<ScreenSize>,
     #[serde(default)]
     kiosk: bool,
+    #[serde(default)]
+    applied_settings: Option<LaunchSettings>,
+    #[serde(default)]
+    launching_settings: Option<LaunchSettings>,
     port: u16,
     #[serde(default)]
     started_ms: u64,
@@ -147,7 +151,10 @@ impl App {
             let before = s.clone();
             f(s);
             if *s != before {
-                self.save(&db)?;
+                if let Err(e) = self.save(&db) {
+                    *db.sessions.iter_mut().find(|s| s.id == id).unwrap() = before;
+                    return Err(e);
+                }
             }
         }
         Ok(())
@@ -202,7 +209,7 @@ async fn auth(State(app): State<Shared>, req: axum::extract::Request, next: Next
     response
 }
 fn public_session(s: &Session) -> serde_json::Value {
-    serde_json::json!({"id":s.id,"name":s.name,"distribution":s.distribution,"packages":s.packages,"startup_command":s.startup_command,"screen_size":s.screen_size,"kiosk":s.kiosk,"port":s.port,"status":s.status,"stage":s.stage,"error":s.error,"timings":s.timings})
+    serde_json::json!({"id":s.id,"name":s.name,"distribution":s.distribution,"packages":s.packages,"startup_command":s.startup_command,"screen_size":s.screen_size,"kiosk":s.kiosk,"settings_pending":s.applied_settings.as_ref().is_some_and(|applied| *applied != LaunchSettings::from(s)),"port":s.port,"status":s.status,"stage":s.stage,"error":s.error,"timings":s.timings})
 }
 async fn list(State(app): State<Shared>) -> Json<serde_json::Value> {
     Json(
@@ -235,6 +242,93 @@ struct Create {
     #[serde(default)]
     kiosk: bool,
 }
+#[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+struct LaunchSettings {
+    #[serde(deserialize_with = "required_screen_size")]
+    screen_size: Option<ScreenSize>,
+    kiosk: bool,
+    startup_command: String,
+}
+fn required_screen_size<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> std::result::Result<Option<ScreenSize>, D::Error> {
+    Option::deserialize(deserializer)
+}
+impl From<&Session> for LaunchSettings {
+    fn from(s: &Session) -> Self {
+        Self {
+            screen_size: s.screen_size,
+            kiosk: s.kiosk,
+            startup_command: s.startup_command.clone(),
+        }
+    }
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Settings {
+    name: String,
+    #[serde(deserialize_with = "required_screen_size")]
+    screen_size: Option<ScreenSize>,
+    kiosk: bool,
+    startup_command: String,
+}
+fn validate_settings(name: &str, screen_size: Option<ScreenSize>, command: &str) -> Api<()> {
+    if name.trim().is_empty() || name.chars().count() > 80 {
+        return Err(Error(
+            StatusCode::BAD_REQUEST,
+            "Choose a name of 1–80 characters.".into(),
+        ));
+    }
+    if screen_size.is_some_and(|size| !size.valid()) {
+        return Err(Error(
+            StatusCode::BAD_REQUEST,
+            "Screen dimensions must be even numbers between 2 and 8192.".into(),
+        ));
+    }
+    if command.len() > 4096 || command.contains('\0') {
+        return Err(Error(
+            StatusCode::BAD_REQUEST,
+            "Startup command must be at most 4096 bytes and contain no NUL characters.".into(),
+        ));
+    }
+    Ok(())
+}
+async fn settings(
+    State(app): State<Shared>,
+    Path(id): Path<String>,
+    Json(input): Json<Settings>,
+) -> Api<Json<serde_json::Value>> {
+    validate_settings(&input.name, input.screen_size, &input.startup_command)?;
+    let lock = app.lock(&id).await;
+    let _guard = lock.lock().await;
+    let s = app.session(&id).await?;
+    if !matches!(s.status.as_str(), "running" | "stopped") {
+        return Err(Error(
+            StatusCode::CONFLICT,
+            "Settings can be saved only for running or stopped sessions.".into(),
+        ));
+    }
+    app.change(&id, |s| {
+        s.name = input.name.trim().into();
+        s.screen_size = input.screen_size;
+        s.kiosk = input.kiosk;
+        s.startup_command = input.startup_command;
+    })
+    .await?;
+    Ok(Json(public_session(&app.session(&id).await?)))
+}
+fn launch_config(settings: &LaunchSettings) -> String {
+    let size = settings
+        .screen_size
+        .map(|s| format!("{}x{}", s.width, s.height))
+        .unwrap_or_default();
+    let command = settings.startup_command.replace('\'', "'\"'\"'");
+    format!(
+        "export INNKEEPER_SCREEN_SIZE='{size}'\nexport INNKEEPER_KIOSK='{}'\nexport INNKEEPER_STARTUP_COMMAND='{command}'\n",
+        u8::from(settings.kiosk)
+    )
+}
 fn valid_package(p: &str) -> bool {
     !p.is_empty()
         && !p.ends_with('-')
@@ -252,18 +346,7 @@ async fn create(State(app): State<Shared>, Json(input): Json<Create>) -> Api<imp
     {
         return Err(Error(StatusCode::BAD_REQUEST, "Choose Arch or Debian, a name of 1–80 characters, and up to 100 valid package names. Shell syntax and options are not allowed.".into()));
     }
-    if input.screen_size.is_some_and(|size| !size.valid()) {
-        return Err(Error(
-            StatusCode::BAD_REQUEST,
-            "Screen dimensions must be even numbers between 2 and 8192.".into(),
-        ));
-    }
-    if input.startup_command.len() > 4096 || input.startup_command.contains('\0') {
-        return Err(Error(
-            StatusCode::BAD_REQUEST,
-            "Startup command must be at most 4096 bytes and contain no NUL characters.".into(),
-        ));
-    }
+    validate_settings(&input.name, input.screen_size, &input.startup_command)?;
     let mut db = app.db.lock().await;
     let port = (19500..20000)
         .find(|p| db.sessions.iter().all(|s| s.port != *p))
@@ -276,9 +359,15 @@ async fn create(State(app): State<Shared>, Json(input): Json<Create>) -> Api<imp
         name: input.name.trim().into(),
         distribution: input.distribution,
         packages: input.packages,
-        startup_command: input.startup_command,
+        startup_command: input.startup_command.clone(),
         screen_size: input.screen_size,
         kiosk: input.kiosk,
+        applied_settings: Some(LaunchSettings {
+            screen_size: input.screen_size,
+            kiosk: input.kiosk,
+            startup_command: input.startup_command.clone(),
+        }),
+        launching_settings: None,
         port,
         started_ms: now_ms(),
         status: "preparing".into(),
@@ -406,139 +495,160 @@ async fn prepare(app: Shared, id: &str, new_container: bool, attempt_ms: u64) ->
     if s.status != "preparing" || s.started_ms != attempt_ms {
         return Ok(());
     }
-    app.change(id, |s| {
-        s.stage = "container".into();
-        s.timings
-            .insert("download".into(), started.elapsed().as_millis() as u64);
-    })
-    .await?;
-    let container_started = Instant::now();
-    if new_container {
-        let owner = app.db.lock().await.owner.clone();
-        let label = format!("{LABEL}={owner}");
-        docker(&["volume", "create", "--label", &label, &volume(id)]).await?;
-        let tcp = format!("{}:{}:19443/tcp", app.bind, s.port);
-        let udp = format!("{}:{}:19443/udp", app.bind, s.port);
-        let mount = format!("{}:/home/elsewhere", volume(id));
-        let screen_size = format!(
-            "INNKEEPER_SCREEN_SIZE={}",
-            s.screen_size
-                .map(|size| format!("{}x{}", size.width, size.height))
-                .unwrap_or_default()
-        );
-        let kiosk = format!("INNKEEPER_KIOSK={}", u8::from(s.kiosk));
-        let startup_command = format!("INNKEEPER_STARTUP_COMMAND={}", s.startup_command);
-        let mut args = vec![
-            "create",
-            "--env",
-            &screen_size,
-            "--env",
-            &kiosk,
-            "--env",
-            &startup_command,
-            "--name",
-            &container(id),
-            "--label",
-            &label,
-            "--init",
-            "--shm-size",
-            "1g",
-            "--log-opt",
-            "max-size=10m",
-            "--log-opt",
-            "max-file=3",
-            "-p",
-            &tcp,
-            "-p",
-            &udp,
-            "-v",
-            &mount,
-            "--platform",
-            "linux/amd64",
-            "--entrypoint",
-            "sh",
-            image,
-            "/opt/innkeeper/entrypoint.sh",
-        ]
-        .into_iter()
-        .map(str::to_owned)
-        .collect::<Vec<_>>();
-        if std::path::Path::new("/dev/dri/renderD128").exists() {
-            args.splice(
-                1..1,
-                ["--device".to_owned(), "/dev/dri:/dev/dri".to_owned()],
-            );
-        }
-        args.extend(s.packages.iter().cloned());
-        docker(&args.iter().map(String::as_str).collect::<Vec<_>>()).await?;
-        docker(&[
-            "cp",
-            app.assets
-                .join("sessions")
-                .to_str()
-                .context("Invalid assets path")?,
-            &format!("{}:/opt/innkeeper", container(id)),
-        ])
+    let result: Result<()> = async {
+        app.change(id, |s| {
+            s.stage = "container".into();
+            s.timings
+                .insert("download".into(), started.elapsed().as_millis() as u64);
+        })
         .await?;
-    } else {
-        app.owned(id).await?;
-    }
-    docker(&[
-        "cp",
-        package.to_str().context("Invalid package path")?,
-        &format!(
-            "{}:/opt/innkeeper/elsewhere.{}",
-            container(id),
-            if s.distribution == "arch" {
-                "pkg.tar.zst"
-            } else {
-                "deb"
+        let container_started = Instant::now();
+        if new_container {
+            let owner = app.db.lock().await.owner.clone();
+            let label = format!("{LABEL}={owner}");
+            docker(&["volume", "create", "--label", &label, &volume(id)]).await?;
+            let tcp = format!("{}:{}:19443/tcp", app.bind, s.port);
+            let udp = format!("{}:{}:19443/udp", app.bind, s.port);
+            let mount = format!("{}:/home/elsewhere", volume(id));
+            let mut args = vec![
+                "create",
+                "--name",
+                &container(id),
+                "--label",
+                &label,
+                "--init",
+                "--shm-size",
+                "1g",
+                "--log-opt",
+                "max-size=10m",
+                "--log-opt",
+                "max-file=3",
+                "-p",
+                &tcp,
+                "-p",
+                &udp,
+                "-v",
+                &mount,
+                "--platform",
+                "linux/amd64",
+                "--entrypoint",
+                "sh",
+                image,
+                "/opt/innkeeper/entrypoint.sh",
+            ]
+            .into_iter()
+            .map(str::to_owned)
+            .collect::<Vec<_>>();
+            if std::path::Path::new("/dev/dri/renderD128").exists() {
+                args.splice(
+                    1..1,
+                    ["--device".to_owned(), "/dev/dri:/dev/dri".to_owned()],
+                );
             }
-        ),
-    ])
-    .await?;
-    docker(&[
-        "cp",
-        app.assets
-            .join("sessions/entrypoint.sh")
-            .to_str()
-            .context("Invalid assets path")?,
-        &format!("{}:/opt/innkeeper/entrypoint.sh", container(id)),
-    ])
-    .await?;
-    if new_container {
+            args.extend(s.packages.iter().cloned());
+            docker(&args.iter().map(String::as_str).collect::<Vec<_>>()).await?;
+            docker(&[
+                "cp",
+                app.assets
+                    .join("sessions")
+                    .to_str()
+                    .context("Invalid assets path")?,
+                &format!("{}:/opt/innkeeper", container(id)),
+            ])
+            .await?;
+        } else {
+            app.owned(id).await?;
+        }
+        docker(&[
+            "cp",
+            package.to_str().context("Invalid package path")?,
+            &format!(
+                "{}:/opt/innkeeper/elsewhere.{}",
+                container(id),
+                if s.distribution == "arch" {
+                    "pkg.tar.zst"
+                } else {
+                    "deb"
+                }
+            ),
+        ])
+        .await?;
         docker(&[
             "cp",
             app.assets
-                .join(format!("sessions/setup-{}.sh", s.distribution))
+                .join("sessions/entrypoint.sh")
                 .to_str()
                 .context("Invalid assets path")?,
-            &format!("{}:/opt/innkeeper/setup.sh", container(id)),
+            &format!("{}:/opt/innkeeper/entrypoint.sh", container(id)),
         ])
         .await?;
-        let seed = app.dir.join(format!("{id}.seed"));
-        std::fs::create_dir_all(&seed)?;
-        std::fs::set_permissions(&seed, std::fs::Permissions::from_mode(0o700))?;
-        private_write(&seed.join("token"), s.token.as_bytes())?;
-        private_write(&seed.join("viewer-token"), s.viewer_token.as_bytes())?;
-        let result = docker(&[
+        if new_container {
+            docker(&[
+                "cp",
+                app.assets
+                    .join(format!("sessions/setup-{}.sh", s.distribution))
+                    .to_str()
+                    .context("Invalid assets path")?,
+                &format!("{}:/opt/innkeeper/setup.sh", container(id)),
+            ])
+            .await?;
+            let seed = app.dir.join(format!("{id}.seed"));
+            std::fs::create_dir_all(&seed)?;
+            std::fs::set_permissions(&seed, std::fs::Permissions::from_mode(0o700))?;
+            private_write(&seed.join("token"), s.token.as_bytes())?;
+            private_write(&seed.join("viewer-token"), s.viewer_token.as_bytes())?;
+            let result = docker(&[
+                "cp",
+                seed.to_str().context("Invalid data path")?,
+                &format!("{}:/seed", container(id)),
+            ])
+            .await;
+            std::fs::remove_dir_all(seed)?;
+            result?;
+        }
+        let launch = LaunchSettings::from(&s);
+        let config = app.dir.join(format!("{id}.launch-settings.sh"));
+        private_write(&config, launch_config(&launch).as_bytes())?;
+        // The desktop user reads this file; only root can write it.
+        std::fs::set_permissions(&config, std::fs::Permissions::from_mode(0o644))?;
+        let copied = docker(&[
             "cp",
-            seed.to_str().context("Invalid data path")?,
-            &format!("{}:/seed", container(id)),
+            config.to_str().context("Invalid settings path")?,
+            &format!("{}:/opt/innkeeper/launch-settings.sh", container(id)),
         ])
         .await;
-        std::fs::remove_dir_all(seed)?;
-        result?;
+        std::fs::remove_file(config)?;
+        copied?;
+        docker(&[
+            "cp",
+            app.assets
+                .join("sessions/start.sh")
+                .to_str()
+                .context("Invalid assets path")?,
+            &format!("{}:/opt/innkeeper/start.sh", container(id)),
+        ])
+        .await?;
+        app.change(id, |s| s.launching_settings = Some(launch))
+            .await?;
+        docker(&["start", &container(id)]).await?;
+        app.change(id, |s| {
+            s.timings.insert(
+                "container".into(),
+                container_started.elapsed().as_millis() as u64,
+            );
+        })
+        .await?;
+        Ok(())
     }
-    docker(&["start", &container(id)]).await?;
-    app.change(id, |s| {
-        s.timings.insert(
-            "container".into(),
-            container_started.elapsed().as_millis() as u64,
-        );
-    })
-    .await?;
-    Ok(())
+    .await;
+    if let Err(e) = &result {
+        app.change(id, |s| {
+            s.status = "failed".into();
+            s.error = Some(redact(&e.to_string(), s));
+        })
+        .await?;
+    }
+    result
 }
 fn redact(text: &str, s: &Session) -> String {
     text.replace(&s.token, "[REDACTED]")
@@ -577,19 +687,13 @@ async fn reconcile(app: Shared) {
                 }
                 continue;
             }
+            if !running && s.status == "failed" {
+                continue;
+            }
             if !running {
                 let code = inspect["State"]["ExitCode"].as_i64().unwrap_or(-1);
                 let normal = [0, 137, 143].contains(&code) && inspect["State"]["OOMKilled"] != true;
                 if s.status == "stopped" && normal && s.error.is_none() {
-                    continue;
-                }
-                if s.status == "failed"
-                    && s.error.as_deref()
-                        == Some(&format!(
-                            "Container exited with code {code} during {}. Open Logs for details.",
-                            s.stage
-                        ))
-                {
                     continue;
                 }
             }
@@ -663,6 +767,9 @@ async fn reconcile(app: Shared) {
                             s.timings
                                 .insert("readiness".into(), now.saturating_sub(*launch));
                         }
+                        if let Some(applied) = s.launching_settings.take() {
+                            s.applied_settings = Some(applied);
+                        }
                         s.status = "running".into();
                         s.stage = "ready".into();
                         s.error = None;
@@ -726,11 +833,24 @@ async fn stop(State(app): State<Shared>, Path(id): Path<String>) -> Api<StatusCo
 async fn start(State(app): State<Shared>, Path(id): Path<String>) -> Api<StatusCode> {
     let lock = app.lock(&id).await;
     let _guard = lock.lock().await;
-    let s = app.session(&id).await?;
-    if s.status != "stopped" {
+    begin_start(&app, &id, false).await
+}
+async fn relaunch(State(app): State<Shared>, Path(id): Path<String>) -> Api<StatusCode> {
+    let lock = app.lock(&id).await;
+    let _guard = lock.lock().await;
+    begin_start(&app, &id, true).await
+}
+async fn begin_start(app: &Shared, id: &str, relaunch: bool) -> Api<StatusCode> {
+    let s = app.session(id).await?;
+    if s.status != if relaunch { "running" } else { "stopped" } {
         return Err(Error(
             StatusCode::CONFLICT,
-            "Only stopped sessions can be started".into(),
+            if relaunch {
+                "Only running sessions can be relaunched"
+            } else {
+                "Only stopped sessions can be started"
+            }
+            .into(),
         ));
     }
     let info = app.owned(&id).await?;
@@ -740,6 +860,15 @@ async fn start(State(app): State<Shared>, Path(id): Path<String>) -> Api<StatusC
             "Container initialization was interrupted. Destroy this session and create it again."
                 .into(),
         ));
+    }
+    if info["State"]["Running"] == true {
+        if !relaunch {
+            return Err(Error(
+                StatusCode::CONFLICT,
+                "Container is still running. Stop it before starting.".into(),
+            ));
+        }
+        docker(&["stop", "--time", "15", &container(id)]).await?;
     }
     let attempt_ms = now_ms().max(s.started_ms.saturating_add(1));
     app.change(&id, |s| {
@@ -751,7 +880,7 @@ async fn start(State(app): State<Shared>, Path(id): Path<String>) -> Api<StatusC
             .retain(|k, _| k == "image" || k == "download" || k == "container");
     })
     .await?;
-    prepare_in_background(app, id, false, attempt_ms);
+    prepare_in_background(app.clone(), id.to_owned(), false, attempt_ms);
     Ok(StatusCode::ACCEPTED)
 }
 async fn destroy(State(app): State<Shared>, Path(id): Path<String>) -> Api<StatusCode> {
@@ -969,6 +1098,9 @@ async fn main() -> Result<()> {
         }
     };
     for s in &mut db.sessions {
+        if s.applied_settings.is_none() {
+            s.applied_settings = Some(LaunchSettings::from(&*s));
+        }
         if s.status == "preparing" && matches!(s.stage.as_str(), "image" | "download") {
             s.status = "failed".into();
             s.error=Some("Innkeeper restarted during session preparation. Stop and start to retry an existing session; destroy and recreate a session whose container was not initialized.".into());
@@ -1005,6 +1137,8 @@ async fn main() -> Result<()> {
         .route("/sessions", get(list).post(create))
         .route("/sessions/{id}/stop", post(stop))
         .route("/sessions/{id}/start", post(start))
+        .route("/sessions/{id}/relaunch", post(relaunch))
+        .route("/sessions/{id}/settings", axum::routing::put(settings))
         .route("/sessions/{id}", axum::routing::delete(destroy))
         .route("/sessions/{id}/link", post(link))
         .route("/sessions/{id}/logs", get(logs))
@@ -1082,6 +1216,8 @@ mod tests {
             startup_command: String::new(),
             screen_size: None,
             kiosk: false,
+            applied_settings: None,
+            launching_settings: None,
             port: 0,
             started_ms: 0,
             status: "".into(),

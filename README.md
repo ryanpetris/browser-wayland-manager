@@ -109,8 +109,9 @@ rendering, and grants the desktop user access to the device groups. Hosts withou
 and encoding. A GPU must support VA-API encoding to use the hardware path.
 Every session start copies and installs Innkeeper's pinned Elsewhere release package,
 reusing the cached download when available. This also refreshes the container entrypoint.
-Existing sessions retain their original container configuration and desktop startup script;
-create a new session to use hardware encoding.
+Every start also refreshes the desktop startup script and launch settings.
+Existing sessions retain their original Docker device configuration; create a new session
+to add GPU access to a container created without it.
 
 ## Session profiles
 
@@ -125,6 +126,26 @@ and `height`, both even integers from 2 to 8192. Kiosk mode defaults to `false`.
 The startup command runs through `sh -c` as the desktop user on each session start,
 with the desktop's display and audio environment. An empty command starts no application.
 Settings are saved with the session and retained when it is stopped and started.
+
+Use **Edit settings** on a running or stopped session to change its name, screen size,
+kiosk mode, or startup command. **Save** updates the name immediately and saves the
+other settings for the next launch. It does not interrupt the desktop. Distribution
+and extra packages are set at creation.
+
+**Settings pending** means saved launch settings differ from the last successful launch.
+The indicator survives an Innkeeper restart and clears if edits are reverted or a launch
+successfully applies them. Use **Relaunch** on a running session or **Start** on a stopped
+session to apply saved settings. Relaunch disconnects the desktop and closes running
+applications. Save edits before relaunching. The container, installed software, home
+directory, connection tokens, and port are retained. A failed launch retains saved settings
+for retry through Stop and Start. Settings cannot be saved during preparation or failure;
+stop a failed session before editing it.
+
+The authenticated API accepts `PUT /api/sessions/{id}/settings` with all four fields:
+`name`, `screen_size`, `kiosk`, and `startup_command`. Use `null` for dynamic screen sizing,
+`false` to disable kiosk mode, and an empty string to clear the startup command.
+Unknown or missing fields are rejected. `POST /api/sessions/{id}/relaunch` relaunches a
+running session using saved settings. Session responses include `settings_pending`.
 
 ## Release versions
 

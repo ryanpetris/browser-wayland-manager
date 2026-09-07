@@ -1,5 +1,6 @@
 #!/bin/sh
 set -eu
+. /opt/innkeeper/launch-settings.sh
 export HOME=/home/elsewhere XDG_RUNTIME_DIR=/tmp/runtime-elsewhere NO_COLOR=1
 export GSK_RENDERER="${GSK_RENDERER-ngl}" QT_QPA_PLATFORM="${QT_QPA_PLATFORM-wayland;xcb}"
 cd "$HOME"

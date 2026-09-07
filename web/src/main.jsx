@@ -40,6 +40,8 @@ function App() {
   );
   const [error, setError] = useState("");
   const [creating, setCreating] = useState(false);
+  const [editing, setEditing] = useState(null);
+  const [editError, setEditError] = useState("");
   const [createError, setCreateError] = useState("");
   const logPane = useRef(null);
   const followLogs = useRef(true);
@@ -233,6 +235,7 @@ function App() {
             setAuthenticated(false);
             setLogs(null);
             setCreating(false);
+            setEditing(null);
           }}
         >
           <LogOut size={16} />
@@ -306,8 +309,22 @@ function App() {
                       Preparing: {s.stage}…
                     </p>
                   )}
+                  {s.settings_pending && (
+                    <p role="status" className="muted">
+                      Settings pending · {s.status === "stopped" ? "Applies on next start" : s.status === "preparing" ? "Applying on launch" : s.status === "failed" ? "Stop, then start to apply" : "Relaunch to apply"}
+                    </p>
+                  )}
                   {s.error && <p className="error">{s.error}</p>}
                   <div className="actions">
+                    <button disabled={busy[s.id] || !["running", "stopped"].includes(s.status)}
+                      onClick={() => { setEditError(""); setEditing(s); }}>
+                      Edit settings
+                    </button>
+                    <button disabled={busy[s.id] || s.status !== "running"}
+                      title="Restart with saved settings. Running applications will close."
+                      onClick={() => action(s, "relaunch")}>
+                      Relaunch
+                    </button>
                     <button
                       disabled={s.status !== "running" || busy[s.id]}
                       onClick={() => open(s)}
@@ -370,6 +387,27 @@ function App() {
               }
             }}
           />
+        </Dialog>
+      )}
+      {editing && (
+        <Dialog title="Edit settings" close={() => setEditing(null)}>
+          <p className="muted">Save applies the name immediately. Other settings apply on the next launch. Relaunch closes running applications.</p>
+          {(sessions.find((s) => s.id === editing.id) || editing).settings_pending && (
+            <p role="status">Settings pending · Applies on next launch</p>
+          )}
+          <SessionForm key={editing.id} initial={editing} error={editError}
+            submit={async (profile) => {
+              setEditError("");
+              try {
+                await api(`/sessions/${editing.id}/settings`, {
+                  method: "PUT",
+                  body: JSON.stringify({name: profile.name, screen_size: profile.screen_size,
+                    kiosk: profile.kiosk, startup_command: profile.startup_command}),
+                });
+                setEditing(null);
+                await refresh();
+              } catch (e) { setEditError(e.message); }
+            }} />
         </Dialog>
       )}
       {logs && (
@@ -522,12 +560,14 @@ const defaultProfile = {
 };
 const screenPresets = ["1280x720", "1920x1080", "2560x1440", "3840x2160"];
 
-function SessionForm({ submit, error }) {
-  const [profile, setProfile] = useState(defaultProfile);
-  const [packages, setPackages] = useState("");
-  const [screen, setScreen] = useState("dynamic");
-  const [width, setWidth] = useState(1920);
-  const [height, setHeight] = useState(1080);
+function SessionForm({ submit, error, initial }) {
+  const [profile, setProfile] = useState(initial || defaultProfile);
+  const [packages, setPackages] = useState(initial?.packages.join(" ") || "");
+  const initialSize = initial?.screen_size;
+  const initialPreset = initialSize ? `${initialSize.width}x${initialSize.height}` : "dynamic";
+  const [screen, setScreen] = useState(initialSize && !screenPresets.includes(initialPreset) ? "custom" : initialPreset);
+  const [width, setWidth] = useState(initialSize?.width ?? 1920);
+  const [height, setHeight] = useState(initialSize?.height ?? 1080);
   const [text, setText] = useState("");
   const [importError, setImportError] = useState("");
   const importPanel = useRef(null);
@@ -624,7 +664,7 @@ function SessionForm({ submit, error }) {
       }}
     >
       <fieldset disabled={pending} className="session-fields">
-        <details ref={importPanel} className="profile-import">
+        {!initial && <details ref={importPanel} className="profile-import">
           <summary>Import profile</summary>
           <label>
             Profile JSON
@@ -640,7 +680,7 @@ function SessionForm({ submit, error }) {
           <button type="button" onClick={importProfile}>
             Apply profile
           </button>
-        </details>
+        </details>}
         {importError && (
           <p role="alert" className="error">
             {importError}
@@ -661,6 +701,7 @@ function SessionForm({ submit, error }) {
         <label>
           Distribution
           <select
+            disabled={!!initial}
             name="distribution"
             value={profile.distribution}
             onChange={(e) => change("distribution", e.target.value)}
@@ -672,13 +713,14 @@ function SessionForm({ submit, error }) {
         <label>
           Extra packages
           <textarea
+            readOnly={!!initial}
             name="packages"
             rows={3}
             placeholder="firefox foot"
             value={packages}
             onChange={(e) => setPackages(e.target.value)}
           />
-          <small>Optional. Separate package names with spaces.</small>
+          <small>{initial ? "Distribution and packages are set at creation." : "Optional. Separate package names with spaces."}</small>
         </label>
         <label>
           Screen size
@@ -744,7 +786,7 @@ function SessionForm({ submit, error }) {
           </p>
         )}
         <button type="submit" className="primary">
-          Create session
+          {initial ? "Save" : "Create session"}
         </button>
       </fieldset>
     </form>

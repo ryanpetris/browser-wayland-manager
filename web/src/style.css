@@ -189,6 +189,7 @@ small {
 }
 .actions {
   display: flex;
+  flex-wrap: wrap;
   gap: 7px;
   margin-top: 19px;
 }
@@ -339,9 +340,6 @@ small {
   }
   .list .session-info {
     padding: 12px;
-  }
-  .actions {
-    flex-wrap: wrap;
   }
   .status {
     font-size: 9px;
