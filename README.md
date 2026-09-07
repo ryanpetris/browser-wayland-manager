@@ -68,26 +68,24 @@ Release packages currently support x86_64 Docker hosts. Base images are reused l
 
 The Elsewhere release version is pinned in `sessions/elsewhere-version`. Innkeeper generates GitHub download URLs and package filenames from that single version using the release package naming convention. Packages are cached under `packages/<version>/x86_64/<distribution>/<asset>` in Innkeeper's data directory. Downloads use HTTPS and a temporary file renamed only after a successful transfer. Concurrent session creation shares the preparation lock and reuses completed downloads. Interrupted transfers are retried on the next request.
 
-Update that version file and rebuild Innkeeper to change the pinned release. The new package downloads when first needed. Existing sessions retain their installed Elsewhere version. Cached packages survive Innkeeper upgrades and session destruction. Individually remove obsolete version directories from the cache when they are no longer needed; Innkeeper will download a missing package again. `sessions/recipe-version` versions the setup scripts; increment it when changing their behavior. Restart Innkeeper after updating its installed assets.
+Update that version file and rebuild Innkeeper to change the pinned release. The new package downloads when first needed. Existing sessions retain their installed Elsewhere version. Cached packages survive Innkeeper upgrades and session destruction. Individually remove obsolete version directories from the cache when they are no longer needed; Innkeeper will download a missing package again. Restart Innkeeper after updating its installed assets.
 
 The release package supplies Elsewhere and its accompanying notices. Innkeeper's own code uses the accompanying MIT license.
 
 ## Arch Linux and Debian packages
 
-Build installable packages entirely in Docker:
-
-```sh
-./scripts/build-packages
-```
-
-Packages appear in `dist/`. Install with `pacman -U dist/*.pkg.tar.zst` on Arch, or `apt install ./dist/*.deb` on Debian 13. The package creates a dedicated service account, installs the session recipes, and provides a systemd service. Docker must be running. Enable Innkeeper explicitly:
+Release packages are attached to `vX.Y.Z` GitHub releases. Install the downloaded package
+with `pacman -U ./elsewhere-innkeeper-*.pkg.tar.zst` on Arch or
+`apt install ./elsewhere-innkeeper_*.deb` on Debian and Ubuntu. The package creates a
+dedicated service account, installs the session assets, and provides a systemd service.
+Docker must be running. Enable Innkeeper explicitly:
 
 ```sh
 sudo systemctl enable --now docker elsewhere-innkeeper
 sudo cat /var/lib/elsewhere-innkeeper/admin-token
 ```
 
-Edit `/etc/elsewhere-innkeeper/environment` to configure native installations and restart the service. Restart `elsewhere-innkeeper` after every native package upgrade; creation refuses mismatched recipes until the running binary is updated. The account receives access to Docker through its supplementary `docker` group. Package build recipes are in `packaging/PKGBUILD` and `packaging/debian/`. The Docker package builder is the supported packaging path and requires network access for Cargo and npm dependencies; it does not produce an offline Debian buildd source package. Native source builds require Rust with edition 2024 support and Node.js 24.
+Edit `/etc/elsewhere-innkeeper/environment` to configure native installations and restart the service. Restart `elsewhere-innkeeper` after every native package upgrade; creation refuses a changed Elsewhere release pin until the running binary is updated. The account receives access to Docker through its supplementary `docker` group. Arch packaging builds the checkout through `packaging/arch/PKGBUILD`. Debian packaging uses `cargo-deb` with metadata in `Cargo.toml` and the service setup in `packaging/debian/`. Native source builds require Rust with edition 2024 support and Node.js 24.
 
 ## Development
 
@@ -95,7 +93,7 @@ Edit `/etc/elsewhere-innkeeper/environment` to configure native installations an
 docker build --target check .
 ```
 
-The footer displays Innkeeper's own build version. Builds use `INNKEEPER_VERSION` when set, otherwise `git describe` from a `v`-prefixed Innkeeper tag, falling back to the Cargo package version when Git tags are unavailable. Docker includes Git metadata only in the build stage. Override the version with `docker build --build-arg INNKEEPER_VERSION=1.2.3 .`, `INNKEEPER_VERSION=1.2.3 docker compose up -d --build`, or `INNKEEPER_VERSION=1.2.3 ./scripts/build-packages`. Elsewhere's pinned release is independent of Innkeeper's version.
+`elsewhere-innkeeper --version` and the footer display Innkeeper's own build version. Source and Docker builds report `0.0.0-dev` unless `INNKEEPER_VERSION` is set. Docker treats an empty build argument as unset. Cargo metadata stays at `0.0.0`, including release builds. Override the displayed version with `docker build --build-arg INNKEEPER_VERSION=1.2.3 .`, `INNKEEPER_VERSION=1.2.3 docker compose up -d --build`. Elsewhere's pinned release is independent of Innkeeper's version.
 
 ## Hardware encoding
 
@@ -125,3 +123,45 @@ and `height`, both even integers from 2 to 8192. Kiosk mode defaults to `false`.
 The startup command runs through `sh -c` as the desktop user on each session start,
 with the desktop's display and audio environment. An empty command starts no application.
 Settings are saved with the session and retained when it is stopped and started.
+
+## Release versions
+
+The release workflow runs on `vX.Y.Z` tags, checks that the tag identifies the checked-out
+commit, and passes `X.Y.Z` as `INNKEEPER_VERSION` to both package builds. Arch and Debian
+packages use `X.Y.Z-1`, and their binaries report `X.Y.Z`. Cargo metadata stays at `0.0.0`.
+The workflow builds in Debian and Arch job containers with a Rust cache. It publishes
+both packages and a Linux x86_64 tarball after verifying the installed Debian package and
+running its authenticated API check on Debian Trixie, Ubuntu 24.04, and the latest Ubuntu image.
+
+Local packaging uses the same `cargo-deb` and `makepkg` commands as the release workflow.
+On Debian, install `cargo-deb` and the source build dependencies, then run:
+
+```sh
+make web
+INNKEEPER_VERSION=0.0.0 cargo deb -p elsewhere-innkeeper --locked --deb-version 0.0.0-1
+```
+
+The Debian package appears in `target/debian/`. For a release build, use the tag's `X.Y.Z`
+for both the environment variable and `--deb-version X.Y.Z-1`.
+On Arch, install the PKGBUILD's dependencies and build the checkout:
+
+```sh
+cd packaging/arch
+makepkg -f --noconfirm
+```
+
+The Arch package appears in `packaging/arch/` and uses its `pkgver`, which defaults to
+`0.0.0`. Direct source builds report `0.0.0-dev` unless the version variable is set.
+Rust tests and formatting checks run in the separate Docker check workflow on pushes
+and pull requests. Release checks compare each binary's version with the tag. The Debian
+installation check verifies the service files, conffile, disabled initial service, and an
+authenticated response from a running Innkeeper instance using temporary state.
+
+The tarball contains the binary, session scripts, README, and license. Extract it and run
+from its directory, pointing Innkeeper at the included session assets and a writable data directory:
+
+```sh
+INNKEEPER_ASSETS_DIR="$PWD" INNKEEPER_DATA_DIR="$PWD/data" ./elsewhere-innkeeper
+```
+
+Docker must be installed and accessible to the account running Innkeeper.

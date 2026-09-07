@@ -10,11 +10,12 @@ FROM rust:1-trixie AS build
 WORKDIR /src
 COPY . .
 ARG INNKEEPER_VERSION
-ENV INNKEEPER_VERSION=${INNKEEPER_VERSION}
 COPY --from=web /src/web/dist web/dist
-RUN cargo build --release --locked
+RUN if [ -z "$INNKEEPER_VERSION" ]; then unset INNKEEPER_VERSION; fi; cargo build --release --locked
 FROM build AS check
-RUN rustup component add rustfmt && cargo test --locked && cargo fmt --check
+RUN if [ -z "$INNKEEPER_VERSION" ]; then unset INNKEEPER_VERSION; fi; \
+    rustup component add rustfmt && cargo test --locked && cargo fmt --check && \
+    test "$(target/release/elsewhere-innkeeper --version)" = "elsewhere-innkeeper ${INNKEEPER_VERSION:-0.0.0-dev}"
 
 FROM debian:trixie-slim
 RUN apt-get update && apt-get install -y --no-install-recommends docker-cli curl ca-certificates tini && rm -rf /var/lib/apt/lists/*

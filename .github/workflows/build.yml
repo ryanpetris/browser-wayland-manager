@@ -1,0 +1,129 @@
+# Release builds, made only from a vX.Y.Z tag pushed by hand; the tag is the version everywhere.
+# Produces a Debian package (built on Debian stable, verified to install on Debian and Ubuntu), a
+# generic tarball from the same binary, and an Arch package, and attaches them to a GitHub release.
+name: release
+
+on:
+  push:
+    tags: ['v*']
+
+jobs:
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+      - id: v
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          v=${GITHUB_REF_NAME#v}
+          echo "$v" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' || { echo "tag $GITHUB_REF_NAME is not vX.Y.Z"; exit 1; }
+          test "$(git describe --tags --exact-match)" = "$GITHUB_REF_NAME" || { echo "HEAD is not at the tag"; exit 1; }
+          if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "a release for $GITHUB_REF_NAME already exists; delete it first if this is intentional"; exit 1
+          fi
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+
+  debian:
+    needs: version
+    runs-on: ubuntu-latest
+    container: rust:1-trixie
+    env:
+      INNKEEPER_VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: Build dependencies
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends binutils
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+      - name: Viewer
+        run: make web
+      - uses: cargo-bins/cargo-binstall@v1.22.0
+      - run: cargo binstall -y cargo-deb
+      - name: Debian package
+        run: cargo deb -p elsewhere-innkeeper --locked --deb-version "$INNKEEPER_VERSION-1"
+      - name: Tarball
+        run: |
+          d=elsewhere-innkeeper-$INNKEEPER_VERSION-linux-x86_64
+          mkdir -p dist/$d
+          cp target/release/elsewhere-innkeeper README.md LICENSE dist/$d/
+          cp -r sessions dist/$d/
+          strip dist/$d/elsewhere-innkeeper
+          tar -C dist -czf dist/$d.tar.gz $d
+          cp target/debian/*.deb dist/
+          test "$(dist/$d/elsewhere-innkeeper --version)" = "elsewhere-innkeeper $INNKEEPER_VERSION"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: debian
+          path: |
+            dist/*.deb
+            dist/*.tar.gz
+
+  # The .deb built on Debian stable must install and start on Debian and on the Ubuntu releases we
+  # care about (system libraries and Docker packages differ).
+  install-test:
+    needs: [version, debian]
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        image: ['debian:trixie', 'ubuntu:24.04', 'ubuntu:latest']
+    container: ${{ matrix.image }}
+    env:
+      INNKEEPER_VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          name: debian
+      - run: |
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install -y ./elsewhere-innkeeper_*.deb
+          sh scripts/check-release.sh "$INNKEEPER_VERSION"
+
+  arch:
+    needs: version
+    runs-on: ubuntu-latest
+    container: archlinux:base-devel
+    steps:
+      - name: Dependencies
+        run: |
+          pacman -Sy --noconfirm archlinux-keyring
+          pacman -Syu --noconfirm --needed cargo nodejs npm git docker curl ca-certificates
+          useradd -m builder
+      - uses: actions/checkout@v7
+      - uses: Swatinem/rust-cache@v2
+      - name: makepkg
+        env:
+          INNKEEPER_VERSION: ${{ needs.version.outputs.version }}
+          PACKAGER: Elsewhere Innkeeper contributors
+        run: |
+          sed -i "s/^pkgver=.*/pkgver=$INNKEEPER_VERSION/" packaging/arch/PKGBUILD
+          chown -R builder .
+          su builder -c 'cd packaging/arch && PACKAGER="$PACKAGER" makepkg -f --noconfirm'
+          test "$(target/release/elsewhere-innkeeper --version)" = "elsewhere-innkeeper $INNKEEPER_VERSION"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: arch
+          path: packaging/arch/*.pkg.tar.zst
+
+  release:
+    needs: [debian, install-test, arch]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          path: dist
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v3
+        with:
+          files: dist/*
+          generate_release_notes: true

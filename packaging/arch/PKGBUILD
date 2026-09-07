@@ -1,31 +1,27 @@
+# Builds the checkout this file lives in: `cd packaging/arch && makepkg -f`.
+# The release workflow sets pkgver from the git tag; a local build stays at 0.0.0.
 pkgname=elsewhere-innkeeper
-pkgver=0.1.0
+pkgver=0.0.0
 pkgrel=1
 pkgdesc='Manage isolated Elsewhere Docker desktops'
 arch=('x86_64')
+url="https://github.com/ryanpetris/elsewhere-innkeeper"
 license=('MIT')
 # Native crypto assembly is incompatible with makepkg's injected C LTO flags.
-options=('!lto')
+options=('!lto' '!debug') # one package; no split -debug package with the symbols
 backup=('etc/elsewhere-innkeeper/environment')
 depends=('docker' 'curl' 'ca-certificates' 'gcc-libs')
-makedepends=('rust' 'nodejs' 'npm' 'git')
-source=("$pkgname-$pkgver.tar.gz")
-sha256sums=('SKIP')
+makedepends=('cargo' 'nodejs' 'npm' 'git')
 
 build() {
-    cd "$srcdir/$pkgname-$pkgver"
-    (cd web && npm ci --no-audit --no-fund && npm run build)
-    cargo build --release --locked
-}
-
-check() {
-    cd "$srcdir/$pkgname-$pkgver"
-    cargo test --locked
+    cd "$startdir/../.."
+    INNKEEPER_VERSION="$pkgver" make build
 }
 
 package() {
-    cd "$srcdir/$pkgname-$pkgver"
+    cd "$startdir/../.."
     install -Dm755 target/release/elsewhere-innkeeper "$pkgdir/usr/bin/elsewhere-innkeeper"
+    install -Dm644 README.md "$pkgdir/usr/share/doc/$pkgname/README.md"
     install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
     install -Dm644 packaging/elsewhere-innkeeper.service "$pkgdir/usr/lib/systemd/system/elsewhere-innkeeper.service"
     install -Dm644 packaging/elsewhere-innkeeper.sysusers "$pkgdir/usr/lib/sysusers.d/elsewhere-innkeeper.conf"

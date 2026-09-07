@@ -893,6 +893,13 @@ async fn asset(uri: axum::http::Uri) -> Response {
 }
 #[tokio::main]
 async fn main() -> Result<()> {
+    if std::env::args_os()
+        .nth(1)
+        .is_some_and(|arg| arg == "--version" || arg == "-V")
+    {
+        println!("elsewhere-innkeeper {}", env!("INNKEEPER_VERSION"));
+        return Ok(());
+    }
     let dir = PathBuf::from(env("INNKEEPER_DATA_DIR", "/var/lib/elsewhere-innkeeper"));
     std::fs::create_dir_all(&dir)?;
     std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700))?;

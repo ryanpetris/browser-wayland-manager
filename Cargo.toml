@@ -1,8 +1,27 @@
 [package]
 name = "elsewhere-innkeeper"
-version = "0.1.0"
+version = "0.0.0"
 edition = "2024"
 license = "MIT"
+description = "Manage isolated Elsewhere Docker desktops"
+
+[package.metadata.deb]
+maintainer = "Elsewhere Innkeeper contributors <noreply@localhost>"
+section = "admin"
+priority = "optional"
+extended-description = """\
+Creates and manages isolated Arch Linux and Debian desktops in Docker, with a web
+interface for session startup, logs, previews, and persistent home directories."""
+license-file = ["LICENSE", "0"]
+depends = "$auto, docker.io, docker-cli, curl, ca-certificates, systemd, init-system-helpers"
+maintainer-scripts = "packaging/debian"
+systemd-units = { unit-scripts = "packaging", enable = false, start = false }
+assets = [
+    ["target/release/elsewhere-innkeeper", "usr/bin/", "755"],
+    ["README.md", "usr/share/doc/elsewhere-innkeeper/", "644"],
+    ["packaging/environment", "etc/elsewhere-innkeeper/environment", "644"],
+    ["sessions/*", "usr/share/elsewhere-innkeeper/sessions/", "644"],
+]
 
 [dependencies]
 anyhow = "1"
