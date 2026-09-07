@@ -35,4 +35,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends python3 openssl
 COPY --chmod=755 scripts/check-proxy.py /check-proxy.py
 RUN ln -s /check-proxy.py /usr/local/bin/elsewhere
 
+FROM web AS proxy-browser
+RUN apt-get update && apt-get install -y --no-install-recommends chromium ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+COPY scripts/check-proxy-browser.mjs /src/scripts/check-proxy-browser.mjs
+
 FROM runtime AS final

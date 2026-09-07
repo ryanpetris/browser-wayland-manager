@@ -31,6 +31,7 @@ cleanup() {
 trap 'cleanup' EXIT
 trap 'exit 1' HUP INT TERM
 export INNKEEPER_DATA_DIR="$work/data" INNKEEPER_LISTEN=127.0.0.1:29300
+export INNKEEPER_IN_DOCKER=0 INNKEEPER_RTC_ADDR=127.0.0.1
 elsewhere-innkeeper >"$work/server.log" 2>&1 &
 pid=$!
 for _ in $(seq 1 30); do
@@ -39,7 +40,7 @@ for _ in $(seq 1 30); do
         curl --fail --silent --max-time 2 \
             -H "Authorization: Bearer $(cat "$INNKEEPER_DATA_DIR/admin-token")" \
             http://127.0.0.1:29300/api/sessions -o "$work/sessions.json"; then
-        if [ "$(cat "$work/sessions.json")" != "{\"sessions\":[],\"version\":\"$version\"}" ]; then
+        if [ "$(cat "$work/sessions.json")" != "{\"local_elsewhere\":false,\"sessions\":[],\"version\":\"$version\"}" ]; then
             printf 'Unexpected sessions response: ' >&2
             cat "$work/sessions.json" >&2
             cat "$work/server.log" >&2

@@ -10,7 +10,6 @@ import os
 from pathlib import Path
 import shutil
 import signal
-import ssl
 import sys
 import threading
 import subprocess
@@ -39,12 +38,6 @@ with tempfile.TemporaryDirectory(prefix="innkeeper-refresh-") as temporary:
         )
     (recipes / "packages.sh").write_text("exit 0\n")
     # Exercise the production launcher with a fixture session bus and desktop.
-    cert, key = work / "cert.pem", work / "key.pem"
-    subprocess.run(["openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes",
-                    "-keyout", str(key), "-out", str(cert), "-days", "1",
-                    "-subj", "/CN=localhost"], check=True, capture_output=True)
-    tls = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-    tls.load_cert_chain(cert, key)
     class Ready(http.server.BaseHTTPRequestHandler):
         def do_GET(self):
             try:
@@ -61,7 +54,6 @@ with tempfile.TemporaryDirectory(prefix="innkeeper-refresh-") as temporary:
             pass
     for port in (19500, 19501):
         readiness = http.server.ThreadingHTTPServer(("127.0.0.1", port), Ready)
-        readiness.socket = tls.wrap_socket(readiness.socket, server_side=True)
         threading.Thread(target=readiness.serve_forever, daemon=True).start()
     # Use Docker-assigned host ports so the rig can coexist with live sessions.
     tools = work / "bin"
@@ -145,7 +137,7 @@ exec sleep 10000
         package(distro, "first")
     env = dict(os.environ, PATH=f"{tools}:{os.environ['PATH']}",
                INNKEEPER_DATA_DIR=str(data), INNKEEPER_ASSETS_DIR=str(assets),
-               INNKEEPER_LISTEN="127.0.0.1:29300", INNKEEPER_DOCKER_HOST="127.0.0.1")
+               INNKEEPER_LISTEN="127.0.0.1:29300", INNKEEPER_IN_DOCKER="0", INNKEEPER_RTC_ADDR="127.0.0.1")
     if local_mode:
         local = work / "local"
         generation = local / "build-fixture"
@@ -586,7 +578,7 @@ exec sleep 10000
             wait(lambda: state(sid)["status"] == "running" and not pending())
             assert launched(sid, baseline + 1)
             args = subprocess.check_output(["docker", "exec", name, "cat", "/home/elsewhere/launch-args"]).decode().split("\0")[:-1]
-            assert args == ["--listen", "0.0.0.0:19443", "--rtc-port", "19443", "--elements",
+            assert args == ["--no-tls", "--listen", "0.0.0.0:19443", "--url-prefix", "/e/" + sid, "--rtc-port", str(state(sid)["port"]), "--rtc-addr", "127.0.0.1", "--elements",
                             "--screen-size", "1280x720", "--kiosk", "--exec", command], args
             run("docker", "exec", name, "test", "!", "-e", "/tmp/unexpected")
             assert run("docker", "inspect", name, "--format", "{{.Id}}") == identity
@@ -609,7 +601,7 @@ exec sleep 10000
                 api(f"/sessions/{sid}/start", "POST")
                 wait(lambda: state(sid)["status"] == "running" and not pending())
                 args = subprocess.check_output(["docker", "exec", name, "cat", "/home/elsewhere/launch-args"]).decode().split("\0")[:-1]
-                assert args == ["--listen", "0.0.0.0:19443", "--rtc-port", "19443", "--elements"]
+                assert args == ["--no-tls", "--listen", "0.0.0.0:19443", "--url-prefix", "/e/" + sid, "--rtc-port", str(state(sid)["port"]), "--rtc-addr", "127.0.0.1", "--elements"]
                 save(edited)
                 api(f"/sessions/{sid}/relaunch", "POST")
                 wait(lambda: state(sid)["status"] == "running" and not pending())

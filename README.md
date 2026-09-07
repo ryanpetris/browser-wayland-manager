@@ -5,6 +5,7 @@ A separate Rust/Axum and React/Vite application that creates and manages Elsewhe
 ## Run with Docker Compose
 
 ```sh
+export INNKEEPER_RTC_ADDR=<reachable-ipv4-address>
 docker compose up -d --build
 docker compose exec innkeeper cat /var/lib/elsewhere-innkeeper/admin-token
 ```
@@ -13,22 +14,41 @@ Open `http://<server-hostname>:19300` and sign in with that token. Innkeeper gen
 
 Innkeeper downloads the pinned Elsewhere release package from GitHub and caches it in its data directory. It pulls a stock distribution image if needed, then installs the package and its dependencies inside each new container. Open **Logs** to follow downloads and setup. Innkeeper does not clone or compile Elsewhere at runtime.
 
-Session links use HTTPS and the existing `#token=…` convention. Each session generates a self-signed certificate; accept it when opening that session. WebCodecs needs a secure browser context. Innkeeper uses its viewer token for previews and keeps tokens out of URLs used for API requests and out of returned logs.
+Sessions open at `/e/<session-uuid>/` on Innkeeper's origin. Serve that origin over HTTPS for WebCodecs and browser capture features. Set `INNKEEPER_TLS_CERT` and `INNKEEPER_TLS_KEY` to PEM files for Innkeeper to terminate TLS, or put Innkeeper behind an HTTPS gateway. Elsewhere serves plain HTTP privately; Innkeeper proxies HTTP and WebSockets. WebRTC uses a separate encrypted UDP connection directly to each session.
 
 ## Network configuration
 
-Innkeeper listens on port `19300`. Sessions publish matching TCP and UDP ports from `19500` through `19999`, forwarding to container port `19443`. Docker rejects occupied ports, and the failed session remains available for cleanup. Each retained session reserves its port until destruction.
+Innkeeper listens on port `19300`. Each session reserves a port from `19500` through `19999` until destruction, including while stopped. WebRTC publishes `0.0.0.0:P:P/udp`. Configure the IPv4 address browsers can reach and open or forward that UDP range without changing port numbers. Docker rejects occupied ports; the failed session remains available for cleanup. WebSocket video remains available when UDP connectivity fails.
 
-| Variable | Native default | Purpose |
+| Variable | Default | Purpose |
 | --- | --- | --- |
-| `INNKEEPER_LISTEN` | `0.0.0.0:19300` | Innkeeper HTTP listen address |
-| `INNKEEPER_PUBLIC_HOST` | Empty | Override the browser hostname used in session links |
-| `INNKEEPER_DOCKER_HOST` | `127.0.0.1` | Address where the backend reaches published session ports |
-| `INNKEEPER_SESSION_BIND` | `0.0.0.0` | Host address on which Docker publishes session ports |
-| `INNKEEPER_DATA_DIR` | `/var/lib/elsewhere-innkeeper` | Private Innkeeper state, administrator token, build logs |
+| `INNKEEPER_LISTEN` | `0.0.0.0:19300` | Innkeeper HTTP or HTTPS listen address |
+| `INNKEEPER_RTC_ADDR` | Required | Reachable IPv4 address advertised for WebRTC |
+| `INNKEEPER_IN_DOCKER` | `0` native, `1` in image | Reach sessions through a shared Docker bridge |
+| `INNKEEPER_DOCKER_CONTAINER` | Container hostname | Innkeeper container name or ID for Docker inspection |
+| `INNKEEPER_DOCKER_NETWORK` | Discover one attached bridge | Select an attached bridge by name or ID when there are several |
+| `INNKEEPER_TLS_CERT` | Empty | PEM certificate chain; enables HTTPS together with the key |
+| `INNKEEPER_TLS_KEY` | Empty | PEM private key |
+| `INNKEEPER_DATA_DIR` | `/var/lib/elsewhere-innkeeper` | Private state, administrator token, build logs |
 | `INNKEEPER_ASSETS_DIR` | `/usr/share/elsewhere-innkeeper` | Session setup scripts |
 
-The native application and session ports bind all IPv4 interfaces by default. Compose publishes Innkeeper's port on the addresses supported by the Docker daemon. Desktop links use the hostname or IP address in the browser's Innkeeper URL, with the session's HTTPS port. Set `INNKEEPER_PUBLIC_HOST` to override that hostname. When a reverse proxy runs on another machine, set it to the Docker host's browser-reachable address unless the proxy also forwards the session ports. IPv6 literal overrides must include brackets, for example `[2001:db8::1]`; IPv6 links also require Docker to publish the session ports over IPv6. Compose uses `host.docker.internal:host-gateway` for backend access, independently of browser links. Use an HTTPS reverse proxy to protect management traffic on untrusted networks. To restrict management access to the local machine, change the Compose port mapping to `127.0.0.1:19300:19300`, or set `INNKEEPER_LISTEN=127.0.0.1:19300` for a native installation. For a native installation, `INNKEEPER_SESSION_BIND=127.0.0.1` also restricts desktop ports to loopback. Forward both TCP and UDP session ports when using NAT. One Innkeeper controls one local Linux Docker daemon; remote Docker daemons and rootless Docker are not currently supported.
+In Docker mode, Innkeeper discovers its own bridge network through Docker inspection and attaches new sessions to that network. Their HTTP ports are not published. Requests use each owned container's current IP and port `19443`, so both the default bridge and custom networks work without container-name DNS. Peers on that bridge can reach session HTTP; Elsewhere authenticates its API and WebSockets. If the container has a custom hostname, set `INNKEEPER_DOCKER_CONTAINER` to its Docker name or ID. The CLI equivalents are `--in-docker`, `--docker-container NAME_OR_ID`, and `--docker-network NAME_OR_ID`.
+
+Native Innkeeper publishes session HTTP at `127.0.0.1:P:19443/tcp` and connects through loopback. One Innkeeper controls one local Linux Docker daemon. Remote daemons, rootless Docker, and changing an installation between native and Docker modes are unsupported. Start uses the container's existing Docker configuration.
+
+For HTTPS in Compose, mount the certificate directory read-only and set both TLS variables in a Compose override. For example:
+
+```yaml
+services:
+  innkeeper:
+    environment:
+      INNKEEPER_TLS_CERT: /run/innkeeper-tls/fullchain.pem
+      INNKEEPER_TLS_KEY: /run/innkeeper-tls/key.pem
+    volumes:
+      - ./tls:/run/innkeeper-tls:ro
+```
+
+Restart Innkeeper after renewing certificates. An external HTTPS gateway must connect to Innkeeper using HTTP/1.1 and forward the complete path, authorization, WebSocket upgrades and streaming bodies. Session links use the browser's origin; no public-host override is needed. URL prefixes keep Elsewhere preferences and tokens separate but do not isolate applications within the browser origin.
 
 After changing Compose configuration, rebuild and recreate Innkeeper with `docker compose up -d --build`.
 
@@ -38,7 +58,7 @@ Management access grants Docker control. Treat the administrator token and Docke
 
 Creation validates package names, records the session, downloads a release package if it is not cached, and prepares a stock base image. It creates a labeled volume and container, then copies the setup scripts and package into the stopped container through the Docker API. This also works when Innkeeper runs inside Docker; the source files are read from Innkeeper's filesystem.
 
-Inside the session container, setup installs runtime services, prepares the user and runtime directories, and installs Elsewhere with `apt` or `pacman`. The package manager resolves the package's declared dependencies, including Debian recommendations. A separate script installs requested extra packages before Elsewhere starts. Elsewhere generates its own credentials on first launch. Innkeeper runs `elsewhere token` and `elsewhere token --viewer` as the desktop user when credentials are needed. Session packages must provide these commands. Innkeeper treats their output as opaque text. The session stays preparing until both commands succeed and an authenticated readiness request succeeds. Setup and installation markers allow stopped sessions to restart without reinstalling packages.
+Inside the session container, setup installs runtime services, prepares the user and runtime directories, and installs Elsewhere with `apt` or `pacman`. The package manager resolves the package's declared dependencies, including Debian recommendations. A separate script installs requested extra packages before Elsewhere starts. Elsewhere generates its own credentials on first launch. Innkeeper runs `elsewhere token` and `elsewhere token --viewer` as the desktop user when credentials are needed. Session packages must provide these commands and the `--url-prefix`, `--no-tls`, `--rtc-addr`, and `--rtc-port` launch flags. Innkeeper treats their output as opaque text. The session stays preparing until both commands succeed and an authenticated readiness request succeeds. Setup and installation markers allow stopped sessions to restart without reinstalling packages.
 
 Both distributions include xterm for sessions with no extra packages. Sessions use hardware encoding when a supported GPU is available, and software encoding without a GPU. Release packages are assumed compatible with the selected distribution; Innkeeper does not perform a separate binary or shared-library compatibility check.
 
@@ -78,7 +98,7 @@ Release packages are attached to `vX.Y.Z` GitHub releases. Install the downloade
 with `pacman -U ./elsewhere-innkeeper-*.pkg.tar.zst` on Arch or
 `apt install ./elsewhere-innkeeper_*.deb` on Debian and Ubuntu. The package creates a
 dedicated service account, installs the session assets, and provides a systemd service.
-Docker must be running. Enable Innkeeper explicitly:
+Docker must be running. Set `INNKEEPER_RTC_ADDR` in `/etc/elsewhere-innkeeper/environment` before enabling Innkeeper:
 
 ```sh
 sudo systemctl enable --now docker elsewhere-innkeeper
@@ -248,7 +268,28 @@ The tarball contains the binary, session scripts, README, and license. Extract i
 from its directory, pointing Innkeeper at the included session assets and a writable data directory:
 
 ```sh
-INNKEEPER_ASSETS_DIR="$PWD" INNKEEPER_DATA_DIR="$PWD/data" ./elsewhere-innkeeper
+INNKEEPER_RTC_ADDR=<reachable-ipv4-address> \
+  INNKEEPER_ASSETS_DIR="$PWD" INNKEEPER_DATA_DIR="$PWD/data" ./elsewhere-innkeeper
 ```
 
 Docker must be installed and accessible to the account running Innkeeper.
+
+The pinned Elsewhere `0.4.4` release lacks `--url-prefix`. Proxy sessions currently require a local Elsewhere build containing public URL-prefix support; use the local package workflow above.
+
+## Proxy verification
+
+Run the checks in Docker:
+
+```sh
+docker build --target check -t innkeeper-proxy-check .
+docker build --target proxy-rig -t innkeeper-proxy-rig .
+docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
+  -e INNKEEPER_RTC_ADDR=127.0.0.1 --entrypoint python3 \
+  innkeeper-proxy-rig /check-proxy.py
+```
+
+The proxy fixture creates two disposable containers and checks TLS, UUID routing, ownership, authorization, a large upload, an unbuffered stream longer than eight seconds, WebSocket binary/ping/close frames, and restart routing. It uses UDP ports `29550` and `29551`. Set `PROXY_TEST_HTTP=1` to check the plaintext listener used behind an HTTPS gateway. Set `PROXY_TEST_TIMEOUTS=1` to check a stalled backend and an active upload longer than the response-header idle timeout. Repeat on a custom bridge by adding `--network NETWORK -e PROXY_TEST_NETWORK=NETWORK`, or check native mode with `--network host -e INNKEEPER_IN_DOCKER=0`.
+
+`scripts/check-proxy-desktops.py` checks fresh real Arch and Debian packages through the production creation and launch flow. Run it in `proxy-rig` with the Docker socket, the session scripts, a writable directory at `/work`, and a local package manifest and artifacts at `/local`. Mount `/dev/dri` to exercise the host GPU. Publish `127.0.0.1:29301:29301` and set `INNKEEPER_RTC_ADDR=127.0.0.1` for a local browser rig. It reserves ports used by unrelated Docker containers and removes only its own sessions.
+
+For browser checks, set `PROXY_WAIT_BROWSER=1` on that desktop rig, build the `proxy-browser` target, and run `node /src/scripts/check-proxy-browser.mjs` with host networking and the same `/work` directory after `/work/browser.json` appears. This covers simultaneous desktops, Open and token isolation, decoded frames, file transfers, MCP, terminals, viewer access, direct WebRTC and WebSocket fallback. The browser writes `/work/browser-done` so the desktop rig can clean up.
