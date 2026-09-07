@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Exercise HTTP, TLS, WebSocket and Docker routing in the Docker verification rig.
 
-Run with Python, OpenSSL, the Docker CLI/socket and INNKEEPER_RTC_ADDR set.
+Run with Python, OpenSSL, the Docker CLI/socket available.
 The rig image must also contain this script and an `elsewhere` token fixture.
 """
 import base64

@@ -5,7 +5,6 @@ A separate Rust/Axum and React/Vite application that creates and manages Elsewhe
 ## Run with Docker Compose
 
 ```sh
-export INNKEEPER_RTC_ADDR=<reachable-ipv4-address>
 docker compose up -d --build
 docker compose exec innkeeper cat /var/lib/elsewhere-innkeeper/admin-token
 ```
@@ -18,12 +17,12 @@ Sessions open at `/e/<session-uuid>/` on Innkeeper's origin. Serve that origin o
 
 ## Network configuration
 
-Innkeeper listens on port `19300`. Each session reserves a port from `19500` through `19999` until destruction, including while stopped. WebRTC publishes `0.0.0.0:P:P/udp`. Configure the IPv4 address browsers can reach and open or forward that UDP range without changing port numbers. Docker rejects occupied ports; the failed session remains available for cleanup. WebSocket video remains available when UDP connectivity fails.
+Innkeeper listens on port `19300`. Each session reserves a port from `19500` through `19999` until destruction, including while stopped. WebRTC publishes `0.0.0.0:P:P/udp`. Open or forward that UDP range without changing port numbers. WebRTC uses the hostname in the browser URL with the session’s assigned UDP port. That hostname must resolve to a reachable address from inside the session container; set `INNKEEPER_RTC_ADDR` only to override it. Docker rejects occupied ports; the failed session remains available for cleanup. WebSocket video remains available when UDP connectivity fails.
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `INNKEEPER_LISTEN` | `0.0.0.0:19300` | Innkeeper HTTP or HTTPS listen address |
-| `INNKEEPER_RTC_ADDR` | Required | Reachable IPv4 address advertised for WebRTC |
+| `INNKEEPER_RTC_ADDR` | Browser hostname | Optional reachable IPv4 address override for WebRTC |
 | `INNKEEPER_IN_DOCKER` | `0` native, `1` in image | Reach sessions through a shared Docker bridge |
 | `INNKEEPER_DOCKER_CONTAINER` | Container hostname | Innkeeper container name or ID for Docker inspection |
 | `INNKEEPER_DOCKER_NETWORK` | Discover one attached bridge | Select an attached bridge by name or ID when there are several |
@@ -98,7 +97,7 @@ Release packages are attached to `vX.Y.Z` GitHub releases. Install the downloade
 with `pacman -U ./elsewhere-innkeeper-*.pkg.tar.zst` on Arch or
 `apt install ./elsewhere-innkeeper_*.deb` on Debian and Ubuntu. The package creates a
 dedicated service account, installs the session assets, and provides a systemd service.
-Docker must be running. Set `INNKEEPER_RTC_ADDR` in `/etc/elsewhere-innkeeper/environment` before enabling Innkeeper:
+Docker must be running. Enable Innkeeper:
 
 ```sh
 sudo systemctl enable --now docker elsewhere-innkeeper
@@ -268,13 +267,12 @@ The tarball contains the binary, session scripts, README, and license. Extract i
 from its directory, pointing Innkeeper at the included session assets and a writable data directory:
 
 ```sh
-INNKEEPER_RTC_ADDR=<reachable-ipv4-address> \
-  INNKEEPER_ASSETS_DIR="$PWD" INNKEEPER_DATA_DIR="$PWD/data" ./elsewhere-innkeeper
+INNKEEPER_ASSETS_DIR="$PWD" INNKEEPER_DATA_DIR="$PWD/data" ./elsewhere-innkeeper
 ```
 
 Docker must be installed and accessible to the account running Innkeeper.
 
-The pinned Elsewhere `0.4.4` release lacks `--url-prefix`. Proxy sessions currently require a local Elsewhere build containing public URL-prefix support; use the local package workflow above.
+The pinned Elsewhere `0.5.0` release requires an explicit RTC address behind the proxy. Hostname fallback with the assigned UDP port requires an Elsewhere build containing the `--rtc-port` advertisement fix; use the local package workflow above until that fix is released.
 
 ## Proxy verification
 
@@ -284,12 +282,12 @@ Run the checks in Docker:
 docker build --target check -t innkeeper-proxy-check .
 docker build --target proxy-rig -t innkeeper-proxy-rig .
 docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
-  -e INNKEEPER_RTC_ADDR=127.0.0.1 --entrypoint python3 \
+  --entrypoint python3 \
   innkeeper-proxy-rig /check-proxy.py
 ```
 
 The proxy fixture creates two disposable containers and checks TLS, UUID routing, ownership, authorization, a large upload, an unbuffered stream longer than eight seconds, WebSocket binary/ping/close frames, and restart routing. It uses UDP ports `29550` and `29551`. Set `PROXY_TEST_HTTP=1` to check the plaintext listener used behind an HTTPS gateway. Set `PROXY_TEST_TIMEOUTS=1` to check a stalled backend and an active upload longer than the response-header idle timeout. Repeat on a custom bridge by adding `--network NETWORK -e PROXY_TEST_NETWORK=NETWORK`, or check native mode with `--network host -e INNKEEPER_IN_DOCKER=0`.
 
-`scripts/check-proxy-desktops.py` checks fresh real Arch and Debian packages through the production creation and launch flow. Run it in `proxy-rig` with the Docker socket, the session scripts, a writable directory at `/work`, and a local package manifest and artifacts at `/local`. Mount `/dev/dri` to exercise the host GPU. Publish `127.0.0.1:29301:29301` and set `INNKEEPER_RTC_ADDR=127.0.0.1` for a local browser rig. It reserves ports used by unrelated Docker containers and removes only its own sessions.
+`scripts/check-proxy-desktops.py` checks fresh real Arch and Debian packages through the production creation and launch flow. Run it in `proxy-rig` with the Docker socket, the session scripts, a writable directory at `/work`, and a local package manifest and artifacts at `/local`. Mount `/dev/dri` to exercise the host GPU. Publish `127.0.0.1:29301:29301` for a local browser rig. Leave `INNKEEPER_RTC_ADDR` unset to check hostname fallback, or set it to check an explicit override. It reserves ports used by unrelated Docker containers and removes only its own sessions.
 
-For browser checks, set `PROXY_WAIT_BROWSER=1` on that desktop rig, build the `proxy-browser` target, and run `node /src/scripts/check-proxy-browser.mjs` with host networking and the same `/work` directory after `/work/browser.json` appears. This covers simultaneous desktops, Open and token isolation, decoded frames, file transfers, MCP, terminals, viewer access, direct WebRTC and WebSocket fallback. The browser writes `/work/browser-done` so the desktop rig can clean up.
+For browser checks, set `PROXY_WAIT_BROWSER=1` on that desktop rig, build the `proxy-browser` target, and run `node /src/scripts/check-proxy-browser.mjs` with host networking and the same `/work` directory after `/work/browser.json` appears. Set `PROXY_BROWSER_ORIGIN=https://localhost:29301` to exercise hostname resolution. This covers simultaneous desktops, Open and token isolation, decoded frames, file transfers, MCP, terminals, viewer access, direct WebRTC and WebSocket fallback. The browser writes `/work/browser-done` so the desktop rig can clean up.

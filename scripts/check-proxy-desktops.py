@@ -71,6 +71,11 @@ try:
         info=json.loads(subprocess.check_output(['docker','inspect',name]))[0]
         bindings=info['HostConfig']['PortBindings']
         port=state(sid)['port']
+        launch = subprocess.check_output(['docker', 'top', name, '-eo', 'pid,args'], text=True)
+        commands = [line.split(None, 1)[1] for line in launch.splitlines()[1:] if len(line.split(None, 1)) == 2]
+        desktop = next(line for line in commands if line.startswith('elsewhere ') and '--url-prefix' in line)
+        assert ('--rtc-addr' in desktop) == bool(env.get('INNKEEPER_RTC_ADDR'))
+        assert '--rtc-port ' + str(port) in desktop
         assert '19443/tcp' not in bindings
         assert bindings[str(port)+'/udp']==[{'HostIp':'0.0.0.0','HostPort':str(port)}]
         tokens=[subprocess.check_output(['docker','exec','--user','elsewhere','--env','HOME=/home/elsewhere',name,'elsewhere','token',*args],text=True).removesuffix('\n') for args in ([],['--viewer'])]

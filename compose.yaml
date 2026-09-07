@@ -8,7 +8,7 @@ services:
     ports:
       - "19300:19300"
     environment:
-      INNKEEPER_RTC_ADDR: "${INNKEEPER_RTC_ADDR:?Set the IPv4 address browsers can reach for WebRTC}"
+      INNKEEPER_RTC_ADDR: "${INNKEEPER_RTC_ADDR:-}"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - /dev/dri:/dev/dri:ro

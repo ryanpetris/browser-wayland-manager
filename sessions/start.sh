@@ -11,7 +11,8 @@ mkfifo "$XDG_RUNTIME_DIR/output"
 # Redact startup links before Docker persists them, including rotated token links.
 LC_ALL=C stdbuf -oL sed -E 's/(#token=).*/\1[REDACTED]/' < "$XDG_RUNTIME_DIR/output" &
 filter=$!
-set -- --no-tls --listen 0.0.0.0:19443 --url-prefix "$INNKEEPER_URL_PREFIX" --rtc-port "$INNKEEPER_RTC_PORT" --rtc-addr "$INNKEEPER_RTC_ADDR" --elements
+set -- --no-tls --listen 0.0.0.0:19443 --url-prefix "$INNKEEPER_URL_PREFIX" --rtc-port "$INNKEEPER_RTC_PORT" --elements
+if [ -n "${INNKEEPER_RTC_ADDR:-}" ]; then set -- "$@" --rtc-addr "$INNKEEPER_RTC_ADDR"; fi
 if [ -n "${INNKEEPER_SCREEN_SIZE:-}" ]; then set -- "$@" --screen-size "$INNKEEPER_SCREEN_SIZE"; fi
 if [ "${INNKEEPER_KIOSK:-0}" = 1 ]; then set -- "$@" --kiosk; fi
 if [ -n "${INNKEEPER_STARTUP_COMMAND:-}" ]; then set -- "$@" --exec "$INNKEEPER_STARTUP_COMMAND"; fi

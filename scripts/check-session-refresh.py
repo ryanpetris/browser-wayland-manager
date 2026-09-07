@@ -578,7 +578,7 @@ exec sleep 10000
             wait(lambda: state(sid)["status"] == "running" and not pending())
             assert launched(sid, baseline + 1)
             args = subprocess.check_output(["docker", "exec", name, "cat", "/home/elsewhere/launch-args"]).decode().split("\0")[:-1]
-            assert args == ["--no-tls", "--listen", "0.0.0.0:19443", "--url-prefix", "/e/" + sid, "--rtc-port", str(state(sid)["port"]), "--rtc-addr", "127.0.0.1", "--elements",
+            assert args == ["--no-tls", "--listen", "0.0.0.0:19443", "--url-prefix", "/e/" + sid, "--rtc-port", str(state(sid)["port"]), "--elements", "--rtc-addr", "127.0.0.1",
                             "--screen-size", "1280x720", "--kiosk", "--exec", command], args
             run("docker", "exec", name, "test", "!", "-e", "/tmp/unexpected")
             assert run("docker", "inspect", name, "--format", "{{.Id}}") == identity
@@ -601,7 +601,7 @@ exec sleep 10000
                 api(f"/sessions/{sid}/start", "POST")
                 wait(lambda: state(sid)["status"] == "running" and not pending())
                 args = subprocess.check_output(["docker", "exec", name, "cat", "/home/elsewhere/launch-args"]).decode().split("\0")[:-1]
-                assert args == ["--no-tls", "--listen", "0.0.0.0:19443", "--url-prefix", "/e/" + sid, "--rtc-port", str(state(sid)["port"]), "--rtc-addr", "127.0.0.1", "--elements"]
+                assert args == ["--no-tls", "--listen", "0.0.0.0:19443", "--url-prefix", "/e/" + sid, "--rtc-port", str(state(sid)["port"]), "--elements", "--rtc-addr", "127.0.0.1"]
                 save(edited)
                 api(f"/sessions/{sid}/relaunch", "POST")
                 wait(lambda: state(sid)["status"] == "running" and not pending())

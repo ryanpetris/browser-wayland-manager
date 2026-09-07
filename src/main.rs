@@ -713,7 +713,7 @@ async fn prepare(app: Shared, id: &str, new_container: bool, attempt_ms: u64) ->
         }
         let launch = LaunchSettings::from(&s);
         let config = app.dir.join(format!("{id}.launch-settings.sh"));
-        let config_text = format!("{}export INNKEEPER_URL_PREFIX='/e/{}'\nexport INNKEEPER_RTC_PORT={}\nexport INNKEEPER_RTC_ADDR='{}'\n", launch_config(&launch), s.id, s.port, app.network.rtc_addr);
+        let config_text = format!("{}export INNKEEPER_URL_PREFIX='/e/{}'\nexport INNKEEPER_RTC_PORT={}\nexport INNKEEPER_RTC_ADDR='{}'\n", launch_config(&launch), s.id, s.port, app.network.rtc_addr.map(|addr| addr.to_string()).unwrap_or_default());
         private_write(&config, config_text.as_bytes())?;
         // The desktop user reads this file; only root can write it.
         std::fs::set_permissions(&config, std::fs::Permissions::from_mode(0o644))?;

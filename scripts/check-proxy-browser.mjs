@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { readFile, writeFile } from 'node:fs/promises';
 import { chromium } from '../web/node_modules/playwright-core/index.mjs';
 
-const work = '/work', origin = 'https://127.0.0.1:29301';
+const work = '/work', origin = process.env.PROXY_BROWSER_ORIGIN || 'https://127.0.0.1:29301';
 const sessions = JSON.parse(await readFile(work + '/browser.json', 'utf8'));
 const admin = (await readFile(work + '/data/admin-token', 'utf8')).trim();
 const browser = await chromium.launch({ executablePath: '/usr/bin/chromium', headless: true, args: ['--no-sandbox'] });

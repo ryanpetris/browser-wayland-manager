@@ -4,7 +4,7 @@ use std::net::{IpAddr, SocketAddr};
 
 pub struct Network {
     pub id: Option<String>,
-    pub rtc_addr: IpAddr,
+    pub rtc_addr: Option<IpAddr>,
 }
 impl Network {
     pub async fn discover() -> Result<Self> {
@@ -32,12 +32,7 @@ impl Network {
                 _ => bail!("Unknown argument: {arg}"),
             }
         }
-        let rtc_addr: IpAddr = env("INNKEEPER_RTC_ADDR", "")
-            .parse()
-            .context("Set INNKEEPER_RTC_ADDR to the IPv4 address browsers can reach for WebRTC")?;
-        if !rtc_addr.is_ipv4() || rtc_addr.is_unspecified() || rtc_addr.is_multicast() {
-            bail!("INNKEEPER_RTC_ADDR must be a reachable unicast IPv4 address");
-        }
+        let rtc_addr = rtc_override(&env("INNKEEPER_RTC_ADDR", ""))?;
         if !in_docker {
             if !container.is_empty() || !network.is_empty() {
                 bail!("Docker network options require --in-docker");
@@ -119,5 +114,34 @@ impl App {
     }
     pub async fn endpoint(&self, s: &Session) -> Result<String> {
         Ok(format!("http://{}/e/{}", self.backend(s).await?, s.id))
+    }
+}
+
+fn rtc_override(value: &str) -> Result<Option<IpAddr>> {
+    if value.is_empty() {
+        return Ok(None);
+    }
+    let addr: IpAddr = value
+        .parse()
+        .context("INNKEEPER_RTC_ADDR must be a reachable unicast IPv4 address")?;
+    if !addr.is_ipv4() || addr.is_unspecified() || addr.is_multicast() {
+        bail!("INNKEEPER_RTC_ADDR must be a reachable unicast IPv4 address");
+    }
+    Ok(Some(addr))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn rtc_address_override_is_optional() {
+        assert_eq!(rtc_override("").unwrap(), None);
+        assert_eq!(
+            rtc_override("192.0.2.1").unwrap(),
+            Some("192.0.2.1".parse().unwrap())
+        );
+        for value in ["bad", "0.0.0.0", "224.0.0.1", "::1"] {
+            assert!(rtc_override(value).is_err());
+        }
     }
 }

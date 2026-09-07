@@ -31,7 +31,8 @@ cleanup() {
 trap 'cleanup' EXIT
 trap 'exit 1' HUP INT TERM
 export INNKEEPER_DATA_DIR="$work/data" INNKEEPER_LISTEN=127.0.0.1:29300
-export INNKEEPER_IN_DOCKER=0 INNKEEPER_RTC_ADDR=127.0.0.1
+export INNKEEPER_IN_DOCKER=0
+unset INNKEEPER_RTC_ADDR
 elsewhere-innkeeper >"$work/server.log" 2>&1 &
 pid=$!
 for _ in $(seq 1 30); do
