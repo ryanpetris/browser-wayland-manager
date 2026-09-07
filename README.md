@@ -15,6 +15,24 @@ Innkeeper downloads the pinned Elsewhere release package from GitHub and caches 
 
 Sessions open at `/e/<session-uuid>/` on Innkeeper's origin. Serve that origin over HTTPS for WebCodecs and browser capture features. Set `INNKEEPER_TLS_CERT` and `INNKEEPER_TLS_KEY` to PEM files for Innkeeper to terminate TLS, or put Innkeeper behind an HTTPS gateway. Elsewhere serves plain HTTP privately; Innkeeper proxies HTTP and WebSockets. WebRTC uses a separate encrypted UDP connection directly to each session.
 
+## Run the Docker Hub image
+
+The published image supports Linux amd64. Replace `<namespace>` with the Docker Hub namespace:
+
+```sh
+docker run -d --name elsewhere-innkeeper --restart unless-stopped \
+  -p 19300:19300 \
+  -v /var/run/docker.sock:/var/run/docker.sock \
+  -v /dev/dri:/dev/dri:ro \
+  -v innkeeper-data:/var/lib/elsewhere-innkeeper \
+  <namespace>/elsewhere-innkeeper:latest
+docker exec elsewhere-innkeeper cat /var/lib/elsewhere-innkeeper/admin-token
+```
+
+Use `:X.Y.Z` to select a specific Innkeeper release. Every release pushes both its version tag and
+`latest`; `latest` points to whichever release most recently pushed that tag. The network and HTTPS
+configuration below applies to the published image too.
+
 ## Network configuration
 
 Innkeeper listens on port `19300`. Each session reserves a port from `19500` through `19999` until destruction, including while stopped. WebRTC publishes `0.0.0.0:P:P/udp`. Open or forward that UDP range without changing port numbers. WebRTC uses the hostname in the browser URL with the session’s assigned UDP port. That hostname must resolve to a reachable address from inside the session container; set `INNKEEPER_RTC_ADDR` only to override it. Docker rejects occupied ports; the failed session remains available for cleanup. WebSocket video remains available when UDP connectivity fails.
@@ -238,6 +256,22 @@ packages use `X.Y.Z-1`, and their binaries report `X.Y.Z`. Cargo metadata stays 
 The workflow builds in Debian and Arch job containers with a Rust cache. It publishes
 both packages and a Linux x86_64 tarball after verifying the installed Debian package and
 running its authenticated API check on Debian Trixie, Ubuntu 24.04, and the latest Ubuntu image.
+
+After the package jobs succeed, the workflow builds the Dockerfile's `final` image for `linux/amd64`
+with the same `INNKEEPER_VERSION` and pushes it to Docker Hub as `X.Y.Z` and `latest`. It creates the
+GitHub release after the image push succeeds. Docker build records are not attached to the release.
+
+Create a Docker Hub repository named `elsewhere-innkeeper` and configure these GitHub Actions settings:
+
+| Setting | Type | Value |
+| --- | --- | --- |
+| `DOCKERHUB_IMAGE` | Repository variable | `<namespace>/elsewhere-innkeeper` |
+| `DOCKERHUB_USERNAME` | Repository variable | Docker Hub login with access to that repository |
+| `DOCKERHUB_TOKEN` | Repository secret | Docker Hub access token with read and write access |
+
+Every tagged release updates `latest` without comparing versions. Branch and pull-request builds do
+not publish images. If publishing fails, rerun the failed jobs. An image can already be available on
+Docker Hub when GitHub release creation fails; rerun the failed release job to finish publication.
 
 Local packaging uses the same `cargo-deb` and `makepkg` commands as the release workflow.
 On Debian, install `cargo-deb` and the source build dependencies, then run:
