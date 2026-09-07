@@ -1,6 +1,5 @@
 #!/bin/sh
 set -eu
-umask 077
 : > /tmp/innkeeper-timings
 stage() { echo "Stage: $1"; printf '%s\n' "$1" > /tmp/innkeeper-stage; printf '%s %s\n' "$(date +%s%3N)" "$1" >> /tmp/innkeeper-timings; }
 trap 'echo "Setup failed during $(cat /tmp/innkeeper-stage)" >&2' EXIT

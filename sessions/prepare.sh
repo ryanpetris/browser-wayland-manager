@@ -1,6 +1,5 @@
 #!/bin/sh
 set -eu
-umask 077
 url=$1
 package=$2
 image=$3
