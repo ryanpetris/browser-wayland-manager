@@ -214,7 +214,7 @@ exec sleep 10000
         created.append(probe)
         wait(lambda: state(probe)["status"] == "failed")
         cause = state(probe)["error"]
-        assert "unknown log opt" in cause and "journald" in cause, cause
+        assert isinstance(cause, str) and "unknown log opt" in cause and "journald" in cause, cause
         time.sleep(7)
         assert state(probe)["error"] == cause
         (tools / "fail-create").unlink()
