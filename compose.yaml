@@ -8,11 +8,7 @@ services:
     ports:
       - "19300:19300"
     environment:
-      INNKEEPER_PUBLIC_HOST: "${INNKEEPER_PUBLIC_HOST:-}"
-      INNKEEPER_SESSION_BIND: "${INNKEEPER_SESSION_BIND:-0.0.0.0}"
-      INNKEEPER_DOCKER_HOST: host.docker.internal
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
+      INNKEEPER_RTC_ADDR: "${INNKEEPER_RTC_ADDR:?Set the IPv4 address browsers can reach for WebRTC}"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - /dev/dri:/dev/dri:ro

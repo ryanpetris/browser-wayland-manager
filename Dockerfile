@@ -19,12 +19,20 @@ RUN if [ -z "$INNKEEPER_VERSION" ]; then unset INNKEEPER_VERSION; fi; \
 
 RUN useradd --create-home local-check && runuser -u local-check -- python3 scripts/check-elsewhere-local.py
 
-FROM debian:trixie-slim
+FROM debian:trixie-slim AS runtime
 RUN apt-get update && apt-get install -y --no-install-recommends docker-cli curl ca-certificates tini && rm -rf /var/lib/apt/lists/*
 COPY --from=build /src/target/release/elsewhere-innkeeper /usr/bin/elsewhere-innkeeper
 COPY sessions/ /usr/share/elsewhere-innkeeper/sessions/
 COPY LICENSE /usr/share/licenses/elsewhere-innkeeper/LICENSE
-ENV INNKEEPER_LISTEN=0.0.0.0:19300 INNKEEPER_DOCKER_HOST=host.docker.internal INNKEEPER_SESSION_BIND=0.0.0.0
+ENV INNKEEPER_LISTEN=0.0.0.0:19300 INNKEEPER_IN_DOCKER=1
 EXPOSE 19300
 VOLUME /var/lib/elsewhere-innkeeper
 ENTRYPOINT ["/usr/bin/tini", "--", "elsewhere-innkeeper"]
+
+FROM runtime AS proxy-rig
+RUN apt-get update && apt-get install -y --no-install-recommends python3 openssl zstd \
+    && rm -rf /var/lib/apt/lists/* && useradd -m elsewhere
+COPY --chmod=755 scripts/check-proxy.py /check-proxy.py
+RUN ln -s /check-proxy.py /usr/local/bin/elsewhere
+
+FROM runtime AS final

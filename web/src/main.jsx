@@ -173,12 +173,14 @@ function App() {
   }
   async function open(session) {
     const tab = window.open("about:blank", "_blank");
-    if (tab) tab.opener = null;
+    if (tab) {
+      tab.sessionStorage.clear();
+      tab.opener = null;
+    }
     try {
       const r = await api(`/sessions/${session.id}/link`, { method: "POST" });
-      const { url, use_browser_host } = await r.json();
-      const destination = new URL(url);
-      if (use_browser_host) destination.hostname = window.location.hostname;
+      const { url } = await r.json();
+      const destination = new URL(url, window.location.origin);
       if (tab) tab.location.replace(destination.href);
       else throw new Error("Allow popups to open the session.");
     } catch (e) {

@@ -1,3 +1,5 @@
+mod network;
+mod proxy;
 use anyhow::{Context, Result, bail};
 use axum::{
     Json, Router,
@@ -127,9 +129,7 @@ struct App {
     db: Mutex<Database>,
     dir: PathBuf,
     secret: String,
-    public_host: String,
-    docker_host: String,
-    bind: String,
+    network: network::Network,
     assets: PathBuf,
     client: reqwest::Client,
     preparations: Semaphore,
@@ -158,13 +158,6 @@ fn now_ms() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis() as u64
-}
-fn loopback(host: &str) -> bool {
-    host == "localhost"
-        || host
-            .trim_matches(['[', ']'])
-            .parse::<std::net::IpAddr>()
-            .is_ok_and(|ip| ip.is_loopback())
 }
 fn random_token() -> String {
     format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple())
@@ -232,9 +225,6 @@ impl App {
             bail!("Container ownership does not match");
         }
         Ok(v[0].clone())
-    }
-    fn endpoint(&self, s: &Session) -> String {
-        format!("https://{}:{}", self.docker_host, s.port)
     }
 }
 fn container(id: &str) -> String {
@@ -592,8 +582,8 @@ async fn prepare(app: Shared, id: &str, new_container: bool, attempt_ms: u64) ->
             let owner = app.db.lock().await.owner.clone();
             let label = format!("{LABEL}={owner}");
             docker(&["volume", "create", "--label", &label, &volume(id)]).await?;
-            let tcp = format!("{}:{}:19443/tcp", app.bind, s.port);
-            let udp = format!("{}:{}:19443/udp", app.bind, s.port);
+            let tcp = format!("127.0.0.1:{}:19443/tcp", s.port);
+            let udp = format!("0.0.0.0:{0}:{0}/udp", s.port);
             let mount = format!("{}:/home/elsewhere", volume(id));
             let mut args = vec![
                 "create",
@@ -609,8 +599,6 @@ async fn prepare(app: Shared, id: &str, new_container: bool, attempt_ms: u64) ->
                 "--log-opt",
                 "max-file=3",
                 "-p",
-                &tcp,
-                "-p",
                 &udp,
                 "-v",
                 &mount,
@@ -624,6 +612,11 @@ async fn prepare(app: Shared, id: &str, new_container: bool, attempt_ms: u64) ->
             .into_iter()
             .map(str::to_owned)
             .collect::<Vec<_>>();
+            if let Some(network) = &app.network.id {
+                args.splice(1..1, ["--network".into(), network.clone()]);
+            } else {
+                args.splice(1..1, ["-p".into(), tcp]);
+            }
             if std::path::Path::new("/dev/dri/renderD128").exists() {
                 args.splice(
                     1..1,
@@ -719,7 +712,8 @@ async fn prepare(app: Shared, id: &str, new_container: bool, attempt_ms: u64) ->
         }
         let launch = LaunchSettings::from(&s);
         let config = app.dir.join(format!("{id}.launch-settings.sh"));
-        private_write(&config, launch_config(&launch).as_bytes())?;
+        let config_text = format!("{}export INNKEEPER_URL_PREFIX='/e/{}'\nexport INNKEEPER_RTC_PORT={}\nexport INNKEEPER_RTC_ADDR='{}'\n", launch_config(&launch), s.id, s.port, app.network.rtc_addr);
+        private_write(&config, config_text.as_bytes())?;
         // The desktop user reads this file; only root can write it.
         std::fs::set_permissions(&config, std::fs::Permissions::from_mode(0o644))?;
         let copied = docker(&[
@@ -1163,8 +1157,11 @@ async fn reconcile(app: Shared) {
                         false
                     }
                     Ok(_) => {
-                        match viewer_get(&app, &s.id, &format!("{}/api/windows", app.endpoint(&s)))
-                            .await
+                        match async {
+                            let endpoint = app.endpoint(&s).await?;
+                            viewer_get(&app, &s.id, &format!("{endpoint}/api/windows")).await
+                        }
+                        .await
                         {
                             Ok(r) if r.status().is_success() => true,
                             Ok(_) => {
@@ -1434,24 +1431,15 @@ async fn link(State(app): State<Shared>, Path(id): Path<String>) -> Api<Json<ser
         return Err(Error(StatusCode::CONFLICT, "Session is not ready".into()));
     }
     let token = session_token(&app, &id, false).await?;
-    let mut url = reqwest::Url::parse(&format!(
-        "https://{}:{}/",
-        if app.public_host.is_empty() {
-            "localhost"
-        } else {
-            &app.public_host
-        },
-        s.port
+    let fragment: String =
+        reqwest::Url::parse_with_params("http://localhost/", &[("token", token)])
+            .context("Encode session token")?
+            .query()
+            .unwrap()
+            .to_owned();
+    Ok(Json(
+        serde_json::json!({"url": format!("/e/{}/#{fragment}", s.id)}),
     ))
-    .context("Invalid public URL")?;
-    url.query_pairs_mut().append_pair("token", &token);
-    let fragment = url.query().unwrap().to_owned();
-    url.set_query(None);
-    url.set_fragment(Some(&fragment));
-    Ok(Json(serde_json::json!({
-        "url": url.as_str(),
-        "use_browser_host": app.public_host.is_empty(),
-    })))
 }
 async fn logs(State(app): State<Shared>, Path(id): Path<String>) -> Api<Json<serde_json::Value>> {
     app.session(&id).await?;
@@ -1535,7 +1523,11 @@ async fn preview(
     let r = viewer_get(
         &app,
         &s.id,
-        &format!("{}/api/screenshot.png?width={}", app.endpoint(&s), q.width),
+        &format!(
+            "{}/api/screenshot.png?width={}",
+            app.endpoint(&s).await?,
+            q.width
+        ),
     )
     .await?;
     if !r.status().is_success() {
@@ -1642,15 +1634,14 @@ async fn main() -> Result<()> {
         db: Mutex::new(db),
         dir,
         secret,
-        public_host: env("INNKEEPER_PUBLIC_HOST", ""),
-        docker_host: env("INNKEEPER_DOCKER_HOST", "127.0.0.1"),
-        bind: env("INNKEEPER_SESSION_BIND", "0.0.0.0"),
+        network: network::Network::discover().await?,
         assets: PathBuf::from(env(
             "INNKEEPER_ASSETS_DIR",
             "/usr/share/elsewhere-innkeeper",
         )),
         client: reqwest::Client::builder()
-            .danger_accept_invalid_certs(true)
+            .no_proxy()
+            .redirect(reqwest::redirect::Policy::none())
             .timeout(Duration::from_secs(8))
             .build()?,
         preparations: Semaphore::new(1),
@@ -1658,11 +1649,6 @@ async fn main() -> Result<()> {
         previews: Semaphore::new(2),
         preview_times: Mutex::new(HashMap::new()),
     });
-    if loopback(&app.bind) && !loopback(&app.docker_host) {
-        bail!(
-            "Loopback session binding requires a loopback INNKEEPER_DOCKER_HOST. In Compose use INNKEEPER_SESSION_BIND=0.0.0.0."
-        );
-    }
     for id in interrupted_downloads {
         if let Ok(info) = app.owned(&id).await {
             app.change(&id, |s| {
@@ -1693,20 +1679,13 @@ async fn main() -> Result<()> {
         .route("/sessions/{id}/preview", get(preview))
         .layer(middleware::from_fn_with_state(app.clone(), auth));
     let router = Router::new()
-        .nest("/api", api)
+        .nest("/api", api.layer(DefaultBodyLimit::max(32 * 1024)))
+        .route("/e/{id}", axum::routing::any(proxy::forward))
+        .route("/e/{id}/", axum::routing::any(proxy::forward))
+        .route("/e/{id}/{*path}", axum::routing::any(proxy::forward))
         .fallback(asset)
-        .layer(DefaultBodyLimit::max(32 * 1024))
         .with_state(app);
-    let listener = tokio::net::TcpListener::bind(env("INNKEEPER_LISTEN", "0.0.0.0:19300")).await?;
-    eprintln!(
-        "elsewhere-innkeeper listening on {}",
-        listener.local_addr()?
-    );
-    axum::serve(listener, router)
-        .with_graceful_shutdown(async {
-            let _ = tokio::signal::ctrl_c().await;
-        })
-        .await?;
+    proxy::serve(router).await?;
     Ok(())
 }
 #[cfg(test)]
