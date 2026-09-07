@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Run in the Innkeeper Docker image with Python, zstd, OpenSSL and the Docker socket.
 
-Uses tiny real Arch/Debian packages and disposable sessions to check refresh and settings.
+Uses tiny real Arch/Debian packages and disposable sessions to check upgrades and settings.
 """
 import concurrent.futures
 import http.server
@@ -17,6 +17,7 @@ import tempfile
 import time
 import tomllib
 import urllib.request
+import urllib.parse
 
 
 def run(*args):
@@ -45,7 +46,14 @@ with tempfile.TemporaryDirectory(prefix="innkeeper-refresh-") as temporary:
     tls.load_cert_chain(cert, key)
     class Ready(http.server.BaseHTTPRequestHandler):
         def do_GET(self):
-            self.send_response(503 if (work / "not-ready").exists() else 200)
+            try:
+                records = json.loads((data / "state.json").read_text())["sessions"]
+                sid = next(s["id"] for s in records if s["port"] == self.server.server_port)
+                token = run("docker", "exec", "--user", "elsewhere", "--env", "HOME=/home/elsewhere", "innkeeper-" + sid, "elsewhere", "token", "--viewer")
+                authenticated = self.headers.get("Authorization") == "Bearer " + token
+            except Exception:
+                authenticated = False
+            self.send_response(503 if (work / "not-ready").exists() else 200 if authenticated else 401)
             self.end_headers()
             self.wfile.write(b"[]")
         def log_message(self, *args):
@@ -77,12 +85,30 @@ os.execv('/usr/bin/docker', ['docker', *args])
     wrapper.chmod(0o755)
     version = tomllib.loads((Path(__file__).resolve().parent.parent / "Cargo.toml").read_text())["package"]["metadata"]["elsewhere"]["version"]
 
-    def package(distro, label):
+    def package(distro, label, installed=None):
+        installed = installed or version
         root = work / f"package-{distro}"
         shutil.rmtree(root, ignore_errors=True)
         (root / "usr/bin").mkdir(parents=True)
         binary = root / "usr/bin/elsewhere"
-        binary.write_text(f"#!/bin/sh\nprintf '%s\\0' \"$@\" > \"$HOME/launch-args\"\necho {label} >> \"$HOME/launches\"\nexec sleep 10000\n")
+        binary.write_text("""#!/bin/sh
+set -eu
+if [ "${1:-}" = token ]; then
+    file=token
+    if [ "${2:-}" = --viewer ]; then file=viewer-token; fi
+    if [ -f "$HOME/token-command-fails" ]; then echo credential-output-must-not-leak; echo credential-diagnostic-must-not-leak >&2; exit 1; fi
+    cat "$HOME/.config/elsewhere/$file"
+    printf '\n'
+    exit 0
+fi
+mkdir -p "$HOME/.config/elsewhere"
+if [ ! -f "$HOME/.config/elsewhere/token" ]; then printf 'opaque control+/=?%%:initial' > "$HOME/.config/elsewhere/token"; fi
+if [ ! -f "$HOME/.config/elsewhere/viewer-token" ]; then printf 'opaque.viewer+/=?%%:initial' > "$HOME/.config/elsewhere/viewer-token"; fi
+printf '%s\\0' "$@" > "$HOME/launch-args"
+printf '%s\n' LABEL >> "$HOME/launches"
+echo 'https://example.invalid/#token=opaque control+/=?%%:initial'
+exec sleep 10000
+""".replace("LABEL", label))
         (root / "usr/local/bin").mkdir(parents=True)
         bus = root / "usr/local/bin/dbus-daemon"
         bus.write_text("#!/bin/sh\necho unix:path=/tmp/fixture-bus\n")
@@ -92,7 +118,7 @@ os.execv('/usr/bin/docker', ['docker', *args])
         cache.mkdir(parents=True, exist_ok=True)
         if distro == "arch":
             (root / ".PKGINFO").write_text(
-                f"pkgname = elsewhere\npkgver = {version}-1\npkgdesc = Refresh fixture\n"
+                f"pkgname = elsewhere\npkgver = {installed}-1\npkgdesc = Refresh fixture\n"
                 "arch = x86_64\nbuilddate = 0\nsize = 100\nlicense = MIT\n"
             )
             path = cache / f"elsewhere-{version}-1-x86_64.pkg.tar.zst"
@@ -100,7 +126,7 @@ os.execv('/usr/bin/docker', ['docker', *args])
         else:
             (root / "DEBIAN").mkdir()
             (root / "DEBIAN/control").write_text(
-                f"Package: elsewhere\nVersion: {version}-1\nArchitecture: amd64\n"
+                f"Package: elsewhere\nVersion: {installed}-1\nArchitecture: amd64\n"
                 "Maintainer: Test <test@example.invalid>\nDescription: Refresh fixture\n"
             )
             path = cache / f"elsewhere_{version}-1_amd64.deb"
@@ -155,72 +181,167 @@ os.execv('/usr/bin/docker', ['docker', *args])
                       "distribution": distro, "packages": []})["id"]
             created.append(sid)
             name = "innkeeper-" + sid
-            wait(lambda: launched(sid, 1))
-            # Simulate a legacy container with its installation marker, stale archives,
-            # and an entrypoint which would fail if the manager didn't refresh it.
-            run("docker", "exec", name, "sh", "-c",
-                "touch /opt/innkeeper/elsewhere-installed; "
-                "printf broken > /opt/innkeeper/old.deb; "
-                "printf broken > /opt/innkeeper/old.pkg.tar.zst; "
-                "printf 'exit 99\\n' > /opt/innkeeper/entrypoint.sh")
-            api(f"/sessions/{sid}/stop", "POST")
+            wait(lambda: state(sid)["status"] == "running")
+            assert state(sid)["installed_version"] == version + "-1"
+            assert state(sid)["version_status"] == "current"
             identity = run("docker", "inspect", name, "--format", "{{.Id}}")
-            cached = package(distro, "refreshed")
-            (tools / "no-base").touch()
-            subprocess.run(["sh", str(source / "prepare.sh"), "https://example.invalid/package", str(cached), ""], env=env, check=True)
-            api(f"/sessions/{sid}/start", "POST")
-            wait(lambda: launched(sid, 2))
-            assert run("docker", "inspect", name, "--format", "{{.Id}}") == identity
-            assert run("docker", "exec", name, "cat", "/home/elsewhere/launches").splitlines() == ["first", "refreshed"]
+            def install_fixture(label, installed):
+                archive = package(distro, label, installed)
+                destination = "/tmp/fixture." + ("pkg.tar.zst" if distro == "arch" else "deb")
+                run("docker", "cp", str(archive), name + ":" + destination)
+                if distro == "arch":
+                    run("docker", "exec", name, "pacman", "-U", "--noconfirm", destination)
+                else:
+                    run("docker", "exec", name, "dpkg", "-i", destination)
+                return archive
+            cached = install_fixture("old", "0.0.1")
+            # A newer cache entry cannot change the package during Start.
+            package(distro, "upgraded")
+            run("docker", "exec", name, "sh", "-c", "printf 'exit 99\\n' > /opt/innkeeper/entrypoint.sh")
             api(f"/sessions/{sid}/stop", "POST")
-            # A cache miss invokes preparation. Failure must remain recoverable.
+            # Reload forces immediate metadata detection on the stopped container.
+            def restart_manager():
+                global manager
+                manager.send_signal(signal.SIGINT)
+                manager.wait(timeout=10)
+                manager = subprocess.Popen(["elsewhere-innkeeper"], env=env, stdout=log, stderr=log)
+                def online():
+                    try: return state(sid)
+                    except OSError: return False
+                wait(online)
+            restart_manager()
+            wait(lambda: state(sid)["version_status"] == "older")
+            assert state(sid)["installed_version"] == "0.0.1-1"
+            (tools / "no-base").touch()
+            api(f"/sessions/{sid}/start", "POST")
+            wait(lambda: state(sid)["status"] == "running")
+            assert run("docker", "exec", name, "cat", "/home/elsewhere/launches").splitlines() == ["first", "old"]
+            api(f"/sessions/{sid}/stop", "POST")
             cached.unlink()
             (recipes / "prepare.sh").write_text("echo 'Fixture download failure'\nexit 1\n")
+            api(f"/sessions/{sid}/upgrade", "POST")
+            wait(lambda: state(sid)["status"] == "failed")
+            api(f"/sessions/{sid}/stop", "POST")
+            # Start has no download dependency, even with a failed upgrade and empty cache.
             api(f"/sessions/{sid}/start", "POST")
+            wait(lambda: state(sid)["status"] == "running")
+            assert launched(sid, 3)
+            api(f"/sessions/{sid}/stop", "POST")
+            (recipes / "prepare.sh").write_text("echo 'Fixture waiting'\nexec sleep 60\n")
+            api(f"/sessions/{sid}/upgrade", "POST")
+            wait(lambda: "Fixture waiting" in api(f"/sessions/{sid}/logs")["text"])
+            api(f"/sessions/{sid}/stop", "POST")
+            restart_manager()
+            wait(lambda: state(sid)["version_status"] == "older")
+            assert state(sid)["status"] == "stopped"
+            # An upgrade exits without launching or applying pending desktop settings.
+            pending_profile = {"name":"Upgrade test", "screen_size":{"width":1280,"height":720}, "kiosk":False, "startup_command":""}
+            api(f"/sessions/{sid}/settings", "PUT", pending_profile)
+            package(distro, "upgraded")
+            api(f"/sessions/{sid}/upgrade", "POST")
+            wait(lambda: state(sid)["status"] == "stopped")
+            assert state(sid)["installed_version"] == version + "-1"
+            assert state(sid)["settings_pending"]
+            assert run("docker", "inspect", name, "--format", "{{.State.Running}}") == "false"
+            api(f"/sessions/{sid}/start", "POST")
+            wait(lambda: state(sid)["status"] == "running")
+            assert run("docker", "exec", name, "cat", "/home/elsewhere/launches").splitlines() == ["first", "old", "old", "upgraded"]
+            # Failed maintenance is durable and Start never retries it.
+            install_fixture("old-again", "0.0.1")
+            package(distro, "upgraded")
+            installer = (recipes / "install.sh").read_text()
+            (recipes / "install.sh").write_text("echo 'Fixture install failure'\nexit 7\n")
+            api(f"/sessions/{sid}/upgrade", "POST")
             wait(lambda: state(sid)["status"] == "failed")
             assert run("docker", "inspect", name, "--format", "{{.State.Running}}") == "false"
+            restart_manager()
+            time.sleep(4)
+            assert state(sid)["status"] == "failed"
             api(f"/sessions/{sid}/stop", "POST")
-            assert state(sid)["status"] == "stopped"
-            # Stop and immediately restart a blocked download. The old task must
-            # neither start the container nor overwrite the new attempt's status.
-            (recipes / "prepare.sh").write_text("echo 'Fixture waiting'\nexec sleep 60\n")
+            time.sleep(4)
+            assert state(sid)["status"] == "stopped" and state(sid)["error"] is None
             api(f"/sessions/{sid}/start", "POST")
-            wait(lambda: "Fixture waiting" in api(f"/sessions/{sid}/logs")["text"])
-            api(f"/sessions/{sid}/stop", "POST")
-            assert state(sid)["status"] == "stopped"
-            package(distro, "recovered")
-            api(f"/sessions/{sid}/start", "POST")
-            wait(lambda: launched(sid, 3))
-            assert run("docker", "exec", name, "cat", "/home/elsewhere/launches").splitlines()[-1] == "recovered"
-            api(f"/sessions/{sid}/stop", "POST")
-            cached.unlink()
-            api(f"/sessions/{sid}/start", "POST")
-            wait(lambda: "Fixture waiting" in api(f"/sessions/{sid}/logs")["text"])
+            wait(lambda: state(sid)["status"] == "running")
+            assert run("docker", "exec", name, "cat", "/home/elsewhere/launches").splitlines()[-1] == "old-again"
+            # A manager restart during installation preserves maintenance, including timeout.
+            (recipes / "install.sh").write_text("echo 'Fixture install waiting'\nexec sleep 60\n")
+            api(f"/sessions/{sid}/upgrade", "POST")
+            wait(lambda: "Fixture install waiting" in api(f"/sessions/{sid}/logs")["text"])
             manager.send_signal(signal.SIGINT)
             manager.wait(timeout=10)
+            interrupted = json.loads((data / "state.json").read_text())
+            for session in interrupted["sessions"]:
+                if session["id"] == sid:
+                    session["started_ms"] = 1
+            (data / "state.json").write_text(json.dumps(interrupted))
             manager = subprocess.Popen(["elsewhere-innkeeper"], env=env, stdout=log, stderr=log)
-            def recovered_state():
-                try:
-                    return state(sid)["status"] == "failed"
-                except OSError:
-                    return False
-            wait(recovered_state)
+            def timed_out():
+                try: return state(sid)["status"] == "failed"
+                except OSError: return False
+            wait(timed_out)
+            time.sleep(4)
+            assert state(sid)["status"] == "failed" and "timed out" in state(sid)["error"]
             api(f"/sessions/{sid}/stop", "POST")
-            assert state(sid)["status"] == "stopped"
-            package(distro, "after-interruption")
+            (recipes / "install.sh").write_text(installer)
             api(f"/sessions/{sid}/start", "POST")
-            wait(lambda: launched(sid, 4))
+            wait(lambda: state(sid)["status"] == "running")
+            assert state(sid)["installed_version"] == "0.0.1-1"
+            # Newer packages are shown as newer and cannot be downgraded by Upgrade or Start.
+            install_fixture("newer", "99.0.0")
+            api(f"/sessions/{sid}/stop", "POST")
+            restart_manager()
+            wait(lambda: state(sid)["version_status"] == "newer")
+            try:
+                api(f"/sessions/{sid}/upgrade", "POST")
+                raise AssertionError("Newer package accepted for upgrade")
+            except urllib.error.HTTPError as e:
+                assert e.code == 409
+            package(distro, "upgraded")
+            api(f"/sessions/{sid}/start", "POST")
+            wait(lambda: state(sid)["status"] == "running")
+            assert state(sid)["version_status"] == "newer"
             assert not (tools / "image-attempt").exists()
             (tools / "no-base").unlink()
+            api(f"/sessions/{sid}/settings", "PUT", dict(pending_profile, screen_size=None))
+            api(f"/sessions/{sid}/relaunch", "POST")
             wait(lambda: state(sid)["status"] == "running")
+            # Credentials are read on demand and opaque, with no database copies.
+            def token(viewer=False):
+                return run("docker", "exec", "--user", "elsewhere", "--env", "HOME=/home/elsewhere", name, "elsewhere", "token", *(["--viewer"] if viewer else []))
+            def link_token():
+                link = api(f"/sessions/{sid}/link", "POST")["url"]
+                return urllib.parse.parse_qs(urllib.parse.urlparse(link).fragment)["token"][0]
+            assert link_token() == token()
+            run("docker", "exec", name, "sh", "-c", "printf 'rotated opaque+/=?%%:value' > /home/elsewhere/.config/elsewhere/token; printf 'rotated.viewer+/=?%%:value' > /home/elsewhere/.config/elsewhere/viewer-token")
+            assert link_token() == token()
+            run("docker", "exec", name, "sh", "-c", "cat /home/elsewhere/.config/elsewhere/token > /proc/1/fd/1; printf '\\n' > /proc/1/fd/1")
+            assert token() not in api(f"/sessions/{sid}/logs")["text"]
+            assert "opaque control" not in api(f"/sessions/{sid}/logs")["text"]
+            run("docker", "exec", name, "touch", "/home/elsewhere/token-command-fails")
+            try:
+                api(f"/sessions/{sid}/link", "POST")
+                raise AssertionError("Failed token command accepted")
+            except urllib.error.HTTPError as e:
+                assert e.code == 500 and b"must-not-leak" not in e.read()
+            api(f"/sessions/{sid}/relaunch", "POST")
+            wait(lambda: state(sid)["error"] and "token" in state(sid)["error"])
+            assert state(sid)["status"] == "preparing"
+            assert "must-not-leak" not in json.dumps(state(sid))
+            run("docker", "exec", name, "rm", "/home/elsewhere/token-command-fails")
+            wait(lambda: state(sid)["status"] == "running")
+            baseline = len(run("docker", "exec", name, "cat", "/home/elsewhere/launches").splitlines())
             private = next(s for s in json.loads((data / "state.json").read_text())["sessions"] if s["id"] == sid)
             run("docker", "exec", name, "sh", "-c", "echo retained > /root/settings-sentinel")
+            assert "token" not in private and "viewer_token" not in private
+            run("docker", "exec", name, "test", "!", "-d", "/seed")
             # Legacy state has no snapshots. Its stored settings describe its last launch.
             manager.send_signal(signal.SIGINT)
             manager.wait(timeout=10)
             legacy = json.loads((data / "state.json").read_text())
             for session in legacy["sessions"]:
                 if session["id"] == sid:
+                    session["token"] = "stale credential"
+                    session["viewer_token"] = "stale viewer credential"
                     session.pop("applied_settings", None)
                     session.pop("launching_settings", None)
             (data / "state.json").write_text(json.dumps(legacy))
@@ -251,7 +372,7 @@ os.execv('/usr/bin/docker', ['docker', *args])
             edited = dict(renamed, screen_size={"width": 1280, "height": 720}, kiosk=True,
                           startup_command=command)
             assert save(edited)["settings_pending"]
-            assert launched(sid, 4)
+            assert launched(sid, baseline)
             assert not save(renamed)["settings_pending"]
             save(edited)
             for bad in (dict(edited, screen_size={"width": 3, "height": 720}),
@@ -279,7 +400,7 @@ os.execv('/usr/bin/docker', ['docker', *args])
             (tools / "fail-stop").touch()
             rejected(f"/sessions/{sid}/relaunch", "POST", None, 500)
             (tools / "fail-stop").unlink()
-            assert launched(sid, 4) and pending()
+            assert launched(sid, baseline) and pending()
             # The operation lock admits only one of simultaneous relaunch requests.
             def restart():
                 try:
@@ -290,19 +411,20 @@ os.execv('/usr/bin/docker', ['docker', *args])
             (work / "not-ready").touch()
             with concurrent.futures.ThreadPoolExecutor(2) as pool:
                 assert sorted(pool.map(lambda _: restart(), range(2))) == [202, 409]
-            wait(lambda: launched(sid, 5))
+            wait(lambda: launched(sid, baseline + 1))
             assert pending() and state(sid)["status"] == "preparing"
             rejected(f"/sessions/{sid}/settings", "PUT", renamed, 409)
             (work / "not-ready").unlink()
             wait(lambda: state(sid)["status"] == "running" and not pending())
-            assert launched(sid, 5)
+            assert launched(sid, baseline + 1)
             args = subprocess.check_output(["docker", "exec", name, "cat", "/home/elsewhere/launch-args"]).decode().split("\0")[:-1]
             assert args == ["--listen", "0.0.0.0:19443", "--rtc-port", "19443", "--elements",
                             "--screen-size", "1280x720", "--kiosk", "--exec", command], args
             run("docker", "exec", name, "test", "!", "-e", "/tmp/unexpected")
             assert run("docker", "inspect", name, "--format", "{{.Id}}") == identity
             current = next(s for s in json.loads((data / "state.json").read_text())["sessions"] if s["id"] == sid)
-            assert all(current[k] == private[k] for k in ("id", "port", "token", "viewer_token"))
+            assert all(current[k] == private[k] for k in ("id", "port"))
+            assert "token" not in current and "viewer_token" not in current
             assert run("docker", "exec", name, "cat", "/root/settings-sentinel") == "retained"
             # Copy and Docker start failures retain edits for a later start.
             for failure in ("cp", "start"):
@@ -334,7 +456,7 @@ os.execv('/usr/bin/docker', ['docker', *args])
             api(f"/sessions/{sid}/start", "POST")
             wait(lambda: state(sid)["status"] == "running" and not pending())
             print(f"{distro}: saved settings, resets, quoting, pending state, persistence, serialized relaunch and failure retry passed", flush=True)
-            print(f"{distro}: first install, refresh, legacy entrypoint, failed download retry, cancellation retry, manager interruption, no base-image lookup passed", flush=True)
+            print(f"{distro}: explicit upgrade, stopped version detection, newer warning, launch-only start, cancellation, opaque token commands and migration passed", flush=True)
     except BaseException:
         for sid in created:
             subprocess.run(["docker", "logs", "--tail", "80", "innkeeper-" + sid])

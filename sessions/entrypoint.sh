@@ -4,6 +4,21 @@ umask 077
 : > /tmp/innkeeper-timings
 stage() { echo "Stage: $1"; printf '%s\n' "$1" > /tmp/innkeeper-stage; printf '%s %s\n' "$(date +%s%3N)" "$1" >> /tmp/innkeeper-timings; }
 trap 'echo "Setup failed during $(cat /tmp/innkeeper-stage)" >&2' EXIT
+mode=launch
+attempt=
+expected=
+if [ -f /opt/innkeeper/operation ]; then
+    read -r mode attempt expected < /opt/innkeeper/operation
+fi
+# An ordinary container start cannot repeat a maintenance request.
+printf 'launch\n' > /opt/innkeeper/operation
+if [ "$mode" = upgrade ]; then
+    stage upgrade
+    sh /opt/innkeeper/install.sh "$expected"
+    printf '%s\n' "$attempt" > /opt/innkeeper/upgrade-complete
+    trap - EXIT
+    exit 0
+fi
 stage setup
 if [ ! -f /opt/innkeeper/setup-complete ]; then
     sh /opt/innkeeper/setup.sh
@@ -11,21 +26,11 @@ if [ ! -f /opt/innkeeper/setup-complete ]; then
 fi
 mkdir -p /home/elsewhere/.config/elsewhere /tmp/runtime-elsewhere /tmp/.X11-unix
 chmod 1777 /tmp/.X11-unix
-if [ -d /seed ]; then
-    cp /seed/token /seed/viewer-token /home/elsewhere/.config/elsewhere/
-fi
-test -s /home/elsewhere/.config/elsewhere/token
-test -s /home/elsewhere/.config/elsewhere/viewer-token
 chown -R elsewhere:elsewhere /home/elsewhere /tmp/runtime-elsewhere
 chmod 700 /tmp/runtime-elsewhere /home/elsewhere/.config/elsewhere
-chmod 600 /home/elsewhere/.config/elsewhere/token /home/elsewhere/.config/elsewhere/viewer-token
-rm -rf /seed
-stage elsewhere
-if command -v pacman >/dev/null; then
-    pacman -U --noconfirm /opt/innkeeper/elsewhere.pkg.tar.zst
-else
-    chmod 644 /opt/innkeeper/elsewhere.deb
-    DEBIAN_FRONTEND=noninteractive apt-get install -y --reinstall --allow-downgrades /opt/innkeeper/elsewhere.deb
+if [ "$mode" = create ]; then
+    stage elsewhere
+    sh /opt/innkeeper/install.sh "$expected"
 fi
 stage packages
 if [ ! -f /opt/innkeeper/packages-installed ]; then

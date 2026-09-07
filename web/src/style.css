@@ -374,3 +374,7 @@ label.checkbox {
 .checkbox input {
   width: auto;
 }
+
+.warning {
+  color: #f3cd85;
+}

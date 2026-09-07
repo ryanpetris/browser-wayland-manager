@@ -304,9 +304,15 @@ function App() {
                       <span className="muted"> · {s.packages.join(", ")}</span>
                     )}
                   </p>
-                  {s.status === "preparing" && (
+                  <p className={s.version_status === "newer" ? "warning" : "muted"}>
+                    Elsewhere {s.installed_version || "version unavailable"}
+                    {s.version_status === "older" && ` · ${s.expected_version} available`}
+                    {s.version_status === "newer" && ` · Newer than expected (${s.expected_version})`}
+                    {s.installed_version && s.version_status === "unknown" && " · Version comparison unavailable"}
+                  </p>
+                  {["preparing", "upgrading"].includes(s.status) && (
                     <p className="progress" role="status">
-                      Preparing: {s.stage}…
+                      {s.status === "upgrading" ? "Upgrading" : "Preparing"}: {s.stage}…
                     </p>
                   )}
                   {s.settings_pending && (
@@ -314,12 +320,20 @@ function App() {
                       Settings pending · {s.status === "stopped" ? "Applies on next start" : s.status === "preparing" ? "Applying on launch" : s.status === "failed" ? "Stop, then start to apply" : "Relaunch to apply"}
                     </p>
                   )}
+                  {s.version_status === "older" && <p className="muted">Upgrade closes running applications and leaves the session stopped.</p>}
                   {s.error && <p className="error">{s.error}</p>}
                   <div className="actions">
                     <button disabled={busy[s.id] || !["running", "stopped"].includes(s.status)}
                       onClick={() => { setEditError(""); setEditing(s); }}>
                       Edit settings
                     </button>
+                    {s.version_status === "older" && (
+                      <button disabled={busy[s.id] || !["running", "stopped"].includes(s.status)}
+                        title="Install the expected Elsewhere version and leave the session stopped."
+                        onClick={() => action(s, "upgrade")}>
+                        Upgrade
+                      </button>
+                    )}
                     <button disabled={busy[s.id] || s.status !== "running"}
                       title="Restart with saved settings. Running applications will close."
                       onClick={() => action(s, "relaunch")}>

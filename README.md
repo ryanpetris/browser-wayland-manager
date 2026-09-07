@@ -32,13 +32,13 @@ The native application and session ports bind all IPv4 interfaces by default. Co
 
 After changing Compose configuration, rebuild and recreate Innkeeper with `docker compose up -d --build`.
 
-Management access grants Docker control. Treat the administrator token and Docker socket as host-administrator credentials. The service stores session tokens in a private `state.json`; back up the complete Innkeeper data directory together with session volumes. The frontend retains the administrator token only in the tab's session storage. No cross-origin API access is enabled.
+Management access grants Docker control. Treat the administrator token and Docker socket as host-administrator credentials. Elsewhere owns session credentials in each session home volume. Innkeeper retrieves them on demand and does not store copies in `state.json`. Back up the complete Innkeeper data directory together with session volumes. The frontend retains the administrator token only in the tab's session storage. No cross-origin API access is enabled.
 
 ## Session lifecycle
 
-Creation validates package names, records the session, downloads a release package if it is not cached, and prepares a stock base image. It creates a labeled volume and container, then copies the setup scripts, package, and distinct 64-character hexadecimal control and viewer tokens into the stopped container through the Docker API. This also works when Innkeeper runs inside Docker; the source files are read from Innkeeper's filesystem.
+Creation validates package names, records the session, downloads a release package if it is not cached, and prepares a stock base image. It creates a labeled volume and container, then copies the setup scripts and package into the stopped container through the Docker API. This also works when Innkeeper runs inside Docker; the source files are read from Innkeeper's filesystem.
 
-Inside the session container, setup installs runtime services, prepares the user and runtime directories, and installs Elsewhere with `apt` or `pacman`. The package manager resolves the package's declared dependencies, including Debian recommendations. A separate script installs requested extra packages before Elsewhere starts. Innkeeper publishes an Open action only after an authenticated readiness request succeeds. Setup and installation markers allow stopped sessions to restart without reinstalling packages.
+Inside the session container, setup installs runtime services, prepares the user and runtime directories, and installs Elsewhere with `apt` or `pacman`. The package manager resolves the package's declared dependencies, including Debian recommendations. A separate script installs requested extra packages before Elsewhere starts. Elsewhere generates its own credentials on first launch. Innkeeper runs `elsewhere token` and `elsewhere token --viewer` as the desktop user when credentials are needed. Session packages must provide these commands. Innkeeper treats their output as opaque text. The session stays preparing until both commands succeed and an authenticated readiness request succeeds. Setup and installation markers allow stopped sessions to restart without reinstalling packages.
 
 Both distributions include xterm for sessions with no extra packages. Sessions use hardware encoding when a supported GPU is available, and software encoding without a GPU. Release packages are assumed compatible with the selected distribution; Innkeeper does not perform a separate binary or shared-library compatibility check.
 
@@ -57,7 +57,7 @@ Innkeeper restarts preserve sessions. Innkeeper inspects its recorded containers
 
 Previews use the shared screenshot API with a width in device pixels, preserving aspect ratio. Visible sessions refresh every five seconds, with at most two requests in flight. Hidden tabs and offscreen previews pause. The backend also limits captures to two concurrent requests and one request per session every two seconds. Unavailable previews leave the session controls usable.
 
-The Logs dialog polls without overlapping requests. It shows the last 128 KiB of download and image-pull output and the last 1,000 Docker log lines. Docker logs rotate at 10 MiB, with three files retained. Exact session tokens are redacted before output reaches the browser, and startup token fragments are redacted before Docker persists them.
+The Logs dialog polls without overlapping requests. It shows the last 128 KiB of download and image-pull output and the last 1,000 Docker log lines. Docker logs rotate at 10 MiB, with three files retained. Token-bearing URL fragments and the rest of their line are redacted before output reaches the browser and before Docker persists desktop output. Current tokens are also redacted verbatim when their commands are available. Token-command diagnostics are never returned to the browser.
 
 ## Supported session images
 
@@ -68,7 +68,7 @@ Release packages currently support x86_64 Docker hosts. Base images are reused l
 
 The Elsewhere release version is pinned in `package.metadata.elsewhere.version` in `Cargo.toml` and embedded in the application at build time. Innkeeper generates GitHub download URLs and package filenames from that single version using the release package naming convention. Packages are cached under `packages/<version>/x86_64/<distribution>/<asset>` in Innkeeper's data directory. Downloads use HTTPS and a temporary file renamed only after a successful transfer. Concurrent session creation shares the preparation lock and reuses completed downloads. Interrupted transfers are retried on the next request.
 
-Update that metadata field in `Cargo.toml` and rebuild Innkeeper to change the pinned release. The new package downloads when first needed. Existing sessions retain their installed Elsewhere version. Cached packages survive Innkeeper upgrades and session destruction. Individually remove obsolete version directories from the cache when they are no longer needed; Innkeeper will download a missing package again. Restart Innkeeper after updating its installed assets.
+Update that metadata field in `Cargo.toml` and rebuild Innkeeper to change the pinned release. The new package downloads during creation or an explicit upgrade, when first needed. Existing sessions retain their installed Elsewhere version. Cached packages survive Innkeeper upgrades and session destruction. Individually remove obsolete version directories from the cache when they are no longer needed; Innkeeper will download a missing package again. Restart Innkeeper after updating its installed assets.
 
 The release package supplies Elsewhere and its accompanying notices. Innkeeper's own code uses the accompanying MIT license.
 
@@ -95,6 +95,29 @@ docker build --target check .
 
 `elsewhere-innkeeper --version` and the footer display Innkeeper's own build version. Source and Docker builds report `0.0.0-dev` unless `INNKEEPER_VERSION` is set. Docker treats an empty build argument as unset. Cargo metadata stays at `0.0.0`, including release builds. Override the displayed version with `docker build --build-arg INNKEEPER_VERSION=1.2.3 .`, `INNKEEPER_VERSION=1.2.3 docker compose up -d --build`. Elsewhere's pinned release is independent of Innkeeper's version.
 
+## Elsewhere upgrades
+
+Each session displays its installed package version, read from the container's package
+metadata even while stopped. Innkeeper refreshes this information periodically and after
+installation or launch. Failed inspection shows “Version unavailable”.
+
+An older version offers **Upgrade**. A newer version shows **Newer than expected** and the
+expected release, with no Upgrade action. Release versions, numbered Git builds, and numeric package
+revisions are compared numerically. Other version formats remain visible with a message
+that their comparison is unavailable.
+
+**Start** and **Relaunch** use the installed package without downloading, upgrading,
+downgrading, or prompting about an available upgrade. **Upgrade** downloads the expected
+package if needed, stops a running desktop, installs the package, and exits. It leaves the
+session stopped so the user can choose **Start**. Upgrading does not run the startup command
+or apply pending desktop settings. It retains the container and session home volume.
+
+Installation failures remain visible in Logs and the session error. Stop a failed session
+before retrying Upgrade. Start selects a normal launch and never retries an interrupted
+upgrade automatically. An interrupted package-manager transaction may need repair before
+the installed application can run. Installation success requires a successful maintenance
+exit and verification of the installed version.
+
 ## Hardware encoding
 
 New sessions use the host GPU for rendering and VA-API video encoding when
@@ -107,9 +130,8 @@ Native installations detect the devices directly without additional configuratio
 Session setup installs Intel and AMD VA-API and Vulkan drivers for encoding and
 rendering, and grants the desktop user access to the device groups. Hosts without a render device use software rendering
 and encoding. A GPU must support VA-API encoding to use the hardware path.
-Every session start copies and installs Innkeeper's pinned Elsewhere release package,
-reusing the cached download when available. This also refreshes the container entrypoint.
-Every start also refreshes the desktop startup script and launch settings.
+Creation installs Innkeeper's pinned Elsewhere package. Start and Relaunch keep the installed
+package and refresh the container entrypoint, desktop startup script, and launch settings.
 Existing sessions retain their original Docker device configuration; create a new session
 to add GPU access to a container created without it.
 

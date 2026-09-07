@@ -9,7 +9,7 @@ export DBUS_SESSION_BUS_ADDRESS
 rm -f "$XDG_RUNTIME_DIR/output"
 mkfifo "$XDG_RUNTIME_DIR/output"
 # Redact startup links before Docker persists them, including rotated token links.
-LC_ALL=C stdbuf -oL sed -E 's/(#token=)[[:xdigit:]]{64}/\1[REDACTED]/g' < "$XDG_RUNTIME_DIR/output" &
+LC_ALL=C stdbuf -oL sed -E 's/(#token=).*/\1[REDACTED]/' < "$XDG_RUNTIME_DIR/output" &
 filter=$!
 set -- --listen 0.0.0.0:19443 --rtc-port 19443 --elements
 if [ -n "${INNKEEPER_SCREEN_SIZE:-}" ]; then set -- "$@" --screen-size "$INNKEEPER_SCREEN_SIZE"; fi

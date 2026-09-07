@@ -47,8 +47,10 @@ struct Session {
     status: String,
     stage: String,
     error: Option<String>,
-    token: String,
-    viewer_token: String,
+    #[serde(default)]
+    installed_version: Option<String>,
+    #[serde(default)]
+    upgrade_target: Option<String>,
     #[serde(default)]
     timings: HashMap<String, u64>,
 }
@@ -209,7 +211,7 @@ async fn auth(State(app): State<Shared>, req: axum::extract::Request, next: Next
     response
 }
 fn public_session(s: &Session) -> serde_json::Value {
-    serde_json::json!({"id":s.id,"name":s.name,"distribution":s.distribution,"packages":s.packages,"startup_command":s.startup_command,"screen_size":s.screen_size,"kiosk":s.kiosk,"settings_pending":s.applied_settings.as_ref().is_some_and(|applied| *applied != LaunchSettings::from(s)),"port":s.port,"status":s.status,"stage":s.stage,"error":s.error,"timings":s.timings})
+    serde_json::json!({"id":s.id,"name":s.name,"distribution":s.distribution,"packages":s.packages,"startup_command":s.startup_command,"screen_size":s.screen_size,"kiosk":s.kiosk,"settings_pending":s.applied_settings.as_ref().is_some_and(|applied| *applied != LaunchSettings::from(s)),"installed_version":s.installed_version,"expected_version":ELSEWHERE_VERSION,"version_status":version_status(s.installed_version.as_deref()),"port":s.port,"status":s.status,"stage":s.stage,"error":s.error,"timings":s.timings})
 }
 async fn list(State(app): State<Shared>) -> Json<serde_json::Value> {
     Json(
@@ -373,8 +375,8 @@ async fn create(State(app): State<Shared>, Json(input): Json<Create>) -> Api<imp
         status: "preparing".into(),
         stage: "download".into(),
         error: None,
-        token: random_token(),
-        viewer_token: random_token(),
+        installed_version: None,
+        upgrade_target: None,
         timings: HashMap::new(),
     };
     db.sessions.push(s.clone());
@@ -388,9 +390,11 @@ fn prepare_in_background(app: Shared, id: String, new_container: bool, attempt_m
         if let Err(e) = prepare(app.clone(), &id, new_container, attempt_ms).await {
             let _ = app
                 .change(&id, |s| {
-                    if s.status == "preparing" && s.started_ms == attempt_ms {
+                    if matches!(s.status.as_str(), "preparing" | "upgrading")
+                        && s.started_ms == attempt_ms
+                    {
                         s.status = "failed".into();
-                        s.error = Some(redact(&e.to_string(), s));
+                        s.error = Some(redact(&e.to_string()));
                     }
                 })
                 .await;
@@ -399,13 +403,19 @@ fn prepare_in_background(app: Shared, id: String, new_container: bool, attempt_m
 }
 async fn prepare(app: Shared, id: &str, new_container: bool, attempt_ms: u64) -> Result<()> {
     let initial = app.session(id).await.map_err(|e| anyhow::anyhow!(e.1))?;
-    if initial.status != "preparing" || initial.started_ms != attempt_ms {
+    if !matches!(initial.status.as_str(), "preparing" | "upgrading")
+        || initial.started_ms != attempt_ms
+    {
         return Ok(());
     }
+    let upgrading = initial.upgrade_target.is_some();
+    let install = new_container || upgrading;
     let version = ELSEWHERE_VERSION;
-    let architecture = docker(&["info", "--format", "{{.Architecture}}"]).await?;
-    if !matches!(architecture.trim(), "x86_64" | "amd64") {
-        bail!("Release packages currently support only x86_64 Docker hosts");
+    if install {
+        let architecture = docker(&["info", "--format", "{{.Architecture}}"]).await?;
+        if !matches!(architecture.trim(), "x86_64" | "amd64") {
+            bail!("Release packages currently support only x86_64 Docker hosts");
+        }
     }
     let (image, asset) = if initial.distribution == "arch" {
         (
@@ -430,8 +440,9 @@ async fn prepare(app: Shared, id: &str, new_container: bool, attempt_ms: u64) ->
         version, asset
     );
     let started = Instant::now();
-    if !package.metadata().is_ok_and(|m| m.len() > 0)
-        || (new_container && docker(&["image", "inspect", image]).await.is_err())
+    if install
+        && (!package.metadata().is_ok_and(|m| m.len() > 0)
+            || (new_container && docker(&["image", "inspect", image]).await.is_err()))
     {
         private_write(
             &app.dir.join(format!("{id}.build.log")),
@@ -441,7 +452,10 @@ async fn prepare(app: Shared, id: &str, new_container: bool, attempt_ms: u64) ->
         if app
             .session(id)
             .await
-            .map(|s| s.status != "preparing" || s.started_ms != attempt_ms)
+            .map(|s| {
+                !matches!(s.status.as_str(), "preparing" | "upgrading")
+                    || s.started_ms != attempt_ms
+            })
             .unwrap_or(true)
         {
             return Ok(());
@@ -473,7 +487,7 @@ async fn prepare(app: Shared, id: &str, new_container: bool, attempt_ms: u64) ->
                         break;
                     }
                     _ = tokio::time::sleep(Duration::from_millis(500)) => {
-                        let cancelled = app.session(id).await.map(|s| s.status != "preparing" || s.started_ms != attempt_ms).unwrap_or(true);
+                        let cancelled = app.session(id).await.map(|s| !matches!(s.status.as_str(), "preparing" | "upgrading") || s.started_ms != attempt_ms).unwrap_or(true);
                         if cancelled || Instant::now() >= deadline {
                             // This process group belongs only to this session preparation.
                             unsafe { libc::kill(-(pid as i32), libc::SIGTERM); }
@@ -492,7 +506,7 @@ async fn prepare(app: Shared, id: &str, new_container: bool, attempt_ms: u64) ->
     let lock = app.lock(id).await;
     let _guard = lock.lock().await;
     let s = app.session(id).await.map_err(|e| anyhow::anyhow!(e.1))?;
-    if s.status != "preparing" || s.started_ms != attempt_ms {
+    if !matches!(s.status.as_str(), "preparing" | "upgrading") || s.started_ms != attempt_ms {
         return Ok(());
     }
     let result: Result<()> = async {
@@ -557,22 +571,35 @@ async fn prepare(app: Shared, id: &str, new_container: bool, attempt_ms: u64) ->
             ])
             .await?;
         } else {
-            app.owned(id).await?;
-        }
-        docker(&[
-            "cp",
-            package.to_str().context("Invalid package path")?,
-            &format!(
-                "{}:/opt/innkeeper/elsewhere.{}",
-                container(id),
-                if s.distribution == "arch" {
-                    "pkg.tar.zst"
-                } else {
-                    "deb"
+            let info = app.owned(id).await?;
+            if upgrading {
+                let installed = installed_version(&app, &s).await?;
+                if version_status(Some(&installed)) != "older" {
+                    bail!("Installed Elsewhere version no longer needs an upgrade");
                 }
-            ),
-        ])
-        .await?;
+                if info["State"]["Running"] == true {
+                    docker(&["stop", "--time", "15", &container(id)]).await?;
+                }
+            } else if info["State"]["Running"] == true {
+                bail!("Container is already running");
+            }
+        }
+        if install {
+            docker(&[
+                "cp",
+                package.to_str().context("Invalid package path")?,
+                &format!(
+                    "{}:/opt/innkeeper/elsewhere.{}",
+                    container(id),
+                    if s.distribution == "arch" {
+                        "pkg.tar.zst"
+                    } else {
+                        "deb"
+                    }
+                ),
+            ])
+            .await?;
+        }
         docker(&[
             "cp",
             app.assets
@@ -592,19 +619,28 @@ async fn prepare(app: Shared, id: &str, new_container: bool, attempt_ms: u64) ->
                 &format!("{}:/opt/innkeeper/setup.sh", container(id)),
             ])
             .await?;
-            let seed = app.dir.join(format!("{id}.seed"));
-            std::fs::create_dir_all(&seed)?;
-            std::fs::set_permissions(&seed, std::fs::Permissions::from_mode(0o700))?;
-            private_write(&seed.join("token"), s.token.as_bytes())?;
-            private_write(&seed.join("viewer-token"), s.viewer_token.as_bytes())?;
-            let result = docker(&[
-                "cp",
-                seed.to_str().context("Invalid data path")?,
-                &format!("{}:/seed", container(id)),
-            ])
-            .await;
-            std::fs::remove_dir_all(seed)?;
-            result?;
+        }
+        docker(&[
+            "cp",
+            app.assets
+                .join("sessions/install.sh")
+                .to_str()
+                .context("Invalid assets path")?,
+            &format!("{}:/opt/innkeeper/install.sh", container(id)),
+        ])
+        .await?;
+        let operation = if upgrading {
+            format!("upgrade {attempt_ms} {ELSEWHERE_VERSION}-1\n")
+        } else if new_container {
+            format!("create {attempt_ms} {ELSEWHERE_VERSION}-1\n")
+        } else {
+            "launch\n".into()
+        };
+        copy_text(&app, id, "operation", &operation, 0o600).await?;
+        if upgrading {
+            app.change(id, |s| s.stage = "upgrade".into()).await?;
+            docker(&["start", &container(id)]).await?;
+            return Ok(());
         }
         let launch = LaunchSettings::from(&s);
         let config = app.dir.join(format!("{id}.launch-settings.sh"));
@@ -644,17 +680,202 @@ async fn prepare(app: Shared, id: &str, new_container: bool, attempt_ms: u64) ->
     if let Err(e) = &result {
         app.change(id, |s| {
             s.status = "failed".into();
-            s.error = Some(redact(&e.to_string(), s));
+            s.error = Some(redact(&e.to_string()));
         })
         .await?;
     }
     result
 }
-fn redact(text: &str, s: &Session) -> String {
-    text.replace(&s.token, "[REDACTED]")
-        .replace(&s.viewer_token, "[REDACTED]")
+fn redact(text: &str) -> String {
+    text.split_inclusive('\n')
+        .map(|line| {
+            if let Some((prefix, _)) = line.split_once("#token=") {
+                format!(
+                    "{prefix}#token=[REDACTED]{}",
+                    if line.ends_with('\n') { "\n" } else { "" }
+                )
+            } else {
+                line.to_owned()
+            }
+        })
+        .collect()
+}
+async fn copy_text(app: &App, id: &str, name: &str, text: &str, mode: u32) -> Result<()> {
+    let path = app.dir.join(format!("{id}.{name}"));
+    private_write(&path, text.as_bytes())?;
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode))?;
+    let result = docker(&[
+        "cp",
+        path.to_str().context("Invalid data path")?,
+        &format!("{}:/opt/innkeeper/{name}", container(id)),
+    ])
+    .await;
+    let _ = std::fs::remove_file(path);
+    result?;
+    Ok(())
+}
+// Release and numbered Git builds use dotted numbers followed by a numeric package revision.
+fn release_version(value: &str) -> Option<(u64, Vec<u64>, Vec<u64>)> {
+    let (epoch, value) = match value.split_once(':') {
+        Some((epoch, value)) => (epoch.parse().ok()?, value),
+        None => (0, value),
+    };
+    let value = value.strip_prefix('v').unwrap_or(value);
+    let (version, revision) = value.rsplit_once('-').unwrap_or((value, "1"));
+    let numbers = |s: &str| {
+        s.split('.')
+            .map(str::parse::<u64>)
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .ok()
+    };
+    let version = numbers(version)?;
+    if version.len() < 3 {
+        return None;
+    }
+    Some((epoch, version, numbers(revision)?))
+}
+fn version_status(installed: Option<&str>) -> &'static str {
+    match installed
+        .and_then(release_version)
+        .zip(release_version(ELSEWHERE_VERSION))
+    {
+        Some((installed, expected)) => match installed.cmp(&expected) {
+            std::cmp::Ordering::Less => "older",
+            std::cmp::Ordering::Equal => "current",
+            std::cmp::Ordering::Greater => "newer",
+        },
+        None => "unknown",
+    }
+}
+fn debian_version(text: &str) -> Option<String> {
+    text.split("\n\n").find_map(|entry| {
+        let field = |name| entry.lines().find_map(|line| line.strip_prefix(name));
+        if field("Package: ")? != "elsewhere" || field("Status: ")? != "install ok installed" {
+            return None;
+        }
+        Some(field("Version: ")?.to_owned())
+    })
+}
+fn arch_version(text: &str) -> Option<String> {
+    let field = |name| {
+        text.split("\n\n")
+            .find_map(|entry| entry.strip_prefix(name))
+    };
+    if field("%NAME%\n")? != "elsewhere" {
+        return None;
+    }
+    Some(field("%VERSION%\n")?.to_owned())
+}
+async fn installed_version(app: &App, s: &Session) -> Result<String> {
+    app.owned(&s.id).await?;
+    let path = app.dir.join(format!("{}.version", s.id));
+    if path.exists() {
+        std::fs::remove_dir_all(&path)?;
+    }
+    std::fs::create_dir_all(&path)?;
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700))?;
+    let result: Result<String> = async {
+        let source = if s.distribution == "arch" {
+            "/var/lib/pacman/local"
+        } else {
+            "/var/lib/dpkg/status"
+        };
+        docker(&[
+            "cp",
+            &format!("{}:{source}", container(&s.id)),
+            path.to_str().context("Invalid data path")?,
+        ])
+        .await?;
+        if s.distribution == "arch" {
+            if !std::fs::symlink_metadata(path.join("local"))?.is_dir() {
+                bail!("Package metadata is not a directory");
+            }
+            for entry in std::fs::read_dir(path.join("local"))? {
+                let entry = entry?;
+                if entry.file_type()?.is_dir()
+                    && entry
+                        .file_name()
+                        .to_string_lossy()
+                        .starts_with("elsewhere-")
+                {
+                    if !std::fs::symlink_metadata(entry.path().join("desc"))?.is_file() {
+                        continue;
+                    }
+                    if let Some(version) =
+                        arch_version(&std::fs::read_to_string(entry.path().join("desc"))?)
+                    {
+                        return Ok(version);
+                    }
+                }
+            }
+            bail!("Elsewhere package metadata is unavailable");
+        }
+        if !std::fs::symlink_metadata(path.join("status"))?.is_file() {
+            bail!("Package metadata is not a regular file");
+        }
+        debian_version(&std::fs::read_to_string(path.join("status"))?)
+            .context("Elsewhere package metadata is unavailable")
+    }
+    .await;
+    let _ = std::fs::remove_dir_all(path);
+    result
+}
+async fn session_token(app: &App, id: &str, viewer: bool) -> Result<String> {
+    app.owned(id).await?;
+    let name = container(id);
+    let mut args = vec![
+        "exec",
+        "--user",
+        "elsewhere",
+        "--env",
+        "HOME=/home/elsewhere",
+        &name,
+        "elsewhere",
+        "token",
+    ];
+    if viewer {
+        args.push("--viewer");
+    }
+    // Command output is credential material, including diagnostics on failure.
+    let output = tokio::time::timeout(
+        Duration::from_secs(10),
+        Command::new("docker")
+            .args(args)
+            .kill_on_drop(true)
+            .output(),
+    )
+    .await
+    .context("Token command timed out")?
+    .context("Could not run token command")?;
+    if !output.status.success() {
+        bail!("Elsewhere token is unavailable; the token command did not succeed");
+    }
+    let output =
+        String::from_utf8(output.stdout).context("Elsewhere token command did not return text")?;
+    let token = output.strip_suffix('\n').unwrap_or(&output);
+    if token.is_empty() {
+        bail!("Elsewhere token is not available yet");
+    }
+    Ok(token.to_owned())
+}
+async fn viewer_get(app: &App, id: &str, url: &str) -> Result<reqwest::Response> {
+    for attempt in 0..2 {
+        let token = session_token(app, id, true).await?;
+        let response = app
+            .client
+            .get(url)
+            .bearer_auth(token)
+            .send()
+            .await
+            .context("Elsewhere request failed")?;
+        if response.status() != StatusCode::UNAUTHORIZED || attempt == 1 {
+            return Ok(response);
+        }
+    }
+    unreachable!()
 }
 async fn reconcile(app: Shared) {
+    let mut version_checks = HashMap::<String, Instant>::new();
     loop {
         let sessions = app.db.lock().await.sessions.clone();
         for s in sessions {
@@ -662,25 +883,79 @@ async fn reconcile(app: Shared) {
             let Ok(_guard) = lock.try_lock() else {
                 continue;
             };
-            if matches!(s.stage.as_str(), "image" | "download") {
-                continue;
-            }
             let Ok(s) = app.session(&s.id).await else {
                 continue;
             };
+            if matches!(s.status.as_str(), "preparing" | "upgrading")
+                && matches!(s.stage.as_str(), "image" | "download")
+            {
+                continue;
+            }
             let inspect = match app.owned(&s.id).await {
                 Ok(v) => v,
                 Err(e) => {
                     let _ = app
                         .change(&s.id, |s| {
                             s.status = "failed".into();
-                            s.error = Some(redact(&e.to_string(), s));
+                            s.error = Some(redact(&e.to_string()));
                         })
                         .await;
                     continue;
                 }
             };
             let running = inspect["State"]["Running"].as_bool() == Some(true);
+            if s.status == "failed" && s.upgrade_target.is_some() {
+                continue;
+            }
+            if s.status == "upgrading" {
+                if !running {
+                    let version = installed_version(&app, &s).await.ok();
+                    let marker = app.dir.join(format!("{}.upgrade-complete", s.id));
+                    let copied = docker(&[
+                        "cp",
+                        &format!("{}:/opt/innkeeper/upgrade-complete", container(&s.id)),
+                        marker.to_str().unwrap(),
+                    ])
+                    .await;
+                    let completed = copied.is_ok()
+                        && std::fs::read_to_string(&marker)
+                            .ok()
+                            .is_some_and(|v| v.trim() == s.started_ms.to_string());
+                    let _ = std::fs::remove_file(marker);
+                    let success = completed
+                        && inspect["State"]["ExitCode"] == 0
+                        && version.as_deref().is_some_and(|v| {
+                            release_version(v)
+                                == s.upgrade_target.as_deref().and_then(release_version)
+                        });
+                    let _ = app.change(&s.id, |s| {
+                        s.installed_version = version;
+                        s.status = if success { "stopped" } else { "failed" }.into();
+                        s.stage = "upgrade".into();
+                        s.upgrade_target = None;
+                        s.error = if success { None } else { Some("Upgrade did not complete. Open Logs for details; stop the session before retrying or starting it.".into()) };
+                    }).await;
+                } else if now_ms().saturating_sub(s.started_ms) > 1_800_000 {
+                    let _ = app
+                        .change(&s.id, |s| {
+                            s.status = "failed".into();
+                            s.error = Some(
+                                "Upgrade timed out. Stop the session and inspect Logs.".into(),
+                            );
+                        })
+                        .await;
+                }
+                continue;
+            }
+            if (!running || s.status == "running")
+                && version_checks
+                    .get(&s.id)
+                    .is_none_or(|last| last.elapsed() >= Duration::from_secs(30))
+            {
+                let version = installed_version(&app, &s).await.ok();
+                let _ = app.change(&s.id, |s| s.installed_version = version).await;
+                version_checks.insert(s.id.clone(), Instant::now());
+            }
             if s.status == "running" && running {
                 if s.error.is_some() {
                     let _ = app.change(&s.id, |s| s.error = None).await;
@@ -690,12 +965,8 @@ async fn reconcile(app: Shared) {
             if !running && s.status == "failed" {
                 continue;
             }
-            if !running {
-                let code = inspect["State"]["ExitCode"].as_i64().unwrap_or(-1);
-                let normal = [0, 137, 143].contains(&code) && inspect["State"]["OOMKilled"] != true;
-                if s.status == "stopped" && normal && s.error.is_none() {
-                    continue;
-                }
+            if !running && s.status == "stopped" {
+                continue;
             }
             let stage_path = app.dir.join(format!("{}.stage", s.id));
             let stage = if docker(&[
@@ -726,16 +997,38 @@ async fn reconcile(app: Shared) {
                 }).await;
                 continue;
             }
+            let mut readiness_error = None;
             let ready = if stage == "launch" {
-                app.client
-                    .get(format!("{}/api/windows", app.endpoint(&s)))
-                    .bearer_auth(&s.viewer_token)
-                    .send()
-                    .await
-                    .map(|r| r.status().is_success())
-                    .unwrap_or(false)
+                match session_token(&app, &s.id, false).await {
+                    Err(e) => {
+                        readiness_error = Some(e.to_string());
+                        false
+                    }
+                    Ok(_) => {
+                        match viewer_get(&app, &s.id, &format!("{}/api/windows", app.endpoint(&s)))
+                            .await
+                        {
+                            Ok(r) if r.status().is_success() => true,
+                            Ok(_) => {
+                                readiness_error = Some(
+                                    "Waiting for Elsewhere authentication and readiness".into(),
+                                );
+                                false
+                            }
+                            Err(e) => {
+                                readiness_error = Some(e.to_string());
+                                false
+                            }
+                        }
+                    }
+                }
             } else {
                 false
+            };
+            let version = if ready {
+                installed_version(&app, &s).await.ok()
+            } else {
+                None
             };
             let timings = docker(&["exec", &container(&s.id), "cat", "/tmp/innkeeper-timings"])
                 .await
@@ -757,8 +1050,9 @@ async fn reconcile(app: Shared) {
                             .insert(pair[0].1.clone(), pair[1].0.saturating_sub(pair[0].0));
                     }
                     s.status = "preparing".into();
-                    s.error = None;
+                    s.error = readiness_error;
                     if ready {
+                        s.installed_version = version;
                         if let Some((launch, _)) = entries.last() {
                             let now = std::time::SystemTime::now()
                                 .duration_since(std::time::UNIX_EPOCH)
@@ -820,6 +1114,8 @@ async fn stop(State(app): State<Shared>, Path(id): Path<String>) -> Api<StatusCo
         }
     }
     app.change(&id, |s| {
+        s.upgrade_target = None;
+        s.error = None;
         s.status = if downloading && !has_container {
             "cancelled"
         } else {
@@ -873,6 +1169,7 @@ async fn begin_start(app: &Shared, id: &str, relaunch: bool) -> Api<StatusCode> 
     let attempt_ms = now_ms().max(s.started_ms.saturating_add(1));
     app.change(&id, |s| {
         s.started_ms = attempt_ms;
+        s.upgrade_target = None;
         s.status = "preparing".into();
         s.stage = "download".into();
         s.error = None;
@@ -881,6 +1178,36 @@ async fn begin_start(app: &Shared, id: &str, relaunch: bool) -> Api<StatusCode> 
     })
     .await?;
     prepare_in_background(app.clone(), id.to_owned(), false, attempt_ms);
+    Ok(StatusCode::ACCEPTED)
+}
+async fn upgrade(State(app): State<Shared>, Path(id): Path<String>) -> Api<StatusCode> {
+    let lock = app.lock(&id).await;
+    let _guard = lock.lock().await;
+    let s = app.session(&id).await?;
+    if !matches!(s.status.as_str(), "running" | "stopped") {
+        return Err(Error(
+            StatusCode::CONFLICT,
+            "Only running or stopped sessions can be upgraded".into(),
+        ));
+    }
+    let installed = installed_version(&app, &s).await?;
+    if version_status(Some(&installed)) != "older" {
+        return Err(Error(
+            StatusCode::CONFLICT,
+            "Installed Elsewhere version does not need an upgrade".into(),
+        ));
+    }
+    let attempt_ms = now_ms().max(s.started_ms.saturating_add(1));
+    app.change(&id, |s| {
+        s.installed_version = Some(installed);
+        s.upgrade_target = Some(ELSEWHERE_VERSION.into());
+        s.started_ms = attempt_ms;
+        s.status = "upgrading".into();
+        s.stage = "download".into();
+        s.error = None;
+    })
+    .await?;
+    prepare_in_background(app.clone(), id, false, attempt_ms);
     Ok(StatusCode::ACCEPTED)
 }
 async fn destroy(State(app): State<Shared>, Path(id): Path<String>) -> Api<StatusCode> {
@@ -934,13 +1261,28 @@ async fn link(State(app): State<Shared>, Path(id): Path<String>) -> Api<Json<ser
     if s.status != "running" {
         return Err(Error(StatusCode::CONFLICT, "Session is not ready".into()));
     }
+    let token = session_token(&app, &id, false).await?;
+    let mut url = reqwest::Url::parse(&format!(
+        "https://{}:{}/",
+        if app.public_host.is_empty() {
+            "localhost"
+        } else {
+            &app.public_host
+        },
+        s.port
+    ))
+    .context("Invalid public URL")?;
+    url.query_pairs_mut().append_pair("token", &token);
+    let fragment = url.query().unwrap().to_owned();
+    url.set_query(None);
+    url.set_fragment(Some(&fragment));
     Ok(Json(serde_json::json!({
-        "url": format!("https://{}:{}/#token={}", if app.public_host.is_empty() { "localhost" } else { &app.public_host }, s.port, s.token),
+        "url": url.as_str(),
         "use_browser_host": app.public_host.is_empty(),
     })))
 }
 async fn logs(State(app): State<Shared>, Path(id): Path<String>) -> Api<Json<serde_json::Value>> {
-    let s = app.session(&id).await?;
+    app.session(&id).await?;
     use std::io::{Read, Seek, SeekFrom};
     let mut output = String::new();
     if let Ok(mut file) = std::fs::File::open(app.dir.join(format!("{id}.build.log"))) {
@@ -970,7 +1312,12 @@ async fn logs(State(app): State<Shared>, Path(id): Path<String>) -> Api<Json<ser
             output.push_str(&String::from_utf8_lossy(&raw.stderr));
         }
     }
-    Ok(Json(serde_json::json!({"text":redact(&output,&s)})))
+    for viewer in [false, true] {
+        if let Ok(token) = session_token(&app, &id, viewer).await {
+            output = output.replace(&token, "[REDACTED]");
+        }
+    }
+    Ok(Json(serde_json::json!({"text":redact(&output)})))
 }
 #[derive(Deserialize)]
 struct Preview {
@@ -1013,17 +1360,12 @@ async fn preview(
         }
         times.insert(id, Instant::now());
     }
-    let r = app
-        .client
-        .get(format!(
-            "{}/api/screenshot.png?width={}",
-            app.endpoint(&s),
-            q.width
-        ))
-        .bearer_auth(&s.viewer_token)
-        .send()
-        .await
-        .context("Screenshot unavailable")?;
+    let r = viewer_get(
+        &app,
+        &s.id,
+        &format!("{}/api/screenshot.png?width={}", app.endpoint(&s), q.width),
+    )
+    .await?;
     if !r.status().is_success() {
         return Err(Error(
             StatusCode::SERVICE_UNAVAILABLE,
@@ -1101,7 +1443,9 @@ async fn main() -> Result<()> {
         if s.applied_settings.is_none() {
             s.applied_settings = Some(LaunchSettings::from(&*s));
         }
-        if s.status == "preparing" && matches!(s.stage.as_str(), "image" | "download") {
+        if matches!(s.status.as_str(), "preparing" | "upgrading")
+            && matches!(s.stage.as_str(), "image" | "download" | "container")
+        {
             s.status = "failed".into();
             s.error=Some("Innkeeper restarted during session preparation. Stop and start to retry an existing session; destroy and recreate a session whose container was not initialized.".into());
         }
@@ -1138,6 +1482,7 @@ async fn main() -> Result<()> {
         .route("/sessions/{id}/stop", post(stop))
         .route("/sessions/{id}/start", post(start))
         .route("/sessions/{id}/relaunch", post(relaunch))
+        .route("/sessions/{id}/upgrade", post(upgrade))
         .route("/sessions/{id}/settings", axum::routing::put(settings))
         .route("/sessions/{id}", axum::routing::delete(destroy))
         .route("/sessions/{id}/link", post(link))
@@ -1207,31 +1552,31 @@ mod tests {
         );
     }
     #[test]
-    fn tokens_are_redacted() {
-        let s = Session {
-            id: "".into(),
-            name: "".into(),
-            distribution: "".into(),
-            packages: vec![],
-            startup_command: String::new(),
-            screen_size: None,
-            kiosk: false,
-            applied_settings: None,
-            launching_settings: None,
-            port: 0,
-            started_ms: 0,
-            status: "".into(),
-            stage: "".into(),
-            error: None,
-            token: random_token(),
-            viewer_token: random_token(),
-            timings: HashMap::new(),
-        };
-        assert_eq!(s.token.len(), 64);
-        assert_ne!(s.token, s.viewer_token);
+    fn token_links_are_redacted_without_format_assumptions() {
         assert_eq!(
-            redact(&format!("{} {}", s.token, s.viewer_token), &s),
-            "[REDACTED] [REDACTED]"
+            redact("before\nhttps://desktop/#token=opaque / + ? trailing\nafter"),
+            "before\nhttps://desktop/#token=[REDACTED]\nafter"
         );
+    }
+    #[test]
+    fn installed_package_metadata_and_ordering() {
+        assert_eq!(
+            debian_version("Package: elsewhere\nStatus: install ok installed\nVersion: 0.4.4-1\n")
+                .as_deref(),
+            Some("0.4.4-1")
+        );
+        assert!(
+            debian_version("Package: elsewhere\nStatus: install ok unpacked\nVersion: 0.4.4-1\n")
+                .is_none()
+        );
+        assert_eq!(
+            arch_version("%NAME%\nelsewhere\n\n%VERSION%\n0.4.4-1\n\n").as_deref(),
+            Some("0.4.4-1")
+        );
+        assert!(release_version("0.4.10-1") > release_version("0.4.9-1"));
+        assert!(release_version("0.4.4-2") > release_version("0.4.4-1"));
+        assert!(release_version("v0.4.4.2-1") > release_version("0.4.4-1"));
+        assert_eq!(version_status(Some(ELSEWHERE_VERSION)), "current");
+        assert_eq!(version_status(None), "unknown");
     }
 }
