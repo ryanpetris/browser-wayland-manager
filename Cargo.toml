@@ -5,6 +5,9 @@ edition = "2024"
 license = "MIT"
 description = "Manage isolated Elsewhere Docker desktops"
 
+[package.metadata.elsewhere]
+version = "0.4.1"
+
 [package.metadata.deb]
 maintainer = "Elsewhere Innkeeper contributors <noreply@localhost>"
 section = "admin"
@@ -33,3 +36,6 @@ uuid = { version = "1", features = ["v4"] }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
 subtle = "2"
 libc = "0.2"
+
+[build-dependencies]
+toml = "1.1.5"

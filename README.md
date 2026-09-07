@@ -26,7 +26,7 @@ Innkeeper listens on port `19300`. Sessions publish matching TCP and UDP ports f
 | `INNKEEPER_DOCKER_HOST` | `127.0.0.1` | Address where the backend reaches published session ports |
 | `INNKEEPER_SESSION_BIND` | `0.0.0.0` | Host address on which Docker publishes session ports |
 | `INNKEEPER_DATA_DIR` | `/var/lib/elsewhere-innkeeper` | Private Innkeeper state, administrator token, build logs |
-| `INNKEEPER_ASSETS_DIR` | `/usr/share/elsewhere-innkeeper` | Session setup scripts and pinned Elsewhere version |
+| `INNKEEPER_ASSETS_DIR` | `/usr/share/elsewhere-innkeeper` | Session setup scripts |
 
 The native application and session ports bind all IPv4 interfaces by default. Compose publishes Innkeeper's port on the addresses supported by the Docker daemon. Desktop links use the hostname or IP address in the browser's Innkeeper URL, with the session's HTTPS port. Set `INNKEEPER_PUBLIC_HOST` to override that hostname. When a reverse proxy runs on another machine, set it to the Docker host's browser-reachable address unless the proxy also forwards the session ports. IPv6 literal overrides must include brackets, for example `[2001:db8::1]`; IPv6 links also require Docker to publish the session ports over IPv6. Compose uses `host.docker.internal:host-gateway` for backend access, independently of browser links. Use an HTTPS reverse proxy to protect management traffic on untrusted networks. To restrict management access to the local machine, change the Compose port mapping to `127.0.0.1:19300:19300`, or set `INNKEEPER_LISTEN=127.0.0.1:19300` for a native installation. For a native installation, `INNKEEPER_SESSION_BIND=127.0.0.1` also restricts desktop ports to loopback. Forward both TCP and UDP session ports when using NAT. One Innkeeper controls one local Linux Docker daemon; remote Docker daemons and rootless Docker are not currently supported.
 
@@ -66,9 +66,9 @@ Release packages currently support x86_64 Docker hosts. Base images are reused l
 - Arch Linux `archlinux:base`, rolling repositories.
 - Debian 13 `debian:trixie-slim`, Trixie repositories with `main`, `contrib`, `non-free`, and `non-free-firmware` enabled.
 
-The Elsewhere release version is pinned in `sessions/elsewhere-version`. Innkeeper generates GitHub download URLs and package filenames from that single version using the release package naming convention. Packages are cached under `packages/<version>/x86_64/<distribution>/<asset>` in Innkeeper's data directory. Downloads use HTTPS and a temporary file renamed only after a successful transfer. Concurrent session creation shares the preparation lock and reuses completed downloads. Interrupted transfers are retried on the next request.
+The Elsewhere release version is pinned in `package.metadata.elsewhere.version` in `Cargo.toml` and embedded in the application at build time. Innkeeper generates GitHub download URLs and package filenames from that single version using the release package naming convention. Packages are cached under `packages/<version>/x86_64/<distribution>/<asset>` in Innkeeper's data directory. Downloads use HTTPS and a temporary file renamed only after a successful transfer. Concurrent session creation shares the preparation lock and reuses completed downloads. Interrupted transfers are retried on the next request.
 
-Update that version file and rebuild Innkeeper to change the pinned release. The new package downloads when first needed. Existing sessions retain their installed Elsewhere version. Cached packages survive Innkeeper upgrades and session destruction. Individually remove obsolete version directories from the cache when they are no longer needed; Innkeeper will download a missing package again. Restart Innkeeper after updating its installed assets.
+Update that metadata field in `Cargo.toml` and rebuild Innkeeper to change the pinned release. The new package downloads when first needed. Existing sessions retain their installed Elsewhere version. Cached packages survive Innkeeper upgrades and session destruction. Individually remove obsolete version directories from the cache when they are no longer needed; Innkeeper will download a missing package again. Restart Innkeeper after updating its installed assets.
 
 The release package supplies Elsewhere and its accompanying notices. Innkeeper's own code uses the accompanying MIT license.
 
@@ -85,7 +85,7 @@ sudo systemctl enable --now docker elsewhere-innkeeper
 sudo cat /var/lib/elsewhere-innkeeper/admin-token
 ```
 
-Edit `/etc/elsewhere-innkeeper/environment` to configure native installations and restart the service. Restart `elsewhere-innkeeper` after every native package upgrade; creation refuses a changed Elsewhere release pin until the running binary is updated. The account receives access to Docker through its supplementary `docker` group. Arch packaging builds the checkout through `packaging/arch/PKGBUILD`. Debian packaging uses `cargo-deb` with metadata in `Cargo.toml` and the service setup in `packaging/debian/`. Native source builds require Rust with edition 2024 support and Node.js 24.
+Edit `/etc/elsewhere-innkeeper/environment` to configure native installations and restart the service. Restart `elsewhere-innkeeper` after every native package upgrade to use the updated binary and its pinned Elsewhere release. The account receives access to Docker through its supplementary `docker` group. Arch packaging builds the checkout through `packaging/arch/PKGBUILD`. Debian packaging uses `cargo-deb` with metadata in `Cargo.toml` and the service setup in `packaging/debian/`. Native source builds require Rust with edition 2024 support and Node.js 24.
 
 ## Development
 
