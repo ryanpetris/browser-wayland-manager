@@ -135,6 +135,7 @@ struct App {
     preparations: Semaphore,
     operations: Mutex<HashMap<String, Arc<Mutex<()>>>>,
     previews: Semaphore,
+    proxy_resolutions: Semaphore,
     preview_times: Mutex<HashMap<String, Instant>>,
 }
 type Shared = Arc<App>;
@@ -1647,6 +1648,7 @@ async fn main() -> Result<()> {
         preparations: Semaphore::new(1),
         operations: Mutex::new(HashMap::new()),
         previews: Semaphore::new(2),
+        proxy_resolutions: Semaphore::new(16),
         preview_times: Mutex::new(HashMap::new()),
     });
     for id in interrupted_downloads {

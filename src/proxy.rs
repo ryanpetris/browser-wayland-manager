@@ -5,12 +5,47 @@ use axum::{
     body::Body,
     extract::{Path, Request, State},
     http::{HeaderMap, HeaderValue, Method, StatusCode, Version, header},
-    response::Response,
+    response::{IntoResponse, Response},
 };
 use hyper_util::rt::TokioIo;
 use std::{collections::HashMap, time::Duration};
 use tokio::net::TcpStream;
 use uuid::Uuid;
+
+// Keep the HTTP driver alive exactly as long as its response body or tunnel.
+struct ConnectionTask(tokio::task::JoinHandle<()>);
+impl Drop for ConnectionTask {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+struct ProxyBody {
+    inner: Body,
+    progress: Option<tokio::sync::watch::Sender<()>>,
+    _connection: Option<ConnectionTask>,
+}
+impl http_body::Body for ProxyBody {
+    type Data = axum::body::Bytes;
+    type Error = axum::Error;
+    fn poll_frame(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Result<http_body::Frame<Self::Data>, Self::Error>>> {
+        let frame = std::pin::Pin::new(&mut self.inner).poll_frame(cx);
+        if frame.is_ready() {
+            if let Some(progress) = &self.progress {
+                let _ = progress.send(());
+            }
+        }
+        frame
+    }
+    fn is_end_stream(&self) -> bool {
+        self.inner.is_end_stream()
+    }
+    fn size_hint(&self) -> http_body::SizeHint {
+        self.inner.size_hint()
+    }
+}
 
 fn has_token(headers: &HeaderMap, name: &str, token: &str) -> bool {
     headers
@@ -63,12 +98,28 @@ pub async fn forward(
         ));
     }
     let session = app.session(id).await?;
+    let resolution =
+        match tokio::time::timeout(Duration::from_secs(2), app.proxy_resolutions.acquire()).await {
+            Ok(Ok(permit)) => permit,
+            _ => {
+                let mut response = Error(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "Session lookup is busy; retry shortly".into(),
+                )
+                .into_response();
+                response
+                    .headers_mut()
+                    .insert(header::RETRY_AFTER, HeaderValue::from_static("1"));
+                return Ok(response);
+            }
+        };
     let endpoint = app.backend(&session).await.map_err(|_| {
         Error(
             StatusCode::SERVICE_UNAVAILABLE,
             "Session is unavailable".into(),
         )
     })?;
+    drop(resolution);
     let websocket = request.method() == Method::GET
         && has_token(request.headers(), "connection", "upgrade")
         && has_token(request.headers(), "upgrade", "websocket");
@@ -114,13 +165,32 @@ pub async fn forward(
         hyper::client::conn::http1::handshake::<_, Body>(TokioIo::new(stream))
             .await
             .map_err(|_| Error(StatusCode::BAD_GATEWAY, "Session connection failed".into()))?;
-    tokio::spawn(async move {
+    let mut connection = Some(ConnectionTask(tokio::spawn(async move {
         let _ = connection.with_upgrades().await;
+    })));
+    let (progress, mut upload) = tokio::sync::watch::channel(());
+    let request = request.map(|inner| {
+        Body::new(ProxyBody {
+            inner,
+            progress: Some(progress),
+            _connection: None,
+        })
     });
-    let mut response = sender
-        .send_request(request)
-        .await
-        .map_err(|_| Error(StatusCode::BAD_GATEWAY, "Session request failed".into()))?;
+    let response = sender.send_request(request);
+    tokio::pin!(response);
+    let mut deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    let mut uploading = true;
+    let mut response = loop {
+        tokio::select! {
+            result = &mut response => break result.map_err(|_| Error(StatusCode::BAD_GATEWAY, "Session request failed".into()))?,
+            _ = tokio::time::sleep_until(deadline) => return Err(Error(StatusCode::GATEWAY_TIMEOUT, "Session request timed out".into())),
+            changed = upload.changed(), if uploading => {
+                uploading = changed.is_ok();
+                // Active uploads may take arbitrarily long; stalled requests may not.
+                deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+            }
+        }
+    };
     if response.status() == StatusCode::SWITCHING_PROTOCOLS {
         if !websocket
             || !has_token(response.headers(), "upgrade", "websocket")
@@ -133,7 +203,9 @@ pub async fn forward(
         }
         let upstream = hyper::upgrade::on(&mut response);
         let downstream = downstream.unwrap();
+        let connection = connection.take();
         tokio::spawn(async move {
+            let _connection = connection;
             if let (Ok(upstream), Ok(downstream)) = tokio::join!(upstream, downstream) {
                 let _ = tokio::io::copy_bidirectional(
                     &mut TokioIo::new(upstream),
@@ -152,7 +224,14 @@ pub async fn forward(
     } else {
         strip_hop_headers(response.headers_mut());
     }
-    Ok(response.map(Body::new))
+    response.headers_mut().remove("service-worker-allowed");
+    Ok(response.map(|body| {
+        Body::new(ProxyBody {
+            inner: Body::new(body),
+            progress: None,
+            _connection: connection,
+        })
+    }))
 }
 
 pub async fn serve(router: Router) -> Result<()> {

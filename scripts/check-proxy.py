@@ -5,6 +5,7 @@ Run with Python, OpenSSL, the Docker CLI/socket and INNKEEPER_RTC_ADDR set.
 The rig image must also contain this script and an `elsewhere` token fixture.
 """
 import base64
+import concurrent.futures
 import hashlib
 import http.client
 import http.server
@@ -16,7 +17,6 @@ import ssl
 import subprocess
 import sys
 import tempfile
-import threading
 import time
 import uuid
 
@@ -32,6 +32,7 @@ def backend():
 
     class Handler(http.server.BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
+        closed_stalls = 0
 
         def log_message(self, *args):
             pass
@@ -48,6 +49,12 @@ def backend():
                 return
             if self.headers.get("Authorization") != "Bearer " + TOKEN:
                 self.send_error(401)
+                return
+            if self.path.endswith("/stall"):
+                self.connection.settimeout(45)
+                if self.connection.recv(1) == b"":
+                    Handler.closed_stalls += 1
+                self.close_connection = True
                 return
             if self.path.endswith("/ws"):
                 key = self.headers["Sec-WebSocket-Key"]
@@ -87,11 +94,12 @@ def backend():
                 return
             body = json.dumps({"path": self.path, "session": os.environ["SESSION_ID"],
                                "leaked": self.headers.get("X-Remove-Me"),
-                               "forwarded": self.headers.get("Forwarded")}).encode()
+                               "forwarded": self.headers.get("Forwarded"), "closed_stalls": Handler.closed_stalls}).encode()
             self.send_response(200)
             self.send_header("Content-Length", str(len(body)))
             self.send_header("Connection", "X-Remove-Response")
             self.send_header("X-Remove-Response", "private")
+            self.send_header("Service-Worker-Allowed", "/")
             self.end_headers()
             self.wfile.write(body)
 
@@ -108,6 +116,9 @@ def backend():
 
 def check():
     context = ssl._create_unverified_context()
+    plain = os.environ.get("PROXY_TEST_HTTP") == "1"
+    def connect():
+        return http.client.HTTPConnection("127.0.0.1", 29300, timeout=40) if plain else http.client.HTTPSConnection("127.0.0.1", 29300, context=context, timeout=40)
     image = os.environ.get("PROXY_RIG_IMAGE", "innkeeper-proxy-rig")
     docker_mode = os.environ.get("INNKEEPER_IN_DOCKER") == "1"
     network = os.environ.get("PROXY_TEST_NETWORK", "bridge")
@@ -128,6 +139,12 @@ def check():
                     args += ["-p", f"127.0.0.1:{port}:19443/tcp"]
                 created.append(name)
                 run(*args, "--entrypoint", "python3", image, "/check-proxy.py", "backend")
+                info = json.loads(run("docker", "inspect", name))[0]
+                bindings = info["HostConfig"]["PortBindings"]
+                if docker_mode:
+                    assert "19443/tcp" not in bindings
+                else:
+                    assert bindings["19443/tcp"] == [{"HostIp": "127.0.0.1", "HostPort": str(port)}]
                 sessions.append(dict(id=sid, name="Proxy fixture", distribution="debian", packages=[],
                                      port=port, status="running", stage="launch", error=None))
             data = work / "data"
@@ -138,12 +155,12 @@ def check():
                             "-subj", "/CN=localhost", "-keyout", str(key), "-out", str(cert)],
                            check=True, capture_output=True)
             env = dict(os.environ, INNKEEPER_DATA_DIR=str(data), INNKEEPER_LISTEN="127.0.0.1:29300",
-                       INNKEEPER_TLS_CERT=str(cert), INNKEEPER_TLS_KEY=str(key))
+                       INNKEEPER_TLS_CERT="" if plain else str(cert), INNKEEPER_TLS_KEY="" if plain else str(key))
             log = (work / "manager.log").open("w+")
             manager = subprocess.Popen(["elsewhere-innkeeper"], env=env, stdout=log, stderr=log)
 
             def request(path, method="GET", body=None, headers=None):
-                connection = http.client.HTTPSConnection("127.0.0.1", 29300, context=context, timeout=20)
+                connection = connect()
                 connection.request(method, path, body=body, headers=headers or {})
                 response = connection.getresponse()
                 payload = response.read()
@@ -177,22 +194,28 @@ def check():
                 assert parsed["path"] == prefix + "/api/windows?q=a%2Fb&x=1"
                 assert parsed["leaked"] is None and parsed["forwarded"] is None
                 assert "X-Remove-Response" not in response_headers
+                assert "Service-Worker-Allowed" not in response_headers
                 status, _, body = request("/api/sessions/" + session["id"] + "/link", "POST", headers=admin)
                 assert status == 200 and json.loads(body)["url"].startswith(prefix + "/#token=")
             prefix = "/e/" + sessions[0]["id"]
+            with concurrent.futures.ThreadPoolExecutor(max_workers=32) as pool:
+                statuses = list(pool.map(lambda _: request(prefix + "/api/windows", headers=headers)[0], range(32)))
+            assert statuses == [200] * 32, statuses
             payload = b"test" * (256 * 1024)
             status, _, body = request(prefix + "/upload", "POST", payload, headers)
             assert status == 201 and body.decode() == hashlib.sha256(payload).hexdigest()
             assert request("/e/not-a-uuid/ws")[0] == 404
             assert request("/e/" + str(uuid.uuid4()) + "/ws")[0] == 404
-            connection = http.client.HTTPSConnection("127.0.0.1", 29300, context=context, timeout=15)
+            connection = connect()
             started = time.monotonic()
             connection.request("GET", prefix + "/stream", headers=headers)
             response = connection.getresponse()
             assert response.read(6) == b"first\n" and time.monotonic() - started < 3
             assert response.read() == b"last\n"
             connection.close()
-            sock = context.wrap_socket(socket.create_connection(("127.0.0.1", 29300)), server_hostname="localhost")
+            sock = socket.create_connection(("127.0.0.1", 29300))
+            if not plain:
+                sock = context.wrap_socket(sock, server_hostname="localhost")
             sock.settimeout(15)
             sock.sendall((f"GET {prefix}/ws HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer {TOKEN}\r\n"
                           "Connection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Version: 13\r\n"
@@ -209,6 +232,27 @@ def check():
                 assert stream.read(len(value)) == value
             stream.close()
             sock.close()
+            if os.environ.get("PROXY_TEST_TIMEOUTS") == "1":
+                started = time.monotonic()
+                assert request(prefix + "/stall", headers=headers)[0] == 504
+                assert time.monotonic() - started < 40
+                for _ in range(30):
+                    if json.loads(request(prefix + "/status", headers=headers)[2])["closed_stalls"] > 0:
+                        break
+                    time.sleep(.1)
+                else:
+                    raise AssertionError("Timed-out upstream socket remained open")
+                print("PASS: stalled response times out and closes upstream", flush=True)
+                def chunks():
+                    for _ in range(10):
+                        yield b"x" * 65536
+                        time.sleep(4)
+                connection = connect()
+                connection.request("POST", prefix + "/upload", body=chunks(), headers={**headers, "Content-Length": str(10 * 65536)})
+                response = connection.getresponse()
+                assert response.status == 201 and response.read().decode() == hashlib.sha256(b"x" * 655360).hexdigest()
+                connection.close()
+                print("PASS: active upload longer than response timeout", flush=True)
             run("docker", "stop", "--time", "1", created[0])
             assert request(prefix + "/api/windows", headers=headers)[0] == 503
             run("docker", "start", created[0])
@@ -218,7 +262,12 @@ def check():
                 time.sleep(.1)
             else:
                 raise AssertionError("Restart routing failed")
-            print("PASS: TLS, authenticated routing, two sessions, headers/query, upload, streaming >8s, binary WebSocket/ping/close, restart; mode=" + ("docker " + network if docker_mode else "native"), flush=True)
+            # An existing registry record does not authorize a foreign container.
+            run("docker", "rm", "-f", created[0])
+            run("docker", "run", "-d", "--name", created[0], "--network", network,
+                "--entrypoint", "sleep", image, "60")
+            assert request(prefix + "/api/windows", headers=headers)[0] == 503
+            print("PASS: " + ("HTTP" if plain else "TLS") + ", authenticated routing, two sessions, headers/query, upload, streaming >8s, binary WebSocket/ping/close, restart; mode=" + ("docker " + network if docker_mode else "native"), flush=True)
         finally:
             if manager is not None:
                 manager.terminate()

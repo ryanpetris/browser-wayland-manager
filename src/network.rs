@@ -8,7 +8,11 @@ pub struct Network {
 }
 impl Network {
     pub async fn discover() -> Result<Self> {
-        let mut in_docker = env("INNKEEPER_IN_DOCKER", "0") == "1";
+        let mut in_docker = match env("INNKEEPER_IN_DOCKER", "0").as_str() {
+            "0" => false,
+            "1" => true,
+            _ => bail!("INNKEEPER_IN_DOCKER must be 0 or 1"),
+        };
         let mut container = env("INNKEEPER_DOCKER_CONTAINER", "");
         let mut network = env("INNKEEPER_DOCKER_NETWORK", "");
         let mut args = std::env::args().skip(1);
@@ -40,7 +44,8 @@ impl Network {
             }
             return Ok(Self { id: None, rtc_addr });
         }
-        if container.is_empty() {
+        let inferred_identity = container.is_empty();
+        if inferred_identity {
             container = std::fs::read_to_string("/etc/hostname")
                 .context("Read container hostname")?
                 .trim()
@@ -48,6 +53,16 @@ impl Network {
         }
         let info: serde_json::Value = serde_json::from_str(&docker(&["inspect", "--type", "container", &container]).await
             .context("Cannot identify Innkeeper's container; set INNKEEPER_DOCKER_CONTAINER to its name or ID")?)?;
+        if inferred_identity
+            && (container.len() < 12
+                || !info[0]["Id"]
+                    .as_str()
+                    .is_some_and(|id| id.starts_with(&container)))
+        {
+            bail!(
+                "Custom container hostname: set INNKEEPER_DOCKER_CONTAINER to Innkeeper's name or ID"
+            );
+        }
         let networks = info[0]["NetworkSettings"]["Networks"]
             .as_object()
             .context("Container has no networks")?;

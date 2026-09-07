@@ -193,6 +193,7 @@ dependencies = [
  "anyhow",
  "axum",
  "axum-server",
+ "http-body",
  "hyper",
  "hyper-util",
  "libc",
