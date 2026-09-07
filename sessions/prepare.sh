@@ -18,6 +18,6 @@ if [ ! -s "$package" ]; then
 else
     echo "Using cached $(basename "$package")"
 fi
-if ! docker image inspect "$image" >/dev/null 2>&1; then
+if [ -n "$image" ] && ! docker image inspect "$image" >/dev/null 2>&1; then
     docker pull --platform linux/amd64 "$image"
 fi

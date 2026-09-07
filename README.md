@@ -107,7 +107,9 @@ Native installations detect the devices directly without additional configuratio
 Session setup installs Intel and AMD VA-API and Vulkan drivers for encoding and
 rendering, and grants the desktop user access to the device groups. Hosts without a render device use software rendering
 and encoding. A GPU must support VA-API encoding to use the hardware path.
-Existing sessions retain their original container configuration and startup scripts;
+Every session start copies and installs Innkeeper's pinned Elsewhere release package,
+reusing the cached download when available. This also refreshes the container entrypoint.
+Existing sessions retain their original container configuration and desktop startup script;
 create a new session to use hardware encoding.
 
 ## Session profiles

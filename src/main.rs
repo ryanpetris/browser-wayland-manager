@@ -280,7 +280,7 @@ async fn create(State(app): State<Shared>, Json(input): Json<Create>) -> Api<imp
         screen_size: input.screen_size,
         kiosk: input.kiosk,
         port,
-        started_ms: 0,
+        started_ms: now_ms(),
         status: "preparing".into(),
         stage: "download".into(),
         error: None,
@@ -291,12 +291,15 @@ async fn create(State(app): State<Shared>, Json(input): Json<Create>) -> Api<imp
     db.sessions.push(s.clone());
     app.save(&db)?;
     drop(db);
-    let id = s.id.clone();
+    prepare_in_background(app, s.id.clone(), true, s.started_ms);
+    Ok((StatusCode::ACCEPTED, Json(public_session(&s))))
+}
+fn prepare_in_background(app: Shared, id: String, new_container: bool, attempt_ms: u64) {
     tokio::spawn(async move {
-        if let Err(e) = prepare(app.clone(), &id).await {
+        if let Err(e) = prepare(app.clone(), &id, new_container, attempt_ms).await {
             let _ = app
                 .change(&id, |s| {
-                    if s.status == "preparing" {
+                    if s.status == "preparing" && s.started_ms == attempt_ms {
                         s.status = "failed".into();
                         s.error = Some(redact(&e.to_string(), s));
                     }
@@ -304,10 +307,12 @@ async fn create(State(app): State<Shared>, Json(input): Json<Create>) -> Api<imp
                 .await;
         }
     });
-    Ok((StatusCode::ACCEPTED, Json(public_session(&s))))
 }
-async fn prepare(app: Shared, id: &str) -> Result<()> {
+async fn prepare(app: Shared, id: &str, new_container: bool, attempt_ms: u64) -> Result<()> {
     let initial = app.session(id).await.map_err(|e| anyhow::anyhow!(e.1))?;
+    if initial.status != "preparing" || initial.started_ms != attempt_ms {
+        return Ok(());
+    }
     let version = ELSEWHERE_VERSION;
     let architecture = docker(&["info", "--format", "{{.Architecture}}"]).await?;
     if !matches!(architecture.trim(), "x86_64" | "amd64") {
@@ -337,7 +342,7 @@ async fn prepare(app: Shared, id: &str) -> Result<()> {
     );
     let started = Instant::now();
     if !package.metadata().is_ok_and(|m| m.len() > 0)
-        || docker(&["image", "inspect", image]).await.is_err()
+        || (new_container && docker(&["image", "inspect", image]).await.is_err())
     {
         private_write(
             &app.dir.join(format!("{id}.build.log")),
@@ -347,13 +352,13 @@ async fn prepare(app: Shared, id: &str) -> Result<()> {
         if app
             .session(id)
             .await
-            .map(|s| s.status != "preparing")
+            .map(|s| s.status != "preparing" || s.started_ms != attempt_ms)
             .unwrap_or(true)
         {
             return Ok(());
         }
         if !package.metadata().is_ok_and(|m| m.len() > 0)
-            || docker(&["image", "inspect", image]).await.is_err()
+            || (new_container && docker(&["image", "inspect", image]).await.is_err())
         {
             let log = std::fs::OpenOptions::new()
                 .create(true)
@@ -364,7 +369,7 @@ async fn prepare(app: Shared, id: &str) -> Result<()> {
                 .arg(app.assets.join("sessions/prepare.sh"))
                 .arg(&url)
                 .arg(&package)
-                .arg(image)
+                .arg(if new_container { image } else { "" })
                 .stdout(log.try_clone()?)
                 .stderr(log)
                 .process_group(0)
@@ -379,7 +384,7 @@ async fn prepare(app: Shared, id: &str) -> Result<()> {
                         break;
                     }
                     _ = tokio::time::sleep(Duration::from_millis(500)) => {
-                        let cancelled = app.session(id).await.map(|s| s.status != "preparing").unwrap_or(true);
+                        let cancelled = app.session(id).await.map(|s| s.status != "preparing" || s.started_ms != attempt_ms).unwrap_or(true);
                         if cancelled || Instant::now() >= deadline {
                             // This process group belongs only to this session preparation.
                             unsafe { libc::kill(-(pid as i32), libc::SIGTERM); }
@@ -398,7 +403,7 @@ async fn prepare(app: Shared, id: &str) -> Result<()> {
     let lock = app.lock(id).await;
     let _guard = lock.lock().await;
     let s = app.session(id).await.map_err(|e| anyhow::anyhow!(e.1))?;
-    if s.status != "preparing" {
+    if s.status != "preparing" || s.started_ms != attempt_ms {
         return Ok(());
     }
     app.change(id, |s| {
@@ -408,101 +413,123 @@ async fn prepare(app: Shared, id: &str) -> Result<()> {
     })
     .await?;
     let container_started = Instant::now();
-    let owner = app.db.lock().await.owner.clone();
-    let label = format!("{LABEL}={owner}");
-    docker(&["volume", "create", "--label", &label, &volume(id)]).await?;
-    let tcp = format!("{}:{}:19443/tcp", app.bind, s.port);
-    let udp = format!("{}:{}:19443/udp", app.bind, s.port);
-    let mount = format!("{}:/home/elsewhere", volume(id));
-    let screen_size = format!(
-        "INNKEEPER_SCREEN_SIZE={}",
-        s.screen_size
-            .map(|size| format!("{}x{}", size.width, size.height))
-            .unwrap_or_default()
-    );
-    let kiosk = format!("INNKEEPER_KIOSK={}", u8::from(s.kiosk));
-    let startup_command = format!("INNKEEPER_STARTUP_COMMAND={}", s.startup_command);
-    let mut args = vec![
-        "create",
-        "--env",
-        &screen_size,
-        "--env",
-        &kiosk,
-        "--env",
-        &startup_command,
-        "--name",
-        &container(id),
-        "--label",
-        &label,
-        "--init",
-        "--shm-size",
-        "1g",
-        "--log-opt",
-        "max-size=10m",
-        "--log-opt",
-        "max-file=3",
-        "-p",
-        &tcp,
-        "-p",
-        &udp,
-        "-v",
-        &mount,
-        "--platform",
-        "linux/amd64",
-        "--entrypoint",
-        "sh",
-        image,
-        "/opt/innkeeper/entrypoint.sh",
-    ]
-    .into_iter()
-    .map(str::to_owned)
-    .collect::<Vec<_>>();
-    if std::path::Path::new("/dev/dri/renderD128").exists() {
-        args.splice(
-            1..1,
-            ["--device".to_owned(), "/dev/dri:/dev/dri".to_owned()],
+    if new_container {
+        let owner = app.db.lock().await.owner.clone();
+        let label = format!("{LABEL}={owner}");
+        docker(&["volume", "create", "--label", &label, &volume(id)]).await?;
+        let tcp = format!("{}:{}:19443/tcp", app.bind, s.port);
+        let udp = format!("{}:{}:19443/udp", app.bind, s.port);
+        let mount = format!("{}:/home/elsewhere", volume(id));
+        let screen_size = format!(
+            "INNKEEPER_SCREEN_SIZE={}",
+            s.screen_size
+                .map(|size| format!("{}x{}", size.width, size.height))
+                .unwrap_or_default()
         );
+        let kiosk = format!("INNKEEPER_KIOSK={}", u8::from(s.kiosk));
+        let startup_command = format!("INNKEEPER_STARTUP_COMMAND={}", s.startup_command);
+        let mut args = vec![
+            "create",
+            "--env",
+            &screen_size,
+            "--env",
+            &kiosk,
+            "--env",
+            &startup_command,
+            "--name",
+            &container(id),
+            "--label",
+            &label,
+            "--init",
+            "--shm-size",
+            "1g",
+            "--log-opt",
+            "max-size=10m",
+            "--log-opt",
+            "max-file=3",
+            "-p",
+            &tcp,
+            "-p",
+            &udp,
+            "-v",
+            &mount,
+            "--platform",
+            "linux/amd64",
+            "--entrypoint",
+            "sh",
+            image,
+            "/opt/innkeeper/entrypoint.sh",
+        ]
+        .into_iter()
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+        if std::path::Path::new("/dev/dri/renderD128").exists() {
+            args.splice(
+                1..1,
+                ["--device".to_owned(), "/dev/dri:/dev/dri".to_owned()],
+            );
+        }
+        args.extend(s.packages.iter().cloned());
+        docker(&args.iter().map(String::as_str).collect::<Vec<_>>()).await?;
+        docker(&[
+            "cp",
+            app.assets
+                .join("sessions")
+                .to_str()
+                .context("Invalid assets path")?,
+            &format!("{}:/opt/innkeeper", container(id)),
+        ])
+        .await?;
+    } else {
+        app.owned(id).await?;
     }
-    args.extend(s.packages.iter().cloned());
-    docker(&args.iter().map(String::as_str).collect::<Vec<_>>()).await?;
-    docker(&[
-        "cp",
-        app.assets
-            .join("sessions")
-            .to_str()
-            .context("Invalid assets path")?,
-        &format!("{}:/opt/innkeeper", container(id)),
-    ])
-    .await?;
     docker(&[
         "cp",
         package.to_str().context("Invalid package path")?,
-        &format!("{}:/opt/innkeeper/{}", container(id), asset),
+        &format!(
+            "{}:/opt/innkeeper/elsewhere.{}",
+            container(id),
+            if s.distribution == "arch" {
+                "pkg.tar.zst"
+            } else {
+                "deb"
+            }
+        ),
     ])
     .await?;
     docker(&[
         "cp",
         app.assets
-            .join(format!("sessions/setup-{}.sh", s.distribution))
+            .join("sessions/entrypoint.sh")
             .to_str()
             .context("Invalid assets path")?,
-        &format!("{}:/opt/innkeeper/setup.sh", container(id)),
+        &format!("{}:/opt/innkeeper/entrypoint.sh", container(id)),
     ])
     .await?;
-    let seed = app.dir.join(format!("{id}.seed"));
-    std::fs::create_dir_all(&seed)?;
-    std::fs::set_permissions(&seed, std::fs::Permissions::from_mode(0o700))?;
-    private_write(&seed.join("token"), s.token.as_bytes())?;
-    private_write(&seed.join("viewer-token"), s.viewer_token.as_bytes())?;
-    let result = docker(&[
-        "cp",
-        seed.to_str().context("Invalid data path")?,
-        &format!("{}:/seed", container(id)),
-    ])
-    .await;
-    std::fs::remove_dir_all(seed)?;
-    result?;
-    app.change(id, |s| s.started_ms = now_ms()).await?;
+    if new_container {
+        docker(&[
+            "cp",
+            app.assets
+                .join(format!("sessions/setup-{}.sh", s.distribution))
+                .to_str()
+                .context("Invalid assets path")?,
+            &format!("{}:/opt/innkeeper/setup.sh", container(id)),
+        ])
+        .await?;
+        let seed = app.dir.join(format!("{id}.seed"));
+        std::fs::create_dir_all(&seed)?;
+        std::fs::set_permissions(&seed, std::fs::Permissions::from_mode(0o700))?;
+        private_write(&seed.join("token"), s.token.as_bytes())?;
+        private_write(&seed.join("viewer-token"), s.viewer_token.as_bytes())?;
+        let result = docker(&[
+            "cp",
+            seed.to_str().context("Invalid data path")?,
+            &format!("{}:/seed", container(id)),
+        ])
+        .await;
+        std::fs::remove_dir_all(seed)?;
+        result?;
+    }
     docker(&["start", &container(id)]).await?;
     app.change(id, |s| {
         s.timings.insert(
@@ -669,19 +696,29 @@ async fn stop(State(app): State<Shared>, Path(id): Path<String>) -> Api<StatusCo
     let lock = app.lock(&id).await;
     let _guard = lock.lock().await;
     let s = app.session(&id).await?;
-    if !matches!(s.stage.as_str(), "image" | "download") {
+    let downloading = matches!(s.stage.as_str(), "image" | "download");
+    let has_container = !docker(&[
+        "ps",
+        "-aq",
+        "--filter",
+        &format!("name=^/{}$", container(&id)),
+    ])
+    .await?
+    .trim()
+    .is_empty();
+    if !downloading || has_container {
         let info = app.owned(&id).await?;
         if info["State"]["Running"] == true {
             docker(&["stop", "--time", "15", &container(&id)]).await?;
         }
     }
     app.change(&id, |s| {
-        s.status = if matches!(s.stage.as_str(), "image" | "download") {
+        s.status = if downloading && !has_container {
             "cancelled"
         } else {
             "stopped"
         }
-        .into()
+        .into();
     })
     .await?;
     Ok(StatusCode::NO_CONTENT)
@@ -704,17 +741,18 @@ async fn start(State(app): State<Shared>, Path(id): Path<String>) -> Api<StatusC
                 .into(),
         ));
     }
-    app.change(&id, |s| s.started_ms = now_ms()).await?;
-    docker(&["start", &container(&id)]).await?;
+    let attempt_ms = now_ms().max(s.started_ms.saturating_add(1));
     app.change(&id, |s| {
+        s.started_ms = attempt_ms;
         s.status = "preparing".into();
-        s.stage = "setup".into();
+        s.stage = "download".into();
         s.error = None;
         s.timings
             .retain(|k, _| k == "image" || k == "download" || k == "container");
     })
     .await?;
-    Ok(StatusCode::NO_CONTENT)
+    prepare_in_background(app, id, false, attempt_ms);
+    Ok(StatusCode::ACCEPTED)
 }
 async fn destroy(State(app): State<Shared>, Path(id): Path<String>) -> Api<StatusCode> {
     let lock = app.lock(&id).await;
@@ -933,7 +971,7 @@ async fn main() -> Result<()> {
     for s in &mut db.sessions {
         if s.status == "preparing" && matches!(s.stage.as_str(), "image" | "download") {
             s.status = "failed".into();
-            s.error=Some("Innkeeper restarted during session preparation. Destroy this session and create it again.".into());
+            s.error=Some("Innkeeper restarted during session preparation. Stop and start to retry an existing session; destroy and recreate a session whose container was not initialized.".into());
         }
     }
     let app = Arc::new(App {

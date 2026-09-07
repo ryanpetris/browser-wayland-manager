@@ -21,14 +21,11 @@ chmod 700 /tmp/runtime-elsewhere /home/elsewhere/.config/elsewhere
 chmod 600 /home/elsewhere/.config/elsewhere/token /home/elsewhere/.config/elsewhere/viewer-token
 rm -rf /seed
 stage elsewhere
-if [ ! -f /opt/innkeeper/elsewhere-installed ]; then
-    if command -v pacman >/dev/null; then
-        pacman -U --noconfirm --needed /opt/innkeeper/*.pkg.tar.zst
-    else
-        chmod 644 /opt/innkeeper/*.deb
-        DEBIAN_FRONTEND=noninteractive apt-get install -y /opt/innkeeper/*.deb
-    fi
-    touch /opt/innkeeper/elsewhere-installed
+if command -v pacman >/dev/null; then
+    pacman -U --noconfirm /opt/innkeeper/elsewhere.pkg.tar.zst
+else
+    chmod 644 /opt/innkeeper/elsewhere.deb
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --reinstall --allow-downgrades /opt/innkeeper/elsewhere.deb
 fi
 stage packages
 if [ ! -f /opt/innkeeper/packages-installed ]; then
