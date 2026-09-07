@@ -4,16 +4,22 @@ A separate Rust/Axum and React/Vite application that creates and manages Elsewhe
 
 ## Run with Docker Compose
 
+Compose enables HTTPS automatically. On first start, Innkeeper generates a self-signed
+certificate and private key in its data volume and reuses them on subsequent starts.
+
 ```sh
 docker compose up -d --build
 docker compose exec innkeeper cat /var/lib/elsewhere-innkeeper/admin-token
 ```
 
-Open `http://<server-hostname>:19300` and sign in with that token. Innkeeper generates it once and saves it with mode `0600` in its private data directory. Compose retains Innkeeper state in `innkeeper-data` and mounts the Docker socket. Session home directories use separate Docker named volumes, managed by the application.
+Open `https://<server-hostname>:19300` and sign in with that token. Innkeeper generates it once and saves it with mode `0600` in its private data directory. Compose retains Innkeeper state in `innkeeper-data` and mounts the Docker socket. Session home directories use separate Docker named volumes, managed by the application.
+
+The browser shows a certificate warning for the self-signed certificate. Compare its
+SHA-256 fingerprint with `docker compose logs innkeeper` before accepting the exception.
 
 Innkeeper downloads the pinned Elsewhere release package from GitHub and caches it in its data directory. It pulls a stock distribution image if needed, then installs the package and its dependencies inside each new container. Open **Logs** to follow downloads and setup. Innkeeper does not clone or compile Elsewhere at runtime.
 
-Sessions open at `/e/<session-uuid>/` on Innkeeper's origin. Serve that origin over HTTPS for WebCodecs and browser capture features. Set `INNKEEPER_TLS_CERT` and `INNKEEPER_TLS_KEY` to PEM files for Innkeeper to terminate TLS, or put Innkeeper behind an HTTPS gateway. Elsewhere serves plain HTTP privately; Innkeeper proxies HTTP and WebSockets. WebRTC uses a separate encrypted UDP connection directly to each session.
+Sessions open at `/e/<session-uuid>/` on Innkeeper's origin. Serve that origin over HTTPS for WebCodecs and browser capture features. Outside Compose, set `INNKEEPER_TLS=1` for an automatically generated certificate, set `INNKEEPER_TLS_CERT` and `INNKEEPER_TLS_KEY` to your own PEM files, or put Innkeeper behind an HTTPS gateway. Elsewhere serves plain HTTP privately; Innkeeper proxies HTTP and WebSockets. WebRTC uses a separate encrypted UDP connection directly to each session.
 
 ## Run the Docker Hub image
 
@@ -44,6 +50,7 @@ Innkeeper listens on port `19300`. Each session reserves a port from `19500` thr
 | `INNKEEPER_IN_DOCKER` | `0` native, `1` in image | Reach sessions through a shared Docker bridge |
 | `INNKEEPER_DOCKER_CONTAINER` | Container hostname | Innkeeper container name or ID for Docker inspection |
 | `INNKEEPER_DOCKER_NETWORK` | Discover one attached bridge | Select an attached bridge by name or ID when there are several |
+| `INNKEEPER_TLS` | `0`; `1` in Compose | Generate and reuse a self-signed certificate for HTTPS |
 | `INNKEEPER_TLS_CERT` | Empty | PEM certificate chain; enables HTTPS together with the key |
 | `INNKEEPER_TLS_KEY` | Empty | PEM private key |
 | `INNKEEPER_DATA_DIR` | `/var/lib/elsewhere-innkeeper` | Private state, administrator token, build logs |
@@ -53,17 +60,13 @@ In Docker mode, Innkeeper discovers its own bridge network through Docker inspec
 
 Native Innkeeper publishes session HTTP at `127.0.0.1:P:19443/tcp` and connects through loopback. One Innkeeper controls one local Linux Docker daemon. Remote daemons, rootless Docker, and changing an installation between native and Docker modes are unsupported. Start uses the container's existing Docker configuration.
 
-For HTTPS in Compose, mount the certificate directory read-only and set both TLS variables in a Compose override. For example:
-
-```yaml
-services:
-  innkeeper:
-    environment:
-      INNKEEPER_TLS_CERT: /run/innkeeper-tls/fullchain.pem
-      INNKEEPER_TLS_KEY: /run/innkeeper-tls/key.pem
-    volumes:
-      - ./tls:/run/innkeeper-tls:ro
-```
+Automatic TLS stores `cert.pem` and `key.pem` in `INNKEEPER_DATA_DIR`, with mode `0600`.
+The certificate covers localhost, loopback addresses, and Innkeeper's network interface
+addresses at generation time. In Docker, these are container addresses, not the host's
+LAN addresses. Stop Innkeeper and delete both files to generate a new pair on next start.
+Explicit certificate and key paths take precedence over automatic generation; missing
+or invalid explicit files fail startup. For HTTP behind an external HTTPS gateway, set
+`INNKEEPER_TLS=0` and leave both explicit certificate variables unset.
 
 Restart Innkeeper after renewing certificates. An external HTTPS gateway must connect to Innkeeper using HTTP/1.1 and forward the complete path, authorization, WebSocket upgrades and streaming bodies. Session links use the browser's origin; no public-host override is needed. URL prefixes keep Elsewhere preferences and tokens separate but do not isolate applications within the browser origin.
 

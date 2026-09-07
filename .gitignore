@@ -7,3 +7,4 @@
 /packaging/arch/*.pkg.tar.*
 
 /.elsewhere-local/
+/tls/

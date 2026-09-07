@@ -9,6 +9,7 @@ services:
       - "19300:19300"
     environment:
       INNKEEPER_RTC_ADDR: "${INNKEEPER_RTC_ADDR:-}"
+      INNKEEPER_TLS: "${INNKEEPER_TLS:-1}"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - /dev/dri:/dev/dri:ro

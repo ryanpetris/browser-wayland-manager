@@ -30,6 +30,10 @@ assets = [
 anyhow = "1"
 axum = "0.8"
 axum-server = { version = "0.8", features = ["tls-rustls-no-provider"] }
+rcgen = "0.14"
+if-addrs = "0.15"
+rustls = { version = "0.23", default-features = false }
+sha2 = "0.10"
 http-body = "1"
 hyper = { version = "1", features = ["client", "http1"] }
 hyper-util = { version = "0.1", features = ["tokio"] }

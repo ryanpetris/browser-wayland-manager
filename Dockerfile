@@ -18,6 +18,7 @@ RUN if [ -z "$INNKEEPER_VERSION" ]; then unset INNKEEPER_VERSION; fi; \
     test "$(target/release/elsewhere-innkeeper --version)" = "elsewhere-innkeeper ${INNKEEPER_VERSION:-0.0.0-dev}"
 
 RUN useradd --create-home local-check && runuser -u local-check -- python3 scripts/check-elsewhere-local.py
+RUN runuser -u local-check -- env INNKEEPER_BINARY=/src/target/release/elsewhere-innkeeper python3 scripts/check-tls.py
 
 FROM debian:trixie-slim AS runtime
 RUN apt-get update && apt-get install -y --no-install-recommends docker-cli curl ca-certificates tini && rm -rf /var/lib/apt/lists/*

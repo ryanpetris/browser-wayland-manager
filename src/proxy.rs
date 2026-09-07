@@ -234,7 +234,45 @@ pub async fn forward(
     }))
 }
 
-pub async fn serve(router: Router) -> Result<()> {
+// Keep the certificate stable across restarts. A missing half regenerates the pair.
+fn load_or_create_cert(dir: &std::path::Path) -> Result<(Vec<u8>, Vec<u8>)> {
+    let cert_path = dir.join("cert.pem");
+    let key_path = dir.join("key.pem");
+    let cert = std::fs::read(&cert_path);
+    let key = std::fs::read(&key_path);
+    for result in [&cert, &key] {
+        if let Err(error) = result {
+            if error.kind() != std::io::ErrorKind::NotFound {
+                bail!("Read saved HTTPS certificate or key: {error}");
+            }
+        }
+    }
+    if let (Ok(cert), Ok(key)) = (cert, key) {
+        return Ok((cert, key));
+    }
+    let mut sans = vec!["localhost".into(), "127.0.0.1".into(), "::1".into()];
+    sans.extend(if_addrs::get_if_addrs()?.iter().map(|i| i.ip().to_string()));
+    sans.sort();
+    sans.dedup();
+    let mut params = rcgen::CertificateParams::new(sans)?;
+    params
+        .distinguished_name
+        .push(rcgen::DnType::CommonName, "elsewhere-innkeeper");
+    let key = rcgen::KeyPair::generate()?;
+    let cert = params.self_signed(&key)?.pem().into_bytes();
+    let key = key.serialize_pem().into_bytes();
+    // If interrupted between writes, the missing key triggers regeneration.
+    match std::fs::remove_file(&key_path) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error.into()),
+    }
+    crate::private_write(&cert_path, &cert)?;
+    crate::private_write(&key_path, &key)?;
+    Ok((cert, key))
+}
+
+pub async fn serve(router: Router, dir: &std::path::Path) -> Result<()> {
     let addr: std::net::SocketAddr = env("INNKEEPER_LISTEN", "0.0.0.0:19300")
         .parse()
         .context("Invalid INNKEEPER_LISTEN")?;
@@ -243,6 +281,21 @@ pub async fn serve(router: Router) -> Result<()> {
     if cert.is_empty() != key.is_empty() {
         bail!("Set both INNKEEPER_TLS_CERT and INNKEEPER_TLS_KEY");
     }
+    let auto_tls = match env("INNKEEPER_TLS", "0").as_str() {
+        "0" => false,
+        "1" => true,
+        _ => bail!("INNKEEPER_TLS must be 0 or 1"),
+    };
+    let pem = if !cert.is_empty() {
+        Some((
+            std::fs::read(cert).context("Read HTTPS certificate")?,
+            std::fs::read(key).context("Read HTTPS key")?,
+        ))
+    } else if auto_tls {
+        Some(load_or_create_cert(dir)?)
+    } else {
+        None
+    };
     let handle = axum_server::Handle::new();
     let shutdown = handle.clone();
     tokio::spawn(async move {
@@ -251,22 +304,31 @@ pub async fn serve(router: Router) -> Result<()> {
         tokio::select! { _ = tokio::signal::ctrl_c() => {}, _ = term.recv() => {} }
         shutdown.graceful_shutdown(Some(Duration::from_secs(5)));
     });
-    if cert.is_empty() {
-        eprintln!("elsewhere-innkeeper listening on http://{addr}");
-        axum_server::bind(addr)
-            .handle(handle)
-            .serve(router.into_make_service())
-            .await?;
-    } else {
-        let config = axum_server::tls_rustls::RustlsConfig::from_pem_file(cert, key)
+    if let Some((cert, key)) = pem {
+        use rustls::pki_types::{CertificateDer, pem::PemObject};
+        use sha2::Digest;
+        let der = CertificateDer::from_pem_slice(&cert).context("Parse HTTPS certificate")?;
+        let fingerprint = sha2::Sha256::digest(&der)
+            .iter()
+            .map(|b| format!("{b:02X}"))
+            .collect::<Vec<_>>()
+            .join(":");
+        let config = axum_server::tls_rustls::RustlsConfig::from_pem(cert, key)
             .await
             .context("Load HTTPS certificate and key")?;
         // WebSockets use the HTTP/1.1 upgrade tunnel on this listener.
         let mut tls = (*config.get_inner()).clone();
         tls.alpn_protocols = vec![b"http/1.1".to_vec()];
         let config = axum_server::tls_rustls::RustlsConfig::from_config(std::sync::Arc::new(tls));
+        eprintln!("certificate SHA-256: {fingerprint}");
         eprintln!("elsewhere-innkeeper listening on https://{addr}");
         axum_server::bind_rustls(addr, config)
+            .handle(handle)
+            .serve(router.into_make_service())
+            .await?;
+    } else {
+        eprintln!("elsewhere-innkeeper listening on http://{addr}");
+        axum_server::bind(addr)
             .handle(handle)
             .serve(router.into_make_service())
             .await?;

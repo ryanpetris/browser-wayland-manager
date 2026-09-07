@@ -1653,7 +1653,7 @@ async fn main() -> Result<()> {
     }
     let app = Arc::new(App {
         db,
-        dir,
+        dir: dir.clone(),
         secret,
         network: network::Network::discover().await?,
         assets: PathBuf::from(env(
@@ -1706,7 +1706,7 @@ async fn main() -> Result<()> {
         .route("/e/{id}/{*path}", axum::routing::any(proxy::forward))
         .fallback(asset)
         .with_state(app);
-    proxy::serve(router).await?;
+    proxy::serve(router, &dir).await?;
     Ok(())
 }
 #[cfg(test)]
