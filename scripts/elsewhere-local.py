@@ -104,13 +104,14 @@ def build():
             git_dir = Path(output('git', '-C', SOURCE, 'rev-parse', '--path-format=absolute', '--git-common-dir'))
             if not git_dir.is_relative_to(SOURCE):
                 command += ['--mount', f'type=bind,src={git_dir},dst={git_dir},readonly']
-            archive = SOURCE / 'dist' / asset
+            archive = SOURCE / 'dist' / (f'elsewhere_{version}-1_debian-13_amd64.deb'
+                                        if distro == 'debian' else asset)
             archive.unlink(missing_ok=True)
             run(*command, image, 'make', target)
             if snapshot() != original or output('make', '--no-print-directory', '-s', '-C', SOURCE, 'version') != git_version:
                 raise RuntimeError('Elsewhere source changed during the build. Retry after changes are finished.')
             if not archive.is_file() or not archive.stat().st_size:
-                raise RuntimeError(f'Expected package was not produced: {asset}')
+                raise RuntimeError(f'Expected package was not produced: {archive.name}')
             if distro == 'arch':
                 metadata = output(*command, image, 'bsdtar', '-xOf', archive, '.PKGINFO')
                 fields = dict(line.split(' = ', 1) for line in metadata.splitlines() if ' = ' in line)

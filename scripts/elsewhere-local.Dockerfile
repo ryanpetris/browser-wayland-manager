@@ -2,7 +2,8 @@ FROM node:24-bookworm-slim AS node
 
 FROM rust:1-trixie AS debian
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    make git pkg-config cmake libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
+    make git pkg-config cmake libavcodec-dev libavutil-dev libavfilter-dev \
+    libswscale-dev libswresample-dev libavformat-dev libavdevice-dev libva-dev \
     libpipewire-0.3-dev libclang-dev libgbm-dev libegl-dev libxkbcommon-dev \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=node /usr/local/bin/node /usr/local/bin/node
@@ -20,8 +21,8 @@ ENV HOME=/home/builder CARGO_HOME=/cargo-cache
 FROM archlinux:base-devel AS arch
 RUN pacman-key --init && pacman-key --populate archlinux \
     && pacman -Sy --noconfirm archlinux-keyring \
-    && pacman -Syu --noconfirm --needed cargo nodejs npm gstreamer gst-plugins-base \
-    gst-plugins-good gst-plugins-bad gst-plugin-va mesa libxkbcommon libpipewire clang git \
+    && pacman -Syu --noconfirm --needed cargo nodejs npm ffmpeg libva \
+    mesa libxkbcommon libpipewire clang git \
     && rm -rf /var/cache/pacman/pkg/*
 ARG BUILDER_UID=1000
 ARG BUILDER_GID=1000

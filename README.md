@@ -184,7 +184,8 @@ The adjacent `../elsewhere` checkout must already exist and have the history and
 by its `make version` target. Innkeeper never clones or fetches that checkout.
 
 The target runs Elsewhere's `make package-arch` and `make package-deb` sequentially in Docker,
-using separate Cargo and Node build caches and native build environments. It copies the packages from the
+using separate Cargo and Node build caches and native build environments with FFmpeg development
+libraries. The Debian builder targets Debian 13. It copies the packages from the
 checkout's `dist/` into `.elsewhere-local/`, validates their metadata, and selects the build
 only after both packages succeed. Source changes during packaging abort selection. A failed
 build preserves the previous selection. Package metadata and filenames use Elsewhere's

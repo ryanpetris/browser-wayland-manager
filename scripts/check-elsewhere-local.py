@@ -38,7 +38,7 @@ if 'make' in a:
     distro = a[-1]
     if distro == 'package-deb' and os.environ.get('FAIL_DEBIAN'): sys.exit(7)
     archive = ('elsewhere-' + version + '-1-x86_64.pkg.tar.zst' if distro == 'package-arch'
-               else 'elsewhere_' + version + '-1_amd64.deb')
+               else 'elsewhere_' + version + '-1_debian-13_amd64.deb')
     (source / 'dist').mkdir(exist_ok=True)
     (source / 'dist' / archive).write_text(distro)
     if os.environ.get('CHANGE_SOURCE'): (source / ' input').write_text('changed')
@@ -76,6 +76,7 @@ else: sys.exit(8)
     selected = json.loads(original)
     assert selected['version'] == '0.4.4.7.dirty'
     assert len(list((local / selected['directory']).iterdir())) == 2
+    assert (local / selected['directory'] / 'elsewhere_0.4.4.7.dirty-1_amd64.deb').is_file()
     assert 'type=bind' in (work / 'calls').read_text()
     compose = json.loads((local / 'compose.json').read_text())
     assert compose['services']['innkeeper']['volumes'][0]['read_only'] is True
