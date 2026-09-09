@@ -7,7 +7,7 @@ mod tokens;
 use accounts::Auth;
 use anyhow::{Context, Result, bail};
 use axum::{
-    Json, Router,
+    Router,
     body::Body,
     extract::{DefaultBodyLimit, Path, Query, State},
     http::{StatusCode, header},
@@ -71,7 +71,7 @@ impl LocalElsewhere {
             .join(&local.directory);
         for asset in [
             format!("elsewhere-{}-1-x86_64.pkg.tar.zst", local.version),
-            format!("elsewhere_{}-1_amd64.deb", local.version),
+            format!("elsewhere_{}-1_debian-13_amd64.deb", local.version),
         ] {
             let metadata = std::fs::metadata(local.root.join(asset))
                 .context("Local Elsewhere package is missing")?;
@@ -130,7 +130,7 @@ struct App {
     preview_times: Mutex<HashMap<String, Instant>>,
 }
 type Shared = Arc<App>;
-struct Error(StatusCode, String);
+pub struct Error(StatusCode, String);
 impl IntoResponse for Error {
     fn into_response(self) -> Response {
         let code = match self.0 {
@@ -168,6 +168,26 @@ impl From<anyhow::Error> for Error {
     }
 }
 type Api<T> = std::result::Result<T, Error>;
+pub struct Json<T>(pub T);
+impl<T: Serialize> IntoResponse for Json<T> {
+    fn into_response(self) -> Response {
+        axum::Json(self.0).into_response()
+    }
+}
+impl<S, T> axum::extract::FromRequest<S> for Json<T>
+where
+    S: Send + Sync,
+    T: serde::de::DeserializeOwned,
+{
+    type Rejection = Error;
+    async fn from_request(req: axum::extract::Request, state: &S) -> Api<Self> {
+        axum::Json::<T>::from_request(req, state)
+            .await
+            .map(|value| Self(value.0))
+            .map_err(|_| Error(StatusCode::BAD_REQUEST, "Invalid JSON request".into()))
+    }
+}
+
 fn env(name: &str, default: &str) -> String {
     std::env::var(name).unwrap_or_else(|_| default.into())
 }
@@ -374,6 +394,7 @@ async fn settings(
         validate_settings(&input.name, input.screen_size, &input.startup_command)?;
         let lock = app.lock(&id).await;
         let _guard = lock.lock().await;
+        accounts::machine(&app, &auth, &id, true).await?;
         let s = app.session(&id).await?;
         if !matches!(s.status.as_str(), "running" | "stopped") {
             return Err(Error(
@@ -531,7 +552,7 @@ async fn prepare(app: Shared, id: &str, new_container: bool, attempt_ms: u64) ->
     } else {
         (
             "debian:trixie-slim",
-            format!("elsewhere_{version}-1_amd64.deb"),
+            format!("elsewhere_{version}-1_debian-13_amd64.deb"),
         )
     };
     let package = if let Some(local) = LOCAL_ELSEWHERE.get() {
@@ -1251,12 +1272,18 @@ async fn reconcile(app: Shared) {
         tokio::time::sleep(Duration::from_secs(3)).await;
     }
 }
-async fn stop(State(app): State<Shared>, auth: Auth, Path(id): Path<String>) -> Api<StatusCode> {
+async fn stop(
+    State(app): State<Shared>,
+    auth: Auth,
+    Path(id): Path<String>,
+    Json(_): Json<accounts::Empty>,
+) -> Api<StatusCode> {
     finish_operation(async move {
         let _authorization = app.authorization.read().await;
         accounts::machine(&app, &auth, &id, true).await?;
         let lock = app.lock(&id).await;
         let _guard = lock.lock().await;
+        accounts::machine(&app, &auth, &id, true).await?;
         let s = app.session(&id).await?;
         let downloading = matches!(s.stage.as_str(), "image" | "download");
         let has_container = !docker(&[
@@ -1289,12 +1316,18 @@ async fn stop(State(app): State<Shared>, auth: Auth, Path(id): Path<String>) -> 
     })
     .await
 }
-async fn start(State(app): State<Shared>, auth: Auth, Path(id): Path<String>) -> Api<StatusCode> {
+async fn start(
+    State(app): State<Shared>,
+    auth: Auth,
+    Path(id): Path<String>,
+    Json(_): Json<accounts::Empty>,
+) -> Api<StatusCode> {
     finish_operation(async move {
         let _authorization = app.authorization.read().await;
         accounts::machine(&app, &auth, &id, true).await?;
         let lock = app.lock(&id).await;
         let _guard = lock.lock().await;
+        accounts::machine(&app, &auth, &id, true).await?;
         begin_start(&app, &id, false).await
     })
     .await
@@ -1303,12 +1336,14 @@ async fn relaunch(
     State(app): State<Shared>,
     auth: Auth,
     Path(id): Path<String>,
+    Json(_): Json<accounts::Empty>,
 ) -> Api<StatusCode> {
     finish_operation(async move {
         let _authorization = app.authorization.read().await;
         accounts::machine(&app, &auth, &id, true).await?;
         let lock = app.lock(&id).await;
         let _guard = lock.lock().await;
+        accounts::machine(&app, &auth, &id, true).await?;
         begin_start(&app, &id, true).await
     })
     .await
@@ -1366,12 +1401,18 @@ async fn begin_start(app: &Shared, id: &str, relaunch: bool) -> Api<StatusCode> 
     prepare_in_background(app.clone(), id.to_owned(), false, attempt_ms);
     Ok(StatusCode::ACCEPTED)
 }
-async fn upgrade(State(app): State<Shared>, auth: Auth, Path(id): Path<String>) -> Api<StatusCode> {
+async fn upgrade(
+    State(app): State<Shared>,
+    auth: Auth,
+    Path(id): Path<String>,
+    Json(_): Json<accounts::Empty>,
+) -> Api<StatusCode> {
     finish_operation(async move {
         let _authorization = app.authorization.read().await;
         accounts::machine(&app, &auth, &id, true).await?;
         let lock = app.lock(&id).await;
         let _guard = lock.lock().await;
+        accounts::machine(&app, &auth, &id, true).await?;
         let s = app.session(&id).await?;
         if !matches!(s.status.as_str(), "running" | "stopped") {
             return Err(Error(
@@ -1410,6 +1451,7 @@ async fn destroy(State(app): State<Shared>, auth: Auth, Path(id): Path<String>) 
         accounts::machine(&app, &auth, &id, true).await?;
         let lock = app.lock(&id).await;
         let _guard = lock.lock().await;
+        accounts::machine(&app, &auth, &id, true).await?;
         app.session(&id).await?;
         let ids = docker(&[
             "ps",
@@ -1510,6 +1552,7 @@ async fn preview(
     accounts::machine(&app, &auth, &id, false).await?;
     let lock = app.lock(&id).await;
     let _guard = lock.lock().await;
+    accounts::machine(&app, &auth, &id, false).await?;
     if !(1..=1600).contains(&q.width) {
         return Err(Error(
             StatusCode::BAD_REQUEST,
@@ -1838,7 +1881,7 @@ mod tests {
         assert!(LocalElsewhere::read(&manifest).is_err());
         for asset in [
             "elsewhere-0.4.4.7.dirty-1-x86_64.pkg.tar.zst",
-            "elsewhere_0.4.4.7.dirty-1_amd64.deb",
+            "elsewhere_0.4.4.7.dirty-1_debian-13_amd64.deb",
         ] {
             std::fs::write(generation.join(asset), "fixture").unwrap();
         }

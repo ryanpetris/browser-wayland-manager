@@ -1,11 +1,11 @@
-use crate::{Api, Error, Shared, login_store::LoginStore, now_ms, store::Store};
+use crate::{Api, Error, Json, Shared, login_store::LoginStore, now_ms, store::Store};
 use anyhow::{Context, Result, ensure};
 use argon2::{
     Algorithm, Argon2, Params, PasswordHash, PasswordHasher, PasswordVerifier, Version,
     password_hash::SaltString,
 };
 use axum::{
-    Json, Router,
+    Router,
     extract::{ConnectInfo, Path, Request, State},
     http::{Method, StatusCode, header},
     middleware::Next,
@@ -399,6 +399,17 @@ pub async fn guard(auth: Auth, State(app): State<Shared>, req: Request, next: Ne
     .await;
     match result {
         Ok(()) => next.run(req).await,
+        Err(e)
+            if e.0 == StatusCode::UNAUTHORIZED
+                && method == Method::GET
+                && path.ends_with("/connect") =>
+        {
+            let destination = format!("/api{path}");
+            let url =
+                reqwest::Url::parse_with_params("https://localhost/", &[("return", destination)])
+                    .unwrap();
+            axum::response::Redirect::to(&format!("/?{}", url.query().unwrap())).into_response()
+        }
         Err(e) => e.into_response(),
     }
 }
@@ -513,6 +524,14 @@ async fn login(
         .await
         .map_err(|_| unavailable())?
         .ok_or_else(unauthorized)?;
+    {
+        let mut attempts = app.login_attempts.lock().await;
+        for key in [format!("ip:{}", peer.ip()), format!("user:{name}")] {
+            if let Some((_, count)) = attempts.0.get_mut(&key) {
+                *count = count.saturating_sub(1);
+            }
+        }
+    }
     crate::finish_operation(async move {
         let _guard = app.authorization.write().await;
         let fresh = auth
@@ -530,20 +549,24 @@ async fn login(
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct Empty {}
+pub struct Empty {}
 async fn logout(State(app): State<Shared>, mut auth: Auth, Json(_): Json<Empty>) -> Api<Response> {
-    let _guard = app.authorization.write().await;
-    current(&app, &auth).await?;
-    auth.logout().await.map_err(|_| unavailable())?;
-    let mut r = StatusCode::NO_CONTENT.into_response();
-    r.extensions_mut().insert(CookieWrite);
-    Ok(r)
+    crate::finish_operation(async move {
+        let _guard = app.authorization.write().await;
+        current(&app, &auth).await?;
+        auth.logout().await.map_err(|_| unavailable())?;
+        let mut r = StatusCode::NO_CONTENT.into_response();
+        r.extensions_mut().insert(CookieWrite);
+        Ok(r)
+    })
+    .await
 }
 async fn me(State(app): State<Shared>, auth: Auth) -> Api<Json<Value>> {
     let _guard = app.authorization.read().await;
     Ok(Json(metadata(&app, &auth).await?))
 }
 async fn renew(State(app): State<Shared>, auth: Auth, Json(_): Json<Empty>) -> Api<Response> {
+    crate::finish_operation(async move {
     let _guard = app.authorization.write().await;
     current(&app, &auth).await?;
     let record = LoginStore(app.db.clone())
@@ -567,6 +590,7 @@ async fn renew(State(app): State<Shared>, auth: Auth, Json(_): Json<Empty>) -> A
         res.extensions_mut().insert(CookieWrite);
     }
     Ok(res)
+    }).await
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -578,20 +602,23 @@ async fn profile(
     auth: Auth,
     Json(input): Json<Profile>,
 ) -> Api<Json<Value>> {
-    let name = display_name(&input.display_name)?;
-    let _guard = app.authorization.write().await;
-    let u = current(&app, &auth).await?;
-    let u = app
-        .db
-        .run(move |db| {
-            db.execute(
-                "UPDATE users SET display_name=?1 WHERE id=?2",
-                params![name, u.id],
-            )?;
-            read_user(db, "id", &u.id)?.context("User missing")
-        })
-        .await?;
-    Ok(Json(json!({"user":u})))
+    crate::finish_operation(async move {
+        let name = display_name(&input.display_name)?;
+        let _guard = app.authorization.write().await;
+        let u = current(&app, &auth).await?;
+        let u = app
+            .db
+            .run(move |db| {
+                db.execute(
+                    "UPDATE users SET display_name=?1 WHERE id=?2",
+                    params![name, u.id],
+                )?;
+                read_user(db, "id", &u.id)?.context("User missing")
+            })
+            .await?;
+        Ok(Json(json!({"user":u})))
+    })
+    .await
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -604,25 +631,28 @@ async fn own_password(
     mut auth: Auth,
     Json(input): Json<OwnPassword>,
 ) -> Api<Response> {
-    password(&input.password)?;
-    if input.current_password.len() > 1024 {
-        return Err(unauthorized());
-    }
-    let snapshot = current(&app, &auth).await?;
-    if !verify(input.current_password, snapshot.password_hash.clone()).await? {
-        return Err(unauthorized());
-    }
-    let hash = hash_password(input.password).await?;
-    let _guard = app.authorization.write().await;
-    let current = current(&app, &auth).await?;
-    if current.password_hash != snapshot.password_hash {
-        return Err(unauthorized());
-    }
-    write_password(&app.db, snapshot.id, hash).await?;
-    auth.logout().await.map_err(|_| unavailable())?;
-    let mut res = StatusCode::NO_CONTENT.into_response();
-    res.extensions_mut().insert(CookieWrite);
-    Ok(res)
+    crate::finish_operation(async move {
+        password(&input.password)?;
+        if input.current_password.len() > 1024 {
+            return Err(unauthorized());
+        }
+        let snapshot = current(&app, &auth).await?;
+        if !verify(input.current_password, snapshot.password_hash.clone()).await? {
+            return Err(unauthorized());
+        }
+        let hash = hash_password(input.password).await?;
+        let _guard = app.authorization.write().await;
+        let current = current(&app, &auth).await?;
+        if current.password_hash != snapshot.password_hash {
+            return Err(unauthorized());
+        }
+        write_password(&app.db, snapshot.id, hash).await?;
+        auth.logout().await.map_err(|_| unavailable())?;
+        let mut res = StatusCode::NO_CONTENT.into_response();
+        res.extensions_mut().insert(CookieWrite);
+        Ok(res)
+    })
+    .await
 }
 pub async fn write_password(store: &Store, id: String, hash: String) -> Result<()> {
     store
@@ -676,20 +706,23 @@ async fn add_user(
     auth: Auth,
     Json(input): Json<NewUser>,
 ) -> Api<Response> {
-    admin(&app, &auth).await?;
-    let name = normalize_username(&input.username)?;
-    let display = display_name(&input.display_name)?;
-    account_role(&input.role)?;
-    password(&input.password)?;
-    let hash = hash_password(input.password).await?;
-    let _guard = app.authorization.write().await;
-    admin(&app, &auth).await?;
-    let u = app
-        .db
-        .run(move |db| insert_user(db, name, display, hash, input.role))
-        .await
-        .map_err(account_error)?;
-    Ok((StatusCode::CREATED, Json(json!({"user":u}))).into_response())
+    crate::finish_operation(async move {
+        admin(&app, &auth).await?;
+        let name = normalize_username(&input.username)?;
+        let display = display_name(&input.display_name)?;
+        account_role(&input.role)?;
+        password(&input.password)?;
+        let hash = hash_password(input.password).await?;
+        let _guard = app.authorization.write().await;
+        admin(&app, &auth).await?;
+        let u = app
+            .db
+            .run(move |db| insert_user(db, name, display, hash, input.role))
+            .await
+            .map_err(account_error)?;
+        Ok((StatusCode::CREATED, Json(json!({"user":u}))).into_response())
+    })
+    .await
 }
 fn account_error(e: anyhow::Error) -> Error {
     if e.downcast_ref::<rusqlite::Error>().is_some_and(|e|matches!(e,rusqlite::Error::SqliteFailure(code,_) if code.code==rusqlite::ErrorCode::ConstraintViolation)){Error(StatusCode::CONFLICT,"Username already exists".into())}else{unavailable()}
@@ -708,64 +741,67 @@ async fn edit_user(
     Path(id): Path<String>,
     Json(mut input): Json<EditUser>,
 ) -> Api<Json<Value>> {
-    if input.username.is_none()
-        && input.display_name.is_none()
-        && input.role.is_none()
-        && input.enabled.is_none()
-    {
-        return Err(invalid("No account fields supplied"));
-    }
-    input.username = input.username.map(|v| normalize_username(&v)).transpose()?;
-    input.display_name = input.display_name.map(|v| display_name(&v)).transpose()?;
-    if let Some(role) = &input.role {
-        account_role(role)?
-    }
-    let _guard = app.authorization.write().await;
-    admin(&app, &auth).await?;
-    let result = app
-        .db
-        .run(move |db| {
-            let tx = db.transaction()?;
-            let Some(mut u) = read_user(&tx, "id", &id)? else {
-                return Ok(None);
-            };
-            if let Some(v) = input.username {
-                u.username = v
-            }
-            if let Some(v) = input.display_name {
-                u.display_name = v
-            }
-            if let Some(v) = input.role {
-                u.role = v
-            }
-            if let Some(v) = input.enabled {
-                u.enabled = v
-            }
-            if !(u.enabled && u.role == "administrator") && last_admin(&tx, &id)? {
-                return Ok(Some(Err(())));
-            }
-            tx.execute(
-                "UPDATE users SET username=?1,display_name=?2,role=?3,enabled=?4 WHERE id=?5",
-                params![u.username, u.display_name, u.role, u.enabled, id],
-            )?;
-            if !u.enabled {
-                tx.execute("DELETE FROM login_sessions WHERE user_id=?1", [&id])?;
-            }
-            crate::tokens::mark_invalid(&tx)?;
-            tx.commit()?;
-            Ok(Some(Ok(u)))
-        })
-        .await
-        .map_err(account_error)?
-        .ok_or(Error(StatusCode::NOT_FOUND, "User not found".into()))?
-        .map_err(|_| {
-            Error(
-                StatusCode::CONFLICT,
-                "Cannot remove the last enabled Administrator".into(),
-            )
-        })?;
-    app.token_wake.notify_one();
-    Ok(Json(json!({"user":result})))
+    crate::finish_operation(async move {
+        if input.username.is_none()
+            && input.display_name.is_none()
+            && input.role.is_none()
+            && input.enabled.is_none()
+        {
+            return Err(invalid("No account fields supplied"));
+        }
+        input.username = input.username.map(|v| normalize_username(&v)).transpose()?;
+        input.display_name = input.display_name.map(|v| display_name(&v)).transpose()?;
+        if let Some(role) = &input.role {
+            account_role(role)?
+        }
+        let _guard = app.authorization.write().await;
+        admin(&app, &auth).await?;
+        let result = app
+            .db
+            .run(move |db| {
+                let tx = db.transaction()?;
+                let Some(mut u) = read_user(&tx, "id", &id)? else {
+                    return Ok(None);
+                };
+                if let Some(v) = input.username {
+                    u.username = v
+                }
+                if let Some(v) = input.display_name {
+                    u.display_name = v
+                }
+                if let Some(v) = input.role {
+                    u.role = v
+                }
+                if let Some(v) = input.enabled {
+                    u.enabled = v
+                }
+                if !(u.enabled && u.role == "administrator") && last_admin(&tx, &id)? {
+                    return Ok(Some(Err(())));
+                }
+                tx.execute(
+                    "UPDATE users SET username=?1,display_name=?2,role=?3,enabled=?4 WHERE id=?5",
+                    params![u.username, u.display_name, u.role, u.enabled, id],
+                )?;
+                if !u.enabled {
+                    tx.execute("DELETE FROM login_sessions WHERE user_id=?1", [&id])?;
+                }
+                crate::tokens::mark_invalid(&tx)?;
+                tx.commit()?;
+                Ok(Some(Ok(u)))
+            })
+            .await
+            .map_err(account_error)?
+            .ok_or(Error(StatusCode::NOT_FOUND, "User not found".into()))?
+            .map_err(|_| {
+                Error(
+                    StatusCode::CONFLICT,
+                    "Cannot remove the last enabled Administrator".into(),
+                )
+            })?;
+        app.token_wake.notify_one();
+        Ok(Json(json!({"user":result})))
+    })
+    .await
 }
 fn last_admin(db: &Connection, id: &str) -> Result<bool> {
     Ok(db.query_row("SELECT EXISTS(SELECT 1 FROM users WHERE id=?1 AND role='administrator' AND enabled=1) AND NOT EXISTS(SELECT 1 FROM users WHERE id<>?1 AND role='administrator' AND enabled=1)",[id],|r|r.get(0))?)
@@ -775,38 +811,41 @@ async fn delete_user(
     auth: Auth,
     Path(id): Path<String>,
 ) -> Api<StatusCode> {
-    let _guard = app.authorization.write().await;
-    admin(&app, &auth).await?;
-    let result = app
-        .db
-        .run(move |db| {
-            let tx = db.transaction()?;
-            if read_user(&tx, "id", &id)?.is_none() {
-                return Ok(0);
+    crate::finish_operation(async move {
+        let _guard = app.authorization.write().await;
+        admin(&app, &auth).await?;
+        let result = app
+            .db
+            .run(move |db| {
+                let tx = db.transaction()?;
+                if read_user(&tx, "id", &id)?.is_none() {
+                    return Ok(0);
+                }
+                if last_admin(&tx, &id)? {
+                    return Ok(2);
+                }
+                tx.execute(
+                    "UPDATE instance_tokens SET revoked=1 WHERE user_id=?1",
+                    [&id],
+                )?;
+                tx.execute("DELETE FROM users WHERE id=?1", [id])?;
+                tx.commit()?;
+                Ok(1)
+            })
+            .await?;
+        match result {
+            0 => Err(Error(StatusCode::NOT_FOUND, "User not found".into())),
+            2 => Err(Error(
+                StatusCode::CONFLICT,
+                "Cannot remove the last enabled Administrator".into(),
+            )),
+            _ => {
+                app.token_wake.notify_one();
+                Ok(StatusCode::NO_CONTENT)
             }
-            if last_admin(&tx, &id)? {
-                return Ok(2);
-            }
-            tx.execute(
-                "UPDATE instance_tokens SET revoked=1 WHERE user_id=?1",
-                [&id],
-            )?;
-            tx.execute("DELETE FROM users WHERE id=?1", [id])?;
-            tx.commit()?;
-            Ok(1)
-        })
-        .await?;
-    match result {
-        0 => Err(Error(StatusCode::NOT_FOUND, "User not found".into())),
-        2 => Err(Error(
-            StatusCode::CONFLICT,
-            "Cannot remove the last enabled Administrator".into(),
-        )),
-        _ => {
-            app.token_wake.notify_one();
-            Ok(StatusCode::NO_CONTENT)
         }
-    }
+    })
+    .await
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -819,13 +858,16 @@ async fn reset_password(
     Path(id): Path<String>,
     Json(input): Json<Password>,
 ) -> Api<StatusCode> {
-    admin(&app, &auth).await?;
-    password(&input.password)?;
-    let hash = hash_password(input.password).await?;
-    let _guard = app.authorization.write().await;
-    admin(&app, &auth).await?;
-    write_password(&app.db, id, hash).await?;
-    Ok(StatusCode::NO_CONTENT)
+    crate::finish_operation(async move {
+        admin(&app, &auth).await?;
+        password(&input.password)?;
+        let hash = hash_password(input.password).await?;
+        let _guard = app.authorization.write().await;
+        admin(&app, &auth).await?;
+        write_password(&app.db, id, hash).await?;
+        Ok(StatusCode::NO_CONTENT)
+    })
+    .await
 }
 async fn access(State(app): State<Shared>, auth: Auth, Path(id): Path<String>) -> Api<Json<Value>> {
     let _guard = app.authorization.read().await;
@@ -866,8 +908,11 @@ async fn change_access(
     user: String,
     role: Option<String>,
 ) -> Api<()> {
+    let app = app.clone();
+    let auth = auth.clone();
+    crate::finish_operation(async move {
     let _guard = app.authorization.write().await;
-    admin(app, auth).await?;
+    admin(&app, &auth).await?;
     app.session(&id).await?;
     let exists=app.db.run(move|db|{let tx=db.transaction()?;if read_user(&tx,"id",&user)?.is_none(){return Ok(false)}if let Some(role)=role{tx.execute("INSERT INTO session_access VALUES(?1,?2,?3) ON CONFLICT(session_id,user_id) DO UPDATE SET role=excluded.role",params![id,user,role])?;}else{tx.execute("DELETE FROM session_access WHERE session_id=?1 AND user_id=?2",params![id,user])?;}crate::tokens::mark_invalid(&tx)?;tx.commit()?;Ok(true)}).await?;
     if !exists {
@@ -875,6 +920,7 @@ async fn change_access(
     }
     app.token_wake.notify_one();
     Ok(())
+    }).await
 }
 pub fn routes() -> Router<Shared> {
     Router::new()

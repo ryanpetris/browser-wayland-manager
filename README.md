@@ -9,10 +9,9 @@ certificate and private key in its data volume and reuses them on subsequent sta
 
 ```sh
 docker compose up -d --build
-docker compose exec innkeeper cat /var/lib/elsewhere-innkeeper/admin-token
 ```
 
-Open `https://<server-hostname>:19300` and sign in with that token. Innkeeper generates it once and saves it with mode `0600` in its private data directory. Compose retains Innkeeper state in `innkeeper-data` and mounts the Docker socket. Session home directories use separate Docker named volumes, managed by the application.
+Open `https://<server-hostname>:19300` and create the first Administrator with your chosen username, display name, and password. Complete setup on a trusted network before exposing the installation. Setup is available only while no users exist. Compose retains Innkeeper state in `innkeeper-data`; desktop home directories use separate Docker volumes.
 
 The browser shows a certificate warning for the self-signed certificate. Compare its
 SHA-256 fingerprint with `docker compose logs innkeeper` before accepting the exception.
@@ -32,12 +31,29 @@ docker run -d --name elsewhere-innkeeper --restart unless-stopped \
   -v /dev/dri:/dev/dri:ro \
   -v innkeeper-data:/var/lib/elsewhere-innkeeper \
   <namespace>/elsewhere-innkeeper:latest
-docker exec elsewhere-innkeeper cat /var/lib/elsewhere-innkeeper/admin-token
 ```
 
 Use `:X.Y.Z` to select a specific Innkeeper release. Every release pushes both its version tag and
 `latest`; `latest` points to whichever release most recently pushed that tag. The network and HTTPS
 configuration below applies to the published image too.
+
+## Accounts and sharing
+
+Accounts use a unique username, display name, and password. Administrators create accounts; there is no signup page, email configuration, or email recovery. Users can change their display name and password from the account dialog. Only Administrators can rename usernames, manage accounts, and change machine sharing.
+
+| Machine access | Allowed actions |
+| --- | --- |
+| Viewer | See the machine and preview; connect with video, audio, and clipboard text/image reads |
+| Interactive | Viewer access plus desktop input, applications, commands, files, broadcasts, microphone, and camera |
+| Manager | Interactive access plus start, stop, edit, logs, upgrade, relaunch, and delete |
+
+Creators receive an ordinary Manager assignment. Administrators can downgrade or revoke it, and always manage every machine themselves. Machines have no owner account and remain after an account is deleted. Normal users cannot supply Docker security options.
+
+Passwords use salted Argon2id hashes. Login cookies are HttpOnly, Secure, SameSite=Strict, and scoped to `/api`. HTTPS is required for authenticated browser use. The open UI checks once a minute and on focus, visibility, and network changes; in the final two days it renews a login to seven days from renewal. An expired login requires signing in again. Password changes invalidate all that user's logins. Logging out or reaching login expiry does not revoke a desktop token.
+
+Opening a machine reuses its user's correctly permissioned token. A permission mismatch permanently marks that credential revoked, attempts remote deletion, and creates a replacement if authorized. Startup, machine return, access changes, and periodic synchronization only retire/delete invalid user tokens. They never create replacements. Remote deletion retries in memory with exponential delays from five seconds to five minutes. Retired records remain in SQLite until Elsewhere confirms deletion, even if access is restored. Successful deletion disconnects resources using that credential; completed desktop commands and file changes are not undone. Browser tokens never grant token or server administration. Viewer has no broadcast access.
+
+If the last Administrator loses their password, stop Innkeeper and run `elsewhere-innkeeper users list`, then `elsewhere-innkeeper users reset-password --id UUID` using the same data directory. The reset command prompts twice without echo and invalidates that account's logins. It acquires the same exclusive data-directory lock as the server. There is no unauthenticated recovery API.
 
 ## Network configuration
 
@@ -53,7 +69,7 @@ Innkeeper listens on port `19300`. Each session reserves a port from `19500` thr
 | `INNKEEPER_TLS` | `0`; `1` in Compose | Generate and reuse a self-signed certificate for HTTPS |
 | `INNKEEPER_TLS_CERT` | Empty | PEM certificate chain; enables HTTPS together with the key |
 | `INNKEEPER_TLS_KEY` | Empty | PEM private key |
-| `INNKEEPER_DATA_DIR` | `/var/lib/elsewhere-innkeeper` | Private state, administrator token, build logs |
+| `INNKEEPER_DATA_DIR` | `/var/lib/elsewhere-innkeeper` | Private account/session state and build logs |
 | `INNKEEPER_ASSETS_DIR` | `/usr/share/elsewhere-innkeeper` | Session setup scripts |
 
 In Docker mode, Innkeeper discovers its own bridge network through Docker inspection and attaches new sessions to that network. Their HTTP ports are not published. Requests use each owned container's current IP and port `19443`, so both the default bridge and custom networks work without container-name DNS. Peers on that bridge can reach session HTTP; Elsewhere authenticates its API and WebSockets. If the container has a custom hostname, set `INNKEEPER_DOCKER_CONTAINER` to its Docker name or ID. The CLI equivalents are `--in-docker`, `--docker-container NAME_OR_ID`, and `--docker-network NAME_OR_ID`.
@@ -72,27 +88,24 @@ Restart Innkeeper after renewing certificates. An external HTTPS gateway must co
 
 After changing Compose configuration, rebuild and recreate Innkeeper with `docker compose up -d --build`.
 
-Management access grants Docker control. Treat the administrator token and Docker socket as host-administrator credentials. Elsewhere owns session credentials in each session home volume. Innkeeper retrieves them on demand and does not store copies in the SQLite database. Back up the complete Innkeeper data directory together with session volumes. The frontend retains the administrator token only in the tab's session storage. No cross-origin API access is enabled.
+Innkeeper controls Docker and keeps recoverable Elsewhere credentials in its private SQLite database. Protect its data directory, backups, and Docker socket as host-administrator resources. Back up the complete Innkeeper data directory together with session volumes. Login credentials are sent only in Secure cookies; the UI stores no login bearer secret in browser storage. No cross-origin API access is enabled.
 
 Session state lives in `state.sqlite3` inside the data directory. SQLite stores sessions, launch
-settings, package lists, ordered Docker options, timings, and the ownership ID in relational tables.
+settings, package lists, ordered Docker options, timings, and the installation ID in relational tables.
 Each session update is transactional. The database uses WAL with full synchronization; the data directory is private and
 the database is readable only by its owner.
 
-Schema migrations are embedded in the binary and applied by `rusqlite_migration` before Innkeeper
-starts serving requests. Startup fails on migration errors or a schema newer than the binary
-supports. Add schema changes as new migrations; published migrations keep their original contents
-and ordering. The migration library owns SQLite's `user_version` field.
+The initial schema is embedded in the binary and initialized by `rusqlite_migration` before serving requests. Before v1.0.0, schema changes use fresh state without migrations or compatibility layers. The schema runner owns SQLite's `user_version` field.
 
 Stop Innkeeper before copying its data directory for a backup or restore. Keep the database and any
 `state.sqlite3-wal` and `state.sqlite3-shm` files together, along with session volumes. Restoring the
-ownership ID together with its sessions preserves Docker ownership checks.
+installation ID together with its sessions preserves Docker ownership checks.
 
 ## Session lifecycle
 
 Creation validates package names, records the session, downloads a release package if it is not cached, and prepares a stock base image. It creates a labeled volume and container, then copies the setup scripts and package into the stopped container through the Docker API. This also works when Innkeeper runs inside Docker; the source files are read from Innkeeper's filesystem.
 
-Inside the session container, setup installs runtime services, prepares the user and runtime directories, and installs Elsewhere with `apt` or `pacman`. The package manager resolves the package's declared dependencies, including Debian recommendations. A separate script installs requested extra packages before Elsewhere starts. Elsewhere generates its own credentials on first launch. Innkeeper runs `elsewhere token` and `elsewhere token --viewer` as the desktop user when credentials are needed. Session packages must provide these commands and the `--url-prefix`, `--no-tls`, `--rtc-addr`, and `--rtc-port` launch flags. Innkeeper treats their output as opaque text. The session stays preparing until both commands succeed and an authenticated readiness request succeeds. Setup and installation markers allow stopped sessions to restart without reinstalling packages.
+Inside the session container, setup installs runtime services, prepares the user and runtime directories, and installs Elsewhere with `apt` or `pacman`. The package manager resolves the package's declared dependencies, including Debian recommendations. A separate script installs requested extra packages before Elsewhere starts. Innkeeper requires Elsewhere 0.7.0 and creates a private non-expiring internal credential with `elsewhere token create --admin` in the server's execution environment. It stores credentials privately and never includes them in startup logs, machine listings, or previews. Initialization includes authenticated token inventory. Browser tokens are created only through the CSRF-protected connect POST and are non-expiring. Previews use Innkeeper's internal credential. Setup and installation markers allow stopped sessions to restart without reinstalling packages.
 
 Both distributions include xterm for sessions with no extra packages. Sessions use hardware encoding when a supported GPU is available, and software encoding without a GPU. Release packages are assumed compatible with the selected distribution; Innkeeper does not perform a separate binary or shared-library compatibility check.
 
@@ -107,11 +120,11 @@ An empty package list is valid. Package names cannot contain shell syntax, white
 
 **Stop** terminates the container while retaining the complete session home directory. **Start** relaunches a stopped session with the same tokens and data. **Destroy** removes the owned container, home volume, and Innkeeper preparation log. It permanently deletes that session's data. Shared base images and downloaded packages remain available for reuse. Remove obsolete image tags individually with `docker image rm <exact-tag>` after checking that no retained container uses them; Innkeeper never prunes shared Docker resources. Cancelling a session during download or base-image preparation terminates that preparation process group. A cancelled preparation has no desktop to restart; destroy its record and create a new session.
 
-Innkeeper restarts preserve sessions. Innkeeper inspects its recorded containers and reconciles exits and readiness; an interrupted preparation becomes a visible failure that can be destroyed and recreated. Container and volume deletion require a matching persistent owner label, and cleanup never uses global pruning or name-prefix deletion.
+Innkeeper restarts preserve sessions. Innkeeper inspects its recorded containers and reconciles exits and readiness; an interrupted preparation becomes a visible failure that can be destroyed and recreated. Container and volume deletion require a matching persistent installation label, and cleanup never uses global pruning or name-prefix deletion.
 
 Previews use the shared screenshot API with a width in device pixels, preserving aspect ratio. Visible sessions refresh every five seconds, with at most two requests in flight. Hidden tabs and offscreen previews pause. The backend also limits captures to two concurrent requests and one request per session every two seconds. Unavailable previews leave the session controls usable.
 
-The Logs dialog polls without overlapping requests. It shows the last 128 KiB of download and image-pull output and the last 1,000 Docker log lines. Docker logs rotate at 10 MiB, with three files retained. Token-bearing URL fragments and the rest of their line are redacted before output reaches the browser and before Docker persists desktop output. Current tokens are also redacted verbatim when their commands are available. Token-command diagnostics are never returned to the browser.
+The Logs dialog polls without overlapping requests. It shows the last 128 KiB of download and image-pull output and the last 1,000 Docker log lines. Docker logs rotate at 10 MiB, with three files retained. Token-bearing URL fragments and the rest of their line are redacted before output reaches the browser and before Docker persists desktop output. Stored credentials are also redacted verbatim. Token-command diagnostics are never returned to the browser.
 
 ## Supported session images
 
@@ -136,7 +149,6 @@ Docker must be running. Enable Innkeeper:
 
 ```sh
 sudo systemctl enable --now docker elsewhere-innkeeper
-sudo cat /var/lib/elsewhere-innkeeper/admin-token
 ```
 
 Edit `/etc/elsewhere-innkeeper/environment` to configure native installations and restart the service. Restart `elsewhere-innkeeper` after every native package upgrade to use the updated binary and its pinned Elsewhere release. The account receives access to Docker through its supplementary `docker` group. Arch packaging builds the checkout through `packaging/arch/PKGBUILD`. Debian packaging uses `cargo-deb` with metadata in `Cargo.toml` and the service setup in `packaging/debian/`. Native source builds require Rust with edition 2024 support and Node.js 24.

@@ -83,7 +83,7 @@ def build():
     try:
         for distro, target, asset in (
             ('arch', 'package-arch', f'elsewhere-{version}-1-x86_64.pkg.tar.zst'),
-            ('debian', 'package-deb', f'elsewhere_{version}-1_amd64.deb')):
+            ('debian', 'package-deb', f'elsewhere_{version}-1_debian-13_amd64.deb')):
             image = f'innkeeper-elsewhere-build:{distro}'
             run('docker', 'build', '--platform', 'linux/amd64', '--target', distro, '-t', image,
                 '--build-arg', f'BUILDER_UID={os.getuid()}',

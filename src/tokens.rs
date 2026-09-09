@@ -367,7 +367,7 @@ async fn inventory(
     s: &Session,
     url: &str,
     secret: &str,
-    recovery: bool,
+    _recovery: bool,
 ) -> Result<Vec<Metadata>> {
     let response = app
         .client
@@ -390,7 +390,7 @@ async fn inventory(
                 .label
                 .strip_prefix("Innkeeper user ")
                 .filter(|id| accounts::valid_id(id).is_ok());
-            if user.is_some() || (recovery && meta.label == "Admin") {
+            if user.is_some() || meta.label == "Admin" {
                 record(
                     app,
                     &s.id,

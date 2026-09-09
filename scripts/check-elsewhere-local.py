@@ -76,7 +76,7 @@ else: sys.exit(8)
     selected = json.loads(original)
     assert selected['version'] == '0.4.4.7.dirty'
     assert len(list((local / selected['directory']).iterdir())) == 2
-    assert (local / selected['directory'] / 'elsewhere_0.4.4.7.dirty-1_amd64.deb').is_file()
+    assert (local / selected['directory'] / 'elsewhere_0.4.4.7.dirty-1_debian-13_amd64.deb').is_file()
     assert 'type=bind' in (work / 'calls').read_text()
     compose = json.loads((local / 'compose.json').read_text())
     assert compose['services']['innkeeper']['volumes'][0]['read_only'] is True
