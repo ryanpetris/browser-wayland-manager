@@ -1605,13 +1605,16 @@ async fn preview(
     Ok(([(header::CONTENT_TYPE, "image/png")], bytes).into_response())
 }
 async fn asset(uri: axum::http::Uri) -> Response {
-    let (data, kind): (&[u8], &str) = match uri.path() {
-        "/" => (
+    let path = uri.path();
+    let (data, kind): (&[u8], &str) = match path {
+        "/app.js" => (include_bytes!("../web/dist/app.js"), "text/javascript"),
+        "/app.css" => (include_bytes!("../web/dist/app.css"), "text/css"),
+        // Every in-app address starts from the same document; the browser routes it. The API and
+        // the session proxy keep their own responses under their own prefixes.
+        _ if !matches!(path.split('/').nth(1), Some("api" | "e")) => (
             include_bytes!("../web/dist/index.html"),
             "text/html; charset=utf-8",
         ),
-        "/app.js" => (include_bytes!("../web/dist/app.js"), "text/javascript"),
-        "/app.css" => (include_bytes!("../web/dist/app.css"), "text/css"),
         _ => return StatusCode::NOT_FOUND.into_response(),
     };
     (
