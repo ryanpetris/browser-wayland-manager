@@ -67,6 +67,10 @@ try {
       await confirm.waitFor({ state: 'detached' });
       assert.equal(installs.length, count);
       await button.click();
+      await confirm.getByRole('button', { name: 'Close dialog', exact: true }).click();
+      await confirm.waitFor({ state: 'detached' });
+      assert.equal(installs.length, count);
+      await button.click();
       const request = page.waitForRequest(request => request.method() === 'POST' && new URL(request.url()).pathname.endsWith('/upgrade'));
       await confirm.getByRole('button', { name: label, exact: true }).click();
       assert.deepEqual((await request).postDataJSON(), {});
@@ -80,6 +84,16 @@ try {
   await reinstall.waitFor();
   assert.equal(await reinstall.isEnabled(), true);
   assert.equal(await page.locator('article.session p').filter({ hasText: /^Elsewhere version/ }).innerText(), 'Elsewhere version unavailable');
+  await reinstall.click();
+  const repair = page.getByRole('dialog', { name: `Reinstall ${session.name}`, exact: true });
+  await repair.getByRole('button', { name: 'Cancel', exact: true }).click();
+  await repair.waitFor({ state: 'detached' });
+  assert.equal(installs.length, 8);
+  await reinstall.click();
+  const repairRequest = page.waitForRequest(request => request.method() === 'POST' && new URL(request.url()).pathname.endsWith('/upgrade'));
+  await repair.getByRole('button', { name: 'Reinstall', exact: true }).click();
+  assert.deepEqual((await repairRequest).postDataJSON(), {});
+  await repair.waitFor({ state: 'detached' });
   for (const status of ['preparing', 'upgrading', 'failed', 'cancelled']) {
     session.status = status;
     await page.goto(origin);
@@ -93,7 +107,7 @@ try {
     await page.getByRole('heading', { name: session.name }).waitFor();
     assert.equal(await reinstall.count(), 0);
   }
-  assert.equal(installs.length, 8);
+  assert.equal(installs.length, 9);
   assert.deepEqual(errors, []);
   console.log('Session installation: labels, installed version, confirmation, cancellation, requests, incomplete packages, states and manager access passed');
 } finally {

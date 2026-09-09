@@ -8,11 +8,10 @@ else
     test "$(dpkg-deb -f /opt/innkeeper/elsewhere.deb Version)" = "$1"
     chmod 644 /opt/innkeeper/elsewhere.deb
     apt-get update
-    set --
+    set -- --reinstall
     case "$(dpkg-query -W -f='${db:Status-Status}' elsewhere 2>/dev/null || true)" in
-        installed|half-installed) set -- --reinstall ;;
         unpacked|half-configured|triggers-awaited|triggers-pending)
-            # Configure the selected package contents after an interrupted installation.
+            # Replace the selected package contents before configuration.
             dpkg --unpack /opt/innkeeper/elsewhere.deb
             set -- --fix-broken
             ;;

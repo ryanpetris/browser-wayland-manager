@@ -126,7 +126,7 @@ os.execv('/usr/bin/docker', ['docker', *args])
     version = tomllib.loads((Path(__file__).resolve().parent.parent / "Cargo.toml").read_text())["package"]["metadata"]["elsewhere"]["version"]
     local_mode = options.local
     if local_mode:
-        version = "0.4.4.7.dirty"
+        version = "99.0.0.7.dirty"
 
 
     def package(distro, label, installed=None, depends=None):
@@ -310,7 +310,7 @@ exec sleep 10000
                 assert state(sid)["version_status"] == "current"
                 assert account.connect(sid)
                 name = "innkeeper-" + sid
-                for installed in (version, "0.4.4.8.dirty"):
+                for installed in (version, "99.0.0.8.dirty"):
                     if installed != version:
                         archive = package(distro, "different", installed)
                         destination = "/tmp/fixture." + ("pkg.tar.zst" if distro == "arch" else "deb")
@@ -363,6 +363,23 @@ exec sleep 10000
             pinned = tomllib.loads((Path(__file__).resolve().parent.parent / "Cargo.toml").read_text())["package"]["metadata"]["elsewhere"]["version"]
             assert all(s["expected_version"] == pinned for s in api("/sessions")["sessions"])
             print("Ordinary startup restores the Cargo release pin without changing installed packages", flush=True)
+            version = pinned
+            for sid in created:
+                distro = state(sid)["distribution"]
+                name = "innkeeper-" + sid
+                identity = run("docker", "inspect", name, "--format", "{{.Id}}")
+                package(distro, "pinned")
+                api(f"/sessions/{sid}/upgrade", "POST")
+                wait(lambda: state(sid)["status"] == "stopped", timeout=90)
+                assert state(sid)["installed_version"] == pinned + "-1"
+                assert run("docker", "inspect", name, "--format", "{{.Id}}") == identity
+                payload = work / "installed-elsewhere"
+                run("docker", "cp", name + ":/usr/bin/elsewhere", str(payload))
+                assert "pinned" in payload.read_text()
+                api(f"/sessions/{sid}/start", "POST")
+                wait(lambda: state(sid)["status"] == "running")
+                assert run("docker", "exec", name, "cat", "/home/elsewhere/launches").splitlines()[-1] == "pinned"
+                print(f"{distro}: explicit installation returns the local build to the release pin", flush=True)
         for distro in (() if local_mode else distributions):
             # Creation failures retain their cause even when no container exists.
             cached = package(distro, "first")
@@ -583,6 +600,9 @@ exec sleep 10000
             assert state(sid)["version_status"] == "newer"
             for label in ("downgraded", "reinstalled"):
                 package(distro, label)
+                if distro == "debian" and label == "reinstalled":
+                    # Reinstallation replaces the payload even if the status query fails.
+                    run("docker", "exec", name, "sh", "-c", "printf '#!/bin/sh\\nexit 1\\n' > /usr/local/bin/dpkg-query; chmod +x /usr/local/bin/dpkg-query")
                 api(f"/sessions/{sid}/upgrade", "POST")
                 wait(lambda: state(sid)["status"] == "stopped", timeout=90)
                 assert state(sid)["installed_version"] == version + "-1"
@@ -594,6 +614,8 @@ exec sleep 10000
                 api(f"/sessions/{sid}/start", "POST")
                 wait(lambda: state(sid)["status"] == "running")
                 assert run("docker", "exec", name, "cat", "/home/elsewhere/launches").splitlines()[-1] == label
+                if distro == "debian" and label == "reinstalled":
+                    run("docker", "exec", name, "rm", "/usr/local/bin/dpkg-query")
             assert not (tools / "image-attempt").exists()
             (tools / "no-base").unlink()
             api(f"/sessions/{sid}/settings", "PUT", dict(pending_profile, screen_size=None))
