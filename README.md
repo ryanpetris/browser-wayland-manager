@@ -169,27 +169,27 @@ Each session displays its installed package version, read from the container's p
 metadata even while stopped. Innkeeper refreshes this information periodically and after
 installation or launch. Failed inspection shows “Version unavailable”.
 
-An older version offers **Upgrade**. A newer version shows **Newer than expected** and the
-expected release, with no Upgrade action. Release versions, numbered Git builds, and numeric package
-revisions are compared numerically. Other version formats remain visible with a message
-that their comparison is unavailable.
+Managers can install the preferred package on any running or stopped session. The button
+says **Upgrade** when the preferred version is newer, **Downgrade** when it is older, and
+**Reinstall** when the versions match or cannot be compared. Release versions, numbered Git
+builds, and numeric package revisions are compared numerically.
 
 **Start** and **Relaunch** use the installed package without downloading, upgrading,
-downgrading, or prompting about an available upgrade. **Upgrade** downloads the expected
-package if needed, stops a running desktop, installs the package, and exits. It leaves the
-session stopped so the user can choose **Start**. Upgrading does not run the startup command
-or apply pending desktop settings. It retains the container and session home volume.
+downgrading, or prompting about an available upgrade. The install action downloads the preferred
+package if needed, stops a running desktop, installs the package even if its version is unchanged,
+and exits. It leaves the session stopped so the user can choose **Start**. Installation does
+not run the startup command or apply pending desktop settings. It retains the container and
+session home volume.
 
 Installation failures remain visible in Logs and the session error. Stop a failed session
-before retrying Upgrade or Repair. Start selects a normal launch and never retries an interrupted
-upgrade automatically. **Repair** is available when package metadata confirms that Elsewhere is absent or
-incompletely installed at the expected version or an older version. Unreadable metadata and
-newer or unrecognized versions never authorize a repair. Repair installs the expected package
-and leaves the session stopped. A pending Debian package-manager journal requires manual
-recovery; Innkeeper reports this and blocks maintenance until it can read settled metadata.
+before retrying installation. Start selects a normal launch and never retries an interrupted
+installation automatically. The same install action repairs an absent or incomplete Elsewhere
+installation, regardless of version. Unreadable metadata and a pending Debian package-manager
+journal require manual recovery; Innkeeper reports this and blocks maintenance until it can
+read settled metadata.
 Installation success requires a successful maintenance exit and verification of the installed version. After 30 minutes of installation, Innkeeper
 shows a warning and continues monitoring completion. Restarting Innkeeper during an upgrade
-download reconnects to the existing desktop; the user can request Upgrade again.
+download reconnects to the existing desktop; the user can request installation again.
 
 ## Testing a local Elsewhere checkout
 
@@ -209,13 +209,10 @@ normalized version, including `.dirty` for uncommitted changes.
 manifest and packages mounted read-only. Its footer identifies local mode. The override is
 read at startup; selecting another build requires running `make run-local` again. Existing
 session containers are retained. New sessions install the selected local package. Start and
-Relaunch remain launch-only; use a fresh session to test changed packages with the same version.
-Exact dirty-version matches display as current; other unrecognized comparisons remain unavailable.
-An incomplete install whose version cannot be compared with the selected build may require
-manual package-manager recovery or a fresh session.
-Clean local versions can be installed through Upgrade when numerically newer than an existing
-package. Returning to the release pin can leave those sessions showing Newer than expected;
-Innkeeper does not downgrade them.
+Relaunch remain launch-only. Use **Reinstall** to test changed packages with the same version
+or install a dirty build whose version cannot be compared. The install action always uses the
+selected local package. After returning to normal mode, it installs the pinned release,
+including when that requires a downgrade.
 Missing local packages or an unreadable manifest cause an error rather than a GitHub download. Docker may still pull base
 images and package managers may download dependencies.
 
@@ -273,7 +270,7 @@ session's startup error. Seccomp profile paths refer to files where Innkeeper's 
 client runs. For containerized Innkeeper, mount custom seccomp profiles into that container.
 
 Docker options apply when the session container is created and remain in effect through
-Start, Relaunch, Upgrade, Repair, and Innkeeper restarts. They are read-only in Edit
+Start, Relaunch, Upgrade, Downgrade, Reinstall, and Innkeeper restarts. They are read-only in Edit
 settings and are separate from pending desktop settings. Create a new session to use
 different Docker options.
 
@@ -382,6 +379,11 @@ docker run --rm --entrypoint node \
   -v "$PWD/scripts/check-docker-options-browser.mjs:/src/scripts/check-docker-options-browser.mjs:ro" \
   innkeeper-proxy-browser /src/scripts/check-docker-options-browser.mjs
 ```
+
+Run `scripts/check-session-install-browser.mjs` in the same browser image with the script
+mounted at `/src/scripts/check-session-install-browser.mjs` to check install labels, requests,
+session states, and manager access. Run the session refresh check with `--local` to verify
+same-version and incomparable dirty builds using the selected local packages.
 
 `scripts/check-proxy-desktops.py` checks fresh real Arch and Debian packages through the production creation and launch flow. Mount the script at `/check.py`; `proxy-rig` includes its SQLite fixture helper. Run it in `proxy-rig` with the Docker socket, the session scripts, a writable directory at `/work`, and a local package manifest and artifacts at `/local`. Mount `/dev/dri` to exercise the host GPU. Publish `127.0.0.1:29301:29301` for a local browser rig. Leave `INNKEEPER_RTC_ADDR` unset to check hostname fallback, or set it to check an explicit override. It reserves ports used by unrelated Docker containers and removes only its own sessions.
 
