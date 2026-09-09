@@ -26,9 +26,10 @@ fn migrations() -> Migrations<'static> {
     Migrations::new(vec![initial_migration()])
 }
 
+#[derive(Clone, Debug)]
 pub struct Store {
     connection: Arc<Mutex<Connection>>,
-    pub owner: String,
+    pub installation_id: String,
 }
 
 impl Store {
@@ -54,23 +55,23 @@ impl Store {
             migrations()
                 .to_latest(&mut connection)
                 .context("Migrate session database")?;
-            let owner: String = connection
+            let installation_id: String = connection
                 .query_row(
-                    "SELECT owner FROM metadata WHERE singleton = 1",
+                    "SELECT installation_id FROM metadata WHERE singleton = 1",
                     [],
                     |row| row.get(0),
                 )
-                .context("Read database owner")?;
-            uuid::Uuid::parse_str(&owner).context("Invalid database owner")?;
+                .context("Read database installation_id")?;
+            uuid::Uuid::parse_str(&installation_id).context("Invalid database installation_id")?;
             Ok(Self {
                 connection: Arc::new(Mutex::new(connection)),
-                owner,
+                installation_id,
             })
         })
         .await?
     }
 
-    async fn run<T: Send + 'static>(
+    pub(crate) async fn run<T: Send + 'static>(
         &self,
         f: impl FnOnce(&mut Connection) -> Result<T> + Send + 'static,
     ) -> Result<T> {
@@ -107,7 +108,14 @@ impl Store {
         .await
     }
 
-    pub async fn create(&self, mut session: Session) -> Result<Option<Session>> {
+    #[cfg(test)]
+    pub async fn create(&self, session: Session) -> Result<Option<Session>> {
+        self.insert(session, None).await
+    }
+    pub async fn create_for(&self, session: Session, user: String) -> Result<Option<Session>> {
+        self.insert(session, Some(user)).await
+    }
+    async fn insert(&self, mut session: Session, user: Option<String>) -> Result<Option<Session>> {
         self.run(move |db| {
             let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
             let used = tx
@@ -119,6 +127,12 @@ impl Store {
             };
             session.port = port;
             write_session(&tx, &session)?;
+            if let Some(user) = user {
+                tx.execute(
+                    "INSERT INTO session_access VALUES(?1,?2,'manager')",
+                    params![session.id, user],
+                )?;
+            }
             tx.commit()?;
             Ok(Some(session))
         })
@@ -386,7 +400,7 @@ mod tests {
     async fn sessions_survive_restart_and_failed_writes_roll_back() {
         let directory = Directory::new();
         let db = Store::open(directory.database()).await.unwrap();
-        let owner = db.owner.clone();
+        let installation_id = db.installation_id.clone();
         let first = db.create(session()).await.unwrap().unwrap();
         let mut without_options = session();
         without_options.docker_args.clear();
@@ -417,7 +431,7 @@ mod tests {
         assert!(db.create(invalid).await.is_err());
         drop(db);
         let db = Store::open(directory.database()).await.unwrap();
-        assert_eq!(db.owner, owner);
+        assert_eq!(db.installation_id, installation_id);
         assert!(db.list().await.unwrap() == vec![first.clone(), second]);
         db.delete(&first.id).await.unwrap();
         let id = first.id.clone();

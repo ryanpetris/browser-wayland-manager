@@ -6,7 +6,7 @@ license = "MIT"
 description = "Manage isolated Elsewhere Docker desktops"
 
 [package.metadata.elsewhere]
-version = "0.6.1"
+version = "0.7.0"
 
 [package.metadata.deb]
 maintainer = "Elsewhere Innkeeper contributors <noreply@localhost>"
@@ -29,6 +29,13 @@ assets = [
 [dependencies]
 anyhow = "1"
 axum = "0.8"
+axum-login = "0.18"
+tower-sessions = "0.14"
+async-trait = "0.1"
+time = { version = "0.3", features = ["serde"] }
+argon2 = "0.5"
+rand = "0.8"
+rpassword = "7"
 axum-server = { version = "0.8", features = ["tls-rustls-no-provider"] }
 rcgen = "0.14"
 if-addrs = "0.15"
@@ -41,7 +48,7 @@ tokio = { version = "1", features = ["full"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 uuid = { version = "1", features = ["v4"] }
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
 subtle = "2"
 libc = "0.2"
 rusqlite = { version = "0.40", features = ["bundled"] }

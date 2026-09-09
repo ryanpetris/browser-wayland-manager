@@ -1,13 +1,17 @@
+mod accounts;
+mod login_store;
 mod network;
 mod proxy;
 mod store;
+mod tokens;
+use accounts::Auth;
 use anyhow::{Context, Result, bail};
 use axum::{
     Json, Router,
     body::Body,
     extract::{DefaultBodyLimit, Path, Query, State},
     http::{StatusCode, header},
-    middleware::{self, Next},
+    middleware::{self},
     response::{IntoResponse, Response},
     routing::{get, post},
 };
@@ -19,7 +23,6 @@ use std::{
     sync::{Arc, OnceLock},
     time::{Duration, Instant},
 };
-use subtle::ConstantTimeEq;
 use tokio::{
     process::Command,
     sync::{Mutex, Semaphore},
@@ -85,7 +88,7 @@ fn elsewhere_version() -> &'static str {
         .map(|local| local.version.as_str())
         .unwrap_or(ELSEWHERE_VERSION)
 }
-const LABEL: &str = "io.innkeeper.owner";
+const LABEL: &str = "io.innkeeper.installation";
 #[derive(Clone, PartialEq, Eq)]
 struct Session {
     id: String,
@@ -113,7 +116,10 @@ struct Session {
 struct App {
     db: store::Store,
     dir: PathBuf,
-    secret: String,
+    authorization: tokio::sync::RwLock<()>,
+    login_attempts: Mutex<accounts::Attempts>,
+    token_retries: Mutex<tokens::Retries>,
+    token_wake: tokio::sync::Notify,
     network: network::Network,
     assets: PathBuf,
     client: reqwest::Client,
@@ -127,12 +133,38 @@ type Shared = Arc<App>;
 struct Error(StatusCode, String);
 impl IntoResponse for Error {
     fn into_response(self) -> Response {
-        (self.0, Json(serde_json::json!({"error": self.1}))).into_response()
+        let code = match self.0 {
+            StatusCode::BAD_REQUEST => "invalid_input",
+            StatusCode::UNAUTHORIZED => "invalid_credentials",
+            StatusCode::FORBIDDEN => "forbidden",
+            StatusCode::NOT_FOUND => "not_found",
+            StatusCode::CONFLICT if self.1 == "setup_complete" => "setup_complete",
+            StatusCode::CONFLICT => "conflict",
+            StatusCode::TOO_MANY_REQUESTS => "rate_limited",
+            StatusCode::SERVICE_UNAVAILABLE => "unavailable",
+            _ => "internal_error",
+        };
+        let mut res = (
+            self.0,
+            Json(serde_json::json!({"error":code,"message": self.1})),
+        )
+            .into_response();
+        if self.0 == StatusCode::TOO_MANY_REQUESTS {
+            res.headers_mut()
+                .insert(header::RETRY_AFTER, "60".parse().unwrap());
+        }
+        res
     }
 }
 impl From<anyhow::Error> for Error {
     fn from(e: anyhow::Error) -> Self {
-        Self(StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
+        {
+            let _ = e;
+            Self(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Internal operation failed".into(),
+            )
+        }
     }
 }
 type Api<T> = std::result::Result<T, Error>;
@@ -144,9 +176,6 @@ fn now_ms() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis() as u64
-}
-fn random_token() -> String {
-    format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple())
 }
 fn private_write(path: &std::path::Path, bytes: &[u8]) -> Result<()> {
     use std::io::Write;
@@ -186,7 +215,7 @@ impl App {
     async fn owned(&self, id: &str) -> Result<serde_json::Value> {
         let raw = docker(&["inspect", &container(id)]).await?;
         let v: serde_json::Value = serde_json::from_str(&raw)?;
-        if v[0]["Config"]["Labels"][LABEL].as_str() != Some(&self.db.owner) {
+        if v[0]["Config"]["Labels"][LABEL].as_str() != Some(&self.db.installation_id) {
             bail!("Container ownership does not match");
         }
         Ok(v[0].clone())
@@ -213,28 +242,35 @@ async fn docker(args: &[&str]) -> Result<String> {
     }
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
-async fn auth(State(app): State<Shared>, req: axum::extract::Request, next: Next) -> Response {
-    let supplied = req
-        .headers()
-        .get(header::AUTHORIZATION)
-        .and_then(|h| h.to_str().ok())
-        .and_then(|h| h.strip_prefix("Bearer "))
-        .unwrap_or("");
-    if !bool::from(supplied.as_bytes().ct_eq(app.secret.as_bytes())) {
-        return StatusCode::UNAUTHORIZED.into_response();
-    }
-    let mut response = next.run(req).await;
-    response
-        .headers_mut()
-        .insert(header::CACHE_CONTROL, "no-store".parse().unwrap());
-    response
-}
 fn public_session(s: &Session) -> serde_json::Value {
     serde_json::json!({"id":s.id,"name":s.name,"distribution":s.distribution,"packages":s.packages,"docker_args":s.docker_args,"startup_command":s.startup_command,"screen_size":s.screen_size,"kiosk":s.kiosk,"settings_pending":s.applied_settings.as_ref().is_some_and(|applied| *applied != LaunchSettings::from(s)),"installed_version":s.installed_version,"repair_available":s.repair_available,"version_error":s.version_error,"expected_version":elsewhere_version(),"version_status":version_status(s.installed_version.as_deref()),"port":s.port,"status":s.status,"stage":s.stage,"error":s.error,"timings":s.timings})
 }
-async fn list(State(app): State<Shared>) -> Api<Json<serde_json::Value>> {
+fn authorized_session(s: &Session, role: &str) -> serde_json::Value {
+    let mut value = if role == "manager" {
+        public_session(s)
+    } else {
+        serde_json::json!({"id":s.id,"name":s.name,"distribution":s.distribution,"status":s.status,"stage":s.stage,"installed_version":s.installed_version,"expected_version":elsewhere_version(),"version_status":version_status(s.installed_version.as_deref())})
+    };
+    value["access_role"] = role.into();
+    value
+}
+async fn list(State(app): State<Shared>, auth: Auth) -> Api<Json<serde_json::Value>> {
+    let _guard = app.authorization.read().await;
+    let user = accounts::current(&app, &auth).await?;
+    let mut sessions = vec![];
+    for s in app.db.list().await? {
+        let uid = user.id.clone();
+        let id = s.id.clone();
+        if let Some(role) = app
+            .db
+            .run(move |db| accounts::effective(db, &uid, &id))
+            .await?
+        {
+            sessions.push(authorized_session(&s, &role));
+        }
+    }
     Ok(Json(
-        serde_json::json!({"sessions":app.db.list().await?.iter().map(public_session).collect::<Vec<_>>(),"version":env!("INNKEEPER_VERSION"),"local_elsewhere":LOCAL_ELSEWHERE.get().is_some()}),
+        serde_json::json!({"sessions":sessions,"version":env!("INNKEEPER_VERSION"),"local_elsewhere":LOCAL_ELSEWHERE.get().is_some()}),
     ))
 }
 #[derive(Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -328,10 +364,13 @@ async fn finish_operation<T: Send + 'static>(
 
 async fn settings(
     State(app): State<Shared>,
+    auth: Auth,
     Path(id): Path<String>,
     Json(input): Json<Settings>,
 ) -> Api<Json<serde_json::Value>> {
     finish_operation(async move {
+        let _authorization = app.authorization.read().await;
+        accounts::machine(&app, &auth, &id, true).await?;
         validate_settings(&input.name, input.screen_size, &input.startup_command)?;
         let lock = app.lock(&id).await;
         let _guard = lock.lock().await;
@@ -398,8 +437,15 @@ fn valid_package(p: &str) -> bool {
         && p.bytes()
             .all(|b| b.is_ascii_alphanumeric() || b"@._+:-".contains(&b))
 }
-async fn create(State(app): State<Shared>, Json(input): Json<Create>) -> Api<impl IntoResponse> {
+async fn create(
+    State(app): State<Shared>,
+    auth: Auth,
+    Json(input): Json<Create>,
+) -> Api<impl IntoResponse> {
     finish_operation(async move {
+        let _authorization = app.authorization.read().await;
+        let user = accounts::current(&app, &auth).await?;
+        if user.role != "administrator" && !input.docker_args.is_empty() { return Err(accounts::forbidden()); }
         if !["arch", "debian"].contains(&input.distribution.as_str())
             || input.name.trim().is_empty()
             || input.name.chars().count() > 80
@@ -437,12 +483,12 @@ async fn create(State(app): State<Shared>, Json(input): Json<Create>) -> Api<imp
             upgrade_target: None,
             timings: HashMap::new(),
         };
-        let s = app.db.create(s).await?.ok_or(Error(
+        let s = app.db.create_for(s, user.id).await?.ok_or(Error(
             StatusCode::CONFLICT,
             "Session port range is full".into(),
         ))?;
-        prepare_in_background(app, s.id.clone(), true, s.started_ms);
-        Ok((StatusCode::ACCEPTED, Json(public_session(&s))))
+        prepare_in_background(app.clone(), s.id.clone(), true, s.started_ms);
+        Ok((StatusCode::ACCEPTED, Json(authorized_session(&s,"manager"))))
     }).await
 }
 fn prepare_in_background(app: Shared, id: String, new_container: bool, attempt_ms: u64) {
@@ -582,7 +628,7 @@ async fn prepare(app: Shared, id: &str, new_container: bool, attempt_ms: u64) ->
         .await?;
         let container_started = Instant::now();
         if new_container {
-            let owner = app.db.owner.clone();
+            let owner = app.db.installation_id.clone();
             let label = format!("{LABEL}={owner}");
             docker(&["volume", "create", "--label", &label, &volume(id)]).await?;
             let tcp = format!("127.0.0.1:{}:19443/tcp", s.port);
@@ -955,59 +1001,15 @@ async fn installed_version(app: &App, s: &Session) -> Result<String> {
         .version
         .context("Elsewhere package metadata is unavailable")
 }
-async fn session_token(app: &App, id: &str, viewer: bool) -> Result<String> {
-    app.owned(id).await?;
-    let name = container(id);
-    let mut args = vec![
-        "exec",
-        "--user",
-        "elsewhere",
-        "--env",
-        "HOME=/home/elsewhere",
-        &name,
-        "elsewhere",
-        "token",
-    ];
-    if viewer {
-        args.push("--viewer");
-    }
-    // Command output is credential material, including diagnostics on failure.
-    let output = tokio::time::timeout(
-        Duration::from_secs(10),
-        Command::new("docker")
-            .args(args)
-            .kill_on_drop(true)
-            .output(),
-    )
-    .await
-    .context("Token command timed out")?
-    .context("Could not run token command")?;
-    if !output.status.success() {
-        bail!("Elsewhere token is unavailable; the token command did not succeed");
-    }
-    let output =
-        String::from_utf8(output.stdout).context("Elsewhere token command did not return text")?;
-    let token = output.strip_suffix('\n').unwrap_or(&output);
-    if token.is_empty() {
-        bail!("Elsewhere token is not available yet");
-    }
-    Ok(token.to_owned())
-}
-async fn viewer_get(app: &App, id: &str, url: &str) -> Result<reqwest::Response> {
-    for attempt in 0..2 {
-        let token = session_token(app, id, true).await?;
-        let response = app
-            .client
-            .get(url)
-            .bearer_auth(token)
-            .send()
-            .await
-            .context("Elsewhere request failed")?;
-        if response.status() != StatusCode::UNAUTHORIZED || attempt == 1 {
-            return Ok(response);
-        }
-    }
-    unreachable!()
+async fn internal_get(app: &App, id: &str, url: &str) -> Result<reqwest::Response> {
+    let s = app.db.session(id).await?.context("Session missing")?;
+    let token = tokens::internal(app, &s).await?;
+    app.client
+        .get(url)
+        .bearer_auth(token)
+        .send()
+        .await
+        .context("Elsewhere request failed")
 }
 async fn reconcile(app: Shared) {
     let mut version_checks = HashMap::<String, Instant>::new();
@@ -1022,6 +1024,7 @@ async fn reconcile(app: Shared) {
         };
         version_checks.retain(|id, _| sessions.iter().any(|s| &s.id == id));
         for s in sessions {
+            let _authorization = app.authorization.read().await;
             let lock = app.lock(&s.id).await;
             let Ok(_guard) = lock.try_lock() else {
                 continue;
@@ -1168,30 +1171,11 @@ async fn reconcile(app: Shared) {
             }
             let mut readiness_error = None;
             let ready = if stage == "launch" {
-                match session_token(&app, &s.id, false).await {
-                    Err(e) => {
-                        readiness_error = Some(e.to_string());
+                match tokens::sync(&app, &s).await {
+                    Ok(()) => true,
+                    Err(_) => {
+                        readiness_error = Some("Waiting for Elsewhere initialization".into());
                         false
-                    }
-                    Ok(_) => {
-                        match async {
-                            let endpoint = app.endpoint(&s).await?;
-                            viewer_get(&app, &s.id, &format!("{endpoint}/api/windows")).await
-                        }
-                        .await
-                        {
-                            Ok(r) if r.status().is_success() => true,
-                            Ok(_) => {
-                                readiness_error = Some(
-                                    "Waiting for Elsewhere authentication and readiness".into(),
-                                );
-                                false
-                            }
-                            Err(e) => {
-                                readiness_error = Some(e.to_string());
-                                false
-                            }
-                        }
                     }
                 }
             } else {
@@ -1267,8 +1251,10 @@ async fn reconcile(app: Shared) {
         tokio::time::sleep(Duration::from_secs(3)).await;
     }
 }
-async fn stop(State(app): State<Shared>, Path(id): Path<String>) -> Api<StatusCode> {
+async fn stop(State(app): State<Shared>, auth: Auth, Path(id): Path<String>) -> Api<StatusCode> {
     finish_operation(async move {
+        let _authorization = app.authorization.read().await;
+        accounts::machine(&app, &auth, &id, true).await?;
         let lock = app.lock(&id).await;
         let _guard = lock.lock().await;
         let s = app.session(&id).await?;
@@ -1303,16 +1289,24 @@ async fn stop(State(app): State<Shared>, Path(id): Path<String>) -> Api<StatusCo
     })
     .await
 }
-async fn start(State(app): State<Shared>, Path(id): Path<String>) -> Api<StatusCode> {
+async fn start(State(app): State<Shared>, auth: Auth, Path(id): Path<String>) -> Api<StatusCode> {
     finish_operation(async move {
+        let _authorization = app.authorization.read().await;
+        accounts::machine(&app, &auth, &id, true).await?;
         let lock = app.lock(&id).await;
         let _guard = lock.lock().await;
         begin_start(&app, &id, false).await
     })
     .await
 }
-async fn relaunch(State(app): State<Shared>, Path(id): Path<String>) -> Api<StatusCode> {
+async fn relaunch(
+    State(app): State<Shared>,
+    auth: Auth,
+    Path(id): Path<String>,
+) -> Api<StatusCode> {
     finish_operation(async move {
+        let _authorization = app.authorization.read().await;
+        accounts::machine(&app, &auth, &id, true).await?;
         let lock = app.lock(&id).await;
         let _guard = lock.lock().await;
         begin_start(&app, &id, true).await
@@ -1372,8 +1366,10 @@ async fn begin_start(app: &Shared, id: &str, relaunch: bool) -> Api<StatusCode> 
     prepare_in_background(app.clone(), id.to_owned(), false, attempt_ms);
     Ok(StatusCode::ACCEPTED)
 }
-async fn upgrade(State(app): State<Shared>, Path(id): Path<String>) -> Api<StatusCode> {
+async fn upgrade(State(app): State<Shared>, auth: Auth, Path(id): Path<String>) -> Api<StatusCode> {
     finish_operation(async move {
+        let _authorization = app.authorization.read().await;
+        accounts::machine(&app, &auth, &id, true).await?;
         let lock = app.lock(&id).await;
         let _guard = lock.lock().await;
         let s = app.session(&id).await?;
@@ -1408,8 +1404,10 @@ async fn upgrade(State(app): State<Shared>, Path(id): Path<String>) -> Api<Statu
     })
     .await
 }
-async fn destroy(State(app): State<Shared>, Path(id): Path<String>) -> Api<StatusCode> {
+async fn destroy(State(app): State<Shared>, auth: Auth, Path(id): Path<String>) -> Api<StatusCode> {
     finish_operation(async move {
+        let _authorization = app.authorization.read().await;
+        accounts::machine(&app, &auth, &id, true).await?;
         let lock = app.lock(&id).await;
         let _guard = lock.lock().await;
         app.session(&id).await?;
@@ -1436,7 +1434,7 @@ async fn destroy(State(app): State<Shared>, Path(id): Path<String>) -> Api<Statu
             let raw = docker(&["volume", "inspect", &volume(&id)]).await?;
             let v: serde_json::Value =
                 serde_json::from_str(&raw).context("Invalid volume inspection")?;
-            if v[0]["Labels"][LABEL].as_str() != Some(&app.db.owner) {
+            if v[0]["Labels"][LABEL].as_str() != Some(&app.db.installation_id) {
                 return Err(Error(
                     StatusCode::CONFLICT,
                     "Volume ownership does not match".into(),
@@ -1455,24 +1453,13 @@ async fn destroy(State(app): State<Shared>, Path(id): Path<String>) -> Api<Statu
     })
     .await
 }
-async fn link(State(app): State<Shared>, Path(id): Path<String>) -> Api<Json<serde_json::Value>> {
-    let s = app.session(&id).await?;
-    if s.status != "running" {
-        return Err(Error(StatusCode::CONFLICT, "Session is not ready".into()));
-    }
-    let token = session_token(&app, &id, false).await?;
-    let fragment: String =
-        reqwest::Url::parse_with_params("http://localhost/", &[("token", token)])
-            .context("Encode session token")?
-            .query()
-            .unwrap()
-            .to_owned();
-    Ok(Json(
-        serde_json::json!({"url": format!("/e/{}/#{fragment}", s.id)}),
-    ))
-}
-async fn logs(State(app): State<Shared>, Path(id): Path<String>) -> Api<Json<serde_json::Value>> {
-    app.session(&id).await?;
+async fn logs(
+    State(app): State<Shared>,
+    auth: Auth,
+    Path(id): Path<String>,
+) -> Api<Json<serde_json::Value>> {
+    let _authorization = app.authorization.read().await;
+    accounts::machine(&app, &auth, &id, true).await?;
     use std::io::{Read, Seek, SeekFrom};
     let mut output = String::new();
     if let Ok(mut file) = std::fs::File::open(app.dir.join(format!("{id}.build.log"))) {
@@ -1502,9 +1489,9 @@ async fn logs(State(app): State<Shared>, Path(id): Path<String>) -> Api<Json<ser
             output.push_str(&String::from_utf8_lossy(&raw.stderr));
         }
     }
-    for viewer in [false, true] {
-        if let Ok(token) = session_token(&app, &id, viewer).await {
-            output = output.replace(&token, "[REDACTED]");
+    for token in tokens::recorded(&app, &id).await? {
+        if let Some(secret) = token.secret {
+            output = output.replace(&secret, "[REDACTED]");
         }
     }
     Ok(Json(serde_json::json!({"text":redact(&output)})))
@@ -1515,9 +1502,14 @@ struct Preview {
 }
 async fn preview(
     State(app): State<Shared>,
+    auth: Auth,
     Path(id): Path<String>,
     Query(q): Query<Preview>,
 ) -> Api<Response> {
+    let _authorization = app.authorization.read().await;
+    accounts::machine(&app, &auth, &id, false).await?;
+    let lock = app.lock(&id).await;
+    let _guard = lock.lock().await;
     if !(1..=1600).contains(&q.width) {
         return Err(Error(
             StatusCode::BAD_REQUEST,
@@ -1550,7 +1542,7 @@ async fn preview(
         }
         times.insert(id, Instant::now());
     }
-    let r = viewer_get(
+    let r = internal_get(
         &app,
         &s.id,
         &format!(
@@ -1620,18 +1612,33 @@ async fn main() -> Result<()> {
     if unsafe { libc::flock(data_lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
         bail!("Another Innkeeper is using this data directory");
     }
-    let secret_path = dir.join("admin-token");
-    let secret = if secret_path.exists() {
-        std::fs::read_to_string(&secret_path)?.trim().to_owned()
-    } else {
-        let t = random_token();
-        private_write(&secret_path, t.as_bytes())?;
-        t
-    };
-    if secret.len() < 32 {
-        bail!("Administrator token must be at least 32 characters");
-    }
     let db = store::Store::open(dir.join("state.sqlite3")).await?;
+    accounts::initialize().await?;
+    if std::env::args().nth(1).as_deref() == Some("users") {
+        match std::env::args().nth(2).as_deref() {
+            Some("list") => {
+                for user in accounts::all_users(&db).await? {
+                    println!(
+                        "{}\t{}\t{}\t{}\t{}",
+                        user.id, user.username, user.display_name, user.role, user.enabled
+                    );
+                }
+            }
+            Some("reset-password") if std::env::args().nth(3).as_deref() == Some("--id") => {
+                let id = std::env::args().nth(4).context("Supply --id UUID")?;
+                accounts::valid_id(&id)?;
+                let password = rpassword::prompt_password("New password: ")?;
+                let confirm = rpassword::prompt_password("Repeat password: ")?;
+                if password != confirm {
+                    bail!("Passwords differ")
+                }
+                let hash = accounts::hash_password(password).await?;
+                accounts::write_password(&db, id, hash).await?;
+            }
+            _ => bail!("Use users list or users reset-password --id UUID"),
+        }
+        return Ok(());
+    }
     let sessions = db.list().await?;
     let interrupted_downloads = sessions
         .iter()
@@ -1654,7 +1661,10 @@ async fn main() -> Result<()> {
     let app = Arc::new(App {
         db,
         dir: dir.clone(),
-        secret,
+        authorization: tokio::sync::RwLock::new(()),
+        login_attempts: Mutex::new(accounts::Attempts::default()),
+        token_retries: Mutex::new(tokens::Retries::default()),
+        token_wake: tokio::sync::Notify::new(),
         network: network::Network::discover().await?,
         assets: PathBuf::from(env(
             "INNKEEPER_ASSETS_DIR",
@@ -1687,6 +1697,7 @@ async fn main() -> Result<()> {
         }
     }
     tokio::spawn(reconcile(app.clone()));
+    tokio::spawn(tokens::run(app.clone()));
     let api = Router::new()
         .route("/sessions", get(list).post(create))
         .route("/sessions/{id}/stop", post(stop))
@@ -1695,10 +1706,27 @@ async fn main() -> Result<()> {
         .route("/sessions/{id}/upgrade", post(upgrade))
         .route("/sessions/{id}/settings", axum::routing::put(settings))
         .route("/sessions/{id}", axum::routing::delete(destroy))
-        .route("/sessions/{id}/link", post(link))
+        .route(
+            "/sessions/{id}/connect",
+            get(tokens::connect_page).post(tokens::connect),
+        )
         .route("/sessions/{id}/logs", get(logs))
         .route("/sessions/{id}/preview", get(preview))
-        .layer(middleware::from_fn_with_state(app.clone(), auth));
+        .merge(accounts::routes())
+        .layer(middleware::from_fn_with_state(app.clone(), accounts::guard))
+        .layer(
+            axum_login::AuthManagerLayerBuilder::new(
+                accounts::Backend(app.db.clone()),
+                tower_sessions::SessionManagerLayer::new(login_store::LoginStore(app.db.clone()))
+                    .with_name("innkeeper_session")
+                    .with_path("/api")
+                    .with_secure(true)
+                    .with_same_site(tower_sessions::cookie::SameSite::Strict),
+            )
+            .with_data_key("innkeeper.auth")
+            .build(),
+        )
+        .layer(middleware::from_fn(accounts::response_policy));
     let router = Router::new()
         .nest("/api", api.layer(DefaultBodyLimit::max(32 * 1024)))
         .route("/e/{id}", axum::routing::any(proxy::forward))

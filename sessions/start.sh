@@ -1,14 +1,14 @@
 #!/bin/sh
 set -eu
 . /opt/innkeeper/launch-settings.sh
-export HOME=/home/elsewhere XDG_RUNTIME_DIR=/tmp/runtime-elsewhere NO_COLOR=1
+export HOME=/home/elsewhere XDG_CONFIG_HOME=/home/elsewhere/.config XDG_RUNTIME_DIR=/tmp/runtime-elsewhere NO_COLOR=1
 export GSK_RENDERER="${GSK_RENDERER-ngl}" QT_QPA_PLATFORM="${QT_QPA_PLATFORM-wayland;xcb}"
 cd "$HOME"
 DBUS_SESSION_BUS_ADDRESS=$(dbus-daemon --session --fork --print-address)
 export DBUS_SESSION_BUS_ADDRESS
 rm -f "$XDG_RUNTIME_DIR/output"
 mkfifo "$XDG_RUNTIME_DIR/output"
-# Redact startup links before Docker persists them, including rotated token links.
+# Redact credential fragments before Docker persists application output.
 LC_ALL=C stdbuf -oL sed -E 's/(#token=).*/\1[REDACTED]/' < "$XDG_RUNTIME_DIR/output" &
 filter=$!
 set -- --no-tls --listen 0.0.0.0:19443 --url-prefix "$INNKEEPER_URL_PREFIX" --rtc-port "$INNKEEPER_RTC_PORT" --elements

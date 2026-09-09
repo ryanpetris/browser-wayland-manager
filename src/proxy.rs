@@ -124,6 +124,8 @@ pub async fn forward(
         && has_token(request.headers(), "connection", "upgrade")
         && has_token(request.headers(), "upgrade", "websocket");
     let downstream = websocket.then(|| hyper::upgrade::on(&mut request));
+    request.headers_mut().remove(header::COOKIE);
+    request.headers_mut().remove("x-innkeeper-csrf");
     strip_hop_headers(request.headers_mut());
     // Prefixes are explicit Elsewhere configuration, never inferred from client headers.
     for name in [
@@ -225,6 +227,7 @@ pub async fn forward(
         strip_hop_headers(response.headers_mut());
     }
     response.headers_mut().remove("service-worker-allowed");
+    response.headers_mut().remove(header::SET_COOKIE);
     Ok(response.map(|body| {
         Body::new(ProxyBody {
             inner: Body::new(body),
@@ -324,13 +327,13 @@ pub async fn serve(router: Router, dir: &std::path::Path) -> Result<()> {
         eprintln!("elsewhere-innkeeper listening on https://{addr}");
         axum_server::bind_rustls(addr, config)
             .handle(handle)
-            .serve(router.into_make_service())
+            .serve(router.into_make_service_with_connect_info::<std::net::SocketAddr>())
             .await?;
     } else {
         eprintln!("elsewhere-innkeeper listening on http://{addr}");
         axum_server::bind(addr)
             .handle(handle)
-            .serve(router.into_make_service())
+            .serve(router.into_make_service_with_connect_info::<std::net::SocketAddr>())
             .await?;
     }
     Ok(())

@@ -31,9 +31,31 @@ function enqueuePreview(task) {
 function App() {
   const [version, setVersion] = useState("");
   const [localElsewhere, setLocalElsewhere] = useState(false);
-  const [token, setToken] = useState(
-    () => sessionStorage.getItem("innkeeper-token") || "",
-  );
+  const [token, setToken] = useState("");
+  const [user, setUser] = useState(null);
+  const [setupRequired, setSetupRequired] = useState(null);
+  const [accountPanel, setAccountPanel] = useState(false);
+  const [sharing, setSharing] = useState(null);
+  const loginClock = useRef(null);
+  function acceptLogin(data) {
+    setUser(data.user); setToken(data.csrf_token); setAuthenticated(true);
+    loginClock.current = {remaining: data.session_expires_at_ms - data.server_time_ms, at: performance.now()};
+  }
+  useEffect(() => {
+    let live = true;
+    (async () => {
+      try {
+        const response = await fetch("/api/me");
+        if (response.ok) { const data = await response.json(); if (live) acceptLogin(data); }
+        else if (response.status === 401) {
+          const setup = await fetch("/api/setup");
+          if (!setup.ok) throw new Error("Account setup is unavailable.");
+          const data = await setup.json(); if (live) setSetupRequired(data.required);
+        } else throw new Error("Account service is unavailable.");
+      } catch (e) { if (live) setError(e.message); }
+    })();
+    return () => { live = false; };
+  }, []);
   const [authenticated, setAuthenticated] = useState(false);
   const [sessions, setSessions] = useState([]);
   const [layout, setLayout] = useState(
@@ -58,8 +80,9 @@ function App() {
   async function api(path, options = {}) {
     const response = await fetch(`/api${path}`, {
       ...options,
+      body: options.body ?? (options.method && options.method !== "GET" ? "{}" : undefined),
       headers: {
-        Authorization: `Bearer ${token}`,
+        "X-Innkeeper-CSRF": token,
         "Content-Type": "application/json",
         ...options.headers,
       },
@@ -67,11 +90,12 @@ function App() {
     if (currentToken.current !== token) throw new Error("Session ended.");
     if (response.status === 401) {
       setAuthenticated(false);
-      throw new Error("Enter a valid administrator token.");
+      setUser(null); setToken(""); setSetupRequired(false);
+      throw new Error("Your session has ended. Sign in again.");
     }
     if (!response.ok) {
       let body = await response.json().catch(() => ({}));
-      throw new Error(body.error || `Request failed (${response.status})`);
+      throw new Error(body.message || body.error || `Request failed (${response.status})`);
     }
     return response.status === 204 ? null : response;
   }
@@ -83,7 +107,7 @@ function App() {
     setVersion(data.version);
     setLocalElsewhere(Boolean(data.local_elsewhere));
     setAuthenticated(true);
-    sessionStorage.setItem("innkeeper-token", token);
+
   }
   useEffect(() => {
     if (!token) return;
@@ -171,57 +195,51 @@ function App() {
       });
     }
   }
-  async function open(session) {
-    const tab = window.open("about:blank", "_blank");
-    if (tab) {
-      tab.sessionStorage.clear();
-      tab.opener = null;
-    }
-    try {
-      const r = await api(`/sessions/${session.id}/link`, { method: "POST" });
-      const { url } = await r.json();
-      const destination = new URL(url, window.location.origin);
-      if (tab) tab.location.replace(destination.href);
-      else throw new Error("Allow popups to open the session.");
-    } catch (e) {
-      tab?.close();
-      setError(e.message);
-    }
+  function open(session) {
+    window.open(`/api/sessions/${session.id}/connect`, "_blank", "noopener,noreferrer");
   }
+  useEffect(() => {
+    if (!token) return;
+    let live = true, inflight = false;
+    async function renew() {
+      if (inflight || !live) return;
+      inflight = true;
+      try {
+        const response = await api("/me");
+        const data = await response.json();
+        if (!live) return;
+        setUser(data.user);
+        loginClock.current = {remaining: data.session_expires_at_ms - data.server_time_ms, at: performance.now()};
+        if (loginClock.current.remaining > 0 && loginClock.current.remaining <= 2 * 86400000) {
+          const renewal = await api("/session/renew", {method: "POST"});
+          const renewed = await renewal.json();
+          if (live) loginClock.current = {remaining: renewed.session_expires_at_ms - renewed.server_time_ms, at: performance.now()};
+        }
+      } catch (e) { if (live) setError(e.message); }
+      finally { inflight = false; }
+    }
+    renew();
+    const timer = setInterval(renew, 60000);
+    window.addEventListener("focus", renew);
+    window.addEventListener("online", renew);
+    document.addEventListener("visibilitychange", renew);
+    return () => { live = false; clearInterval(timer); window.removeEventListener("focus", renew); window.removeEventListener("online", renew); document.removeEventListener("visibilitychange", renew); };
+  }, [token]);
   if (!authenticated)
-    return (
-      <main className="login">
-        <Monitor size={36} />
-        <h1>Elsewhere Innkeeper</h1>
-        <p>Enter the administrator token from Innkeeper’s data directory.</p>
-        <form
-          onSubmit={(e) => {
-            e.preventDefault();
-            setError("");
-            const next = e.currentTarget.token.value;
-            if (next === token) refresh().catch((e) => setError(e.message));
-            else setToken(next);
-          }}
-        >
-          <label>
-            Administrator token
-            <input
-              name="token"
-              type="password"
-              required
-              autoComplete="current-password"
-              defaultValue={token}
-            />
-          </label>
-          <button className="primary">Sign in</button>
-        </form>
-        {error && (
-          <p role="alert" className="error">
-            {error}
-          </p>
-        )}
-      </main>
-    );
+    return <Login required={setupRequired} error={error} submit={async (input) => {
+      setError("");
+      try {
+        const response = await fetch(`/api/${setupRequired ? "setup" : "login"}`, {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(input)});
+        const data = await response.json();
+        if (!response.ok) {
+          if (data.error === "setup_complete") setSetupRequired(false);
+          throw new Error(data.message || "Sign in failed.");
+        }
+        acceptLogin(data);
+        const destination = new URLSearchParams(location.search).get("return");
+        if (destination && /^\/api\/sessions\/[0-9a-f-]{36}\/connect$/.test(destination)) location.replace(destination);
+      } catch (e) { setError(e.message); }
+    }} />;
   return (
     <>
       <header>
@@ -231,15 +249,14 @@ function App() {
             Elsewhere <strong>Innkeeper</strong>
           </span>
         </div>
+        <button onClick={() => setAccountPanel(true)}>{user?.display_name}</button>
         <button
-          onClick={() => {
+          onClick={async () => {
+            try { await api("/logout", {method: "POST"}); }
+            catch (e) { setError(e.message); return; }
             currentToken.current = "";
-            sessionStorage.removeItem("innkeeper-token");
-            setToken("");
-            setAuthenticated(false);
-            setLogs(null);
-            setCreating(false);
-            setEditing(null);
+            setToken(""); setUser(null); setSetupRequired(false);
+            setAuthenticated(false); setLogs(null); setCreating(false); setEditing(null); setSessions([]);
           }}
         >
           <LogOut size={16} />
@@ -304,7 +321,7 @@ function App() {
                   </div>
                   <p>
                     {s.distribution === "arch" ? "Arch Linux" : "Debian 13"}
-                    {s.packages.length > 0 && (
+                    {s.packages?.length > 0 && (
                       <span className="muted"> · {s.packages.join(", ")}</span>
                     )}
                   </p>
@@ -329,6 +346,8 @@ function App() {
                   {s.version_status === "older" && <p className="muted">Upgrade closes running applications and leaves the session stopped.</p>}
                   {s.error && <p className="error">{s.error}</p>}
                   <div className="actions">
+                    {user?.role === "administrator" && <button onClick={() => setSharing(s)}>Share</button>}
+                    {s.access_role === "manager" && <>
                     <button disabled={busy[s.id] || !["running", "stopped"].includes(s.status)}
                       onClick={() => { setEditError(""); setEditing(s); }}>
                       Edit settings
@@ -345,6 +364,7 @@ function App() {
                       onClick={() => action(s, "relaunch")}>
                       Relaunch
                     </button>
+                    </>}
                     <button
                       disabled={s.status !== "running" || busy[s.id]}
                       onClick={() => open(s)}
@@ -352,6 +372,7 @@ function App() {
                       <ExternalLink size={15} />
                       Open
                     </button>
+                    {s.access_role === "manager" && <>
                     <button
                       onClick={() => {
                         followLogs.current = true;
@@ -379,6 +400,7 @@ function App() {
                     >
                       <Trash2 size={15} />
                     </button>
+                    </>}
                   </div>
                 </div>
               </article>
@@ -390,9 +412,11 @@ function App() {
           {localElsewhere && " · Local Elsewhere build"}
         </footer>
       </main>
+      {accountPanel && <Accounts api={api} user={user} changed={setUser} close={() => setAccountPanel(false)} />}
+      {sharing && <Sharing api={api} machine={sharing} close={() => setSharing(null)} />}
       {creating && (
         <Dialog title="New session" close={() => setCreating(false)}>
-          <SessionForm
+          <SessionForm administrator={user?.role === "administrator"}
             error={createError}
             submit={async (profile) => {
               setCreateError("");
@@ -582,7 +606,7 @@ const defaultProfile = {
 };
 const screenPresets = ["1280x720", "1920x1080", "2560x1440", "3840x2160"];
 
-function SessionForm({ submit, error, initial }) {
+function SessionForm({ submit, error, initial, administrator = false }) {
   const [profile, setProfile] = useState(initial || defaultProfile);
   const [packages, setPackages] = useState(initial?.packages.join(" ") || "");
   const [dockerArgs, setDockerArgs] = useState(initial?.docker_args?.join("\n") || "");
@@ -682,7 +706,7 @@ function SessionForm({ submit, error, initial }) {
           await submit({
             ...profile,
             packages: packages.trim().split(/\s+/).filter(Boolean),
-            docker_args: dockerArgs.split("\n").map((line) => line.trim()).filter(Boolean),
+            docker_args: (administrator ? dockerArgs : "").split("\n").map((line) => line.trim()).filter(Boolean),
             screen_size: size,
           });
         } finally {
@@ -749,7 +773,7 @@ function SessionForm({ submit, error, initial }) {
           />
           <small>{initial ? "Distribution and packages are set at creation." : "Optional. Separate package names with spaces."}</small>
         </label>
-        <details>
+        {(administrator || initial) && <details>
           <summary>Advanced Docker options</summary>
           <label>
             Docker options
@@ -763,7 +787,7 @@ function SessionForm({ submit, error, initial }) {
             />
             <small>{initial ? "Docker options are set at creation. Create a new session to change them." : "Optional. One --flag=value per line. Supports --security-opt, --cap-add, and --cap-drop. Repeated options are allowed."}</small>
           </label>
-        </details>
+        </details>}
         <label>
           Screen size
           <select value={screen} onChange={(e) => setScreen(e.target.value)}>
@@ -836,3 +860,73 @@ function SessionForm({ submit, error, initial }) {
 }
 
 createRoot(document.getElementById("root")).render(<App />);
+
+function Login({required, error, submit}) {
+  return <main className="login"><Monitor size={36}/><h1>Elsewhere Innkeeper</h1>
+    <p>{required === null ? "Loading accounts…" : required ? "Create the first Administrator account." : "Sign in to your account."}</p>
+    {required !== null && <form onSubmit={async e => {
+      e.preventDefault(); const form = e.currentTarget; const fields = new FormData(form);
+      const input = {username: fields.get("username"), password: fields.get("password")};
+      if (required) { if (fields.get("confirmation") !== input.password) {form.confirmation.setCustomValidity("Passwords differ."); form.confirmation.reportValidity(); return;} input.display_name = fields.get("display_name"); }
+      await submit(input);
+    }}>
+      <label>Username<input name="username" autoComplete="username" required maxLength={64}/></label>
+      {required && <label>Display name<input name="display_name" autoComplete="name" required maxLength={120}/></label>}
+      <label>Password<input type="password" name="password" autoComplete={required ? "new-password" : "current-password"} minLength={required ? 12 : undefined} required/></label>
+      {required && <label>Confirm password<input type="password" name="confirmation" autoComplete="new-password" required onInput={e => e.target.setCustomValidity("")}/></label>}
+      <button className="primary">{required ? "Create Administrator" : "Sign in"}</button>
+    </form>}
+    {error && <p role="alert" className="error">{error}</p>}
+  </main>;
+}
+function Accounts({api,user,changed,close}) {
+  const [users,setUsers] = useState([]), [error,setError] = useState(""), [busy,setBusy] = useState(false);
+  async function reload() {if (user.role === "administrator") setUsers((await (await api("/users")).json()).users);}
+  useEffect(() => {reload().catch(e => setError(e.message));}, [user.role]);
+  async function perform(work) {setBusy(true); setError(""); try {await work(); await reload();} catch(e) {setError(e.message);} finally {setBusy(false);} }
+  return <Dialog title="Account" close={close}>
+    {error && <p role="alert" className="error">{error}</p>}
+    <form onSubmit={e => {e.preventDefault();const display_name=e.currentTarget.display_name.value;perform(async () => {const result=await (await api("/me",{method:"PATCH",body:JSON.stringify({display_name})})).json();changed(result.user);});}}>
+      <p>Username: {user.username}</p><label>Display name<input name="display_name" defaultValue={user.display_name} required maxLength={120}/></label><button disabled={busy}>Save display name</button>
+    </form>
+    <form onSubmit={e => {e.preventDefault();const data=new FormData(e.currentTarget);perform(async () => {await api("/me/password",{method:"PUT",body:JSON.stringify({current_password:data.get("current_password"),password:data.get("password")})});location.reload();});}}>
+      <label>Current password<input type="password" name="current_password" autoComplete="current-password" required/></label>
+      <label>New password<input type="password" name="password" autoComplete="new-password" minLength={12} required/></label><button disabled={busy}>Change password and sign out</button>
+    </form>
+    {user.role === "administrator" && <>
+      <h3>Users</h3>
+      {users.map(target => <form key={target.id + target.username + target.display_name + target.role + target.enabled} onSubmit={e => {e.preventDefault();const data=new FormData(e.currentTarget);perform(async () => {const result=await (await api(`/users/${target.id}`,{method:"PATCH",body:JSON.stringify({username:data.get("username"),display_name:data.get("display_name"),role:data.get("role"),enabled:data.get("enabled")==="on"})})).json();if (target.id === user.id) changed(result.user);});}}>
+        <h4>{target.display_name}</h4>
+        <label>Username<input name="username" defaultValue={target.username} required maxLength={64}/></label>
+        <label>Display name<input name="display_name" defaultValue={target.display_name} required maxLength={120}/></label>
+        <label>Account role<select name="role" defaultValue={target.role}><option value="user">User</option><option value="administrator">Administrator</option></select></label>
+        <label><input type="checkbox" name="enabled" defaultChecked={target.enabled}/> Enabled</label>
+        <button disabled={busy}>Save account</button>
+        <button disabled={busy} type="button" onClick={() => perform(async () => {if(confirm(`Delete account ${target.display_name}?`)) await api(`/users/${target.id}`,{method:"DELETE"});})}>Delete account</button>
+        <label>Reset password<input name="reset_password" type="password" autoComplete="new-password" minLength={12}/></label>
+        <button type="button" disabled={busy} onClick={e => {const field=e.currentTarget.form.reset_password; if(!field.value || !field.reportValidity()) return;perform(async () => {await api(`/users/${target.id}/password`,{method:"PUT",body:JSON.stringify({password:field.value})});field.value="";});}}>Reset password</button>
+      </form>)}
+      <h3>Create user</h3>
+      <form onSubmit={e => {e.preventDefault();const form=e.currentTarget;const data=new FormData(form);perform(async () => {await api("/users",{method:"POST",body:JSON.stringify(Object.fromEntries(data))});form.reset();});}}>
+        <label>Username<input name="username" required maxLength={64} autoComplete="off"/></label>
+        <label>Display name<input name="display_name" required maxLength={120}/></label>
+        <label>Password<input name="password" type="password" minLength={12} autoComplete="new-password" required/></label>
+        <label>Account role<select name="role"><option value="user">User</option><option value="administrator">Administrator</option></select></label>
+        <button disabled={busy}>Create user</button>
+      </form>
+    </>}
+  </Dialog>;
+}
+function Sharing({api,machine,close}) {
+  const [users,setUsers]=useState([]),[assignments,setAssignments]=useState([]),[error,setError]=useState(""),[busy,setBusy]=useState(false);
+  async function reload(){const [u,a]=await Promise.all([api("/users").then(r=>r.json()),api(`/sessions/${machine.id}/access`).then(r=>r.json())]);setUsers(u.users);setAssignments(a.assignments);}
+  useEffect(()=>{reload().catch(e=>setError(e.message));},[machine.id]);
+  return <Dialog title={`Share ${machine.name}`} close={close}>
+    <p>Administrators can always manage this machine.</p>{error && <p className="error" role="alert">{error}</p>}
+    {users.map(user=><label key={user.id}>{user.display_name}{user.role === "administrator" ? " · Administrator" : ""}
+      <select disabled={busy} value={assignments.find(a=>a.user_id===user.id)?.role || ""} onChange={async e=>{setBusy(true);setError("");const role=e.target.value;try{await api(`/sessions/${machine.id}/access/${user.id}`,{method:role?"PUT":"DELETE",body:role?JSON.stringify({role}):undefined});await reload();}catch(e){setError(e.message);}finally{setBusy(false);}}}>
+        <option value="">No assignment</option><option value="viewer">Viewer · video and audio</option><option value="interactive">Interactive · use desktop</option><option value="manager">Manager · use and manage machine</option>
+      </select>
+    </label>)}
+  </Dialog>;
+}
