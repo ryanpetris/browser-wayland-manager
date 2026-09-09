@@ -727,10 +727,7 @@ async fn prepare(app: Shared, id: &str, new_container: bool, attempt_ms: u64) ->
                 if info["State"]["Running"] == true {
                     docker(&["stop", "--time", "15", &container(id)]).await?;
                 }
-                let installed = package_metadata(&app, &s).await?;
-                if !installed.can_install() {
-                    bail!("Installed Elsewhere version no longer needs an upgrade or repair");
-                }
+                package_metadata(&app, &s).await?;
             } else if info["State"]["Running"] == true {
                 bail!("Container is already running");
             }
@@ -918,11 +915,6 @@ struct PackageMetadata {
 impl PackageMetadata {
     fn repair_available(&self) -> bool {
         !self.complete
-            && (self.version.is_none()
-                || matches!(version_status(self.version.as_deref()), "older" | "current"))
-    }
-    fn can_install(&self) -> bool {
-        self.repair_available() || version_status(self.version.as_deref()) == "older"
     }
 }
 fn debian_metadata(text: &str) -> Result<PackageMetadata> {
@@ -1385,11 +1377,10 @@ async fn begin_start(app: &Shared, id: &str, relaunch: bool) -> Api<StatusCode> 
     }
     if let Ok(metadata) = package_metadata(app, &s).await {
         if !metadata.complete {
-            return Err(Error(StatusCode::CONFLICT, if metadata.repair_available() {
-                "Elsewhere installation is incomplete. Use Repair before starting."
-            } else {
-                "Elsewhere installation is incomplete. Manual package-manager recovery is required before starting."
-            }.into()));
+            return Err(Error(
+                StatusCode::CONFLICT,
+                "Elsewhere installation is incomplete. Install the preferred Elsewhere version before starting.".into(),
+            ));
         }
     }
     if info["State"]["Running"] == true {
@@ -1435,12 +1426,6 @@ async fn upgrade(
             ));
         }
         let installed = package_metadata(&app, &s).await?;
-        if !installed.can_install() {
-            return Err(Error(
-                StatusCode::CONFLICT,
-                "Installed Elsewhere version does not need an upgrade".into(),
-            ));
-        }
         let attempt_ms = now_ms().max(s.started_ms.saturating_add(1));
         app.change(&id, move |s| {
             s.repair_available = installed.repair_available();
@@ -1967,7 +1952,7 @@ mod tests {
                 "Package: elsewhere\nStatus: install ok unpacked\nVersion: {version}\n"
             ))
             .unwrap();
-            assert!(!metadata.can_install());
+            assert!(metadata.repair_available());
         }
     }
 }

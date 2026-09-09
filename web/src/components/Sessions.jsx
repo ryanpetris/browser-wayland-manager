@@ -61,6 +61,7 @@ function SessionCard({ s, layout, user, busy, api, onOpen, onLogs, onEdit, onSha
   const [tone, dot, pulse] = STATUS[s.status] ?? STATUS.stopped;
   const manages = s.access_role === 'manager';
   const settled = ['running', 'stopped'].includes(s.status);
+  const installLabel = s.version_status === 'older' ? 'Upgrade' : s.version_status === 'newer' ? 'Downgrade' : 'Reinstall';
   // `session` is the marker the browser checks select cards by; it carries no styling.
   return (
     <article className={cx('session card flex overflow-hidden [overflow-wrap:anywhere]', layout === 'list' ? 'flex-row' : 'flex-col')}>
@@ -74,15 +75,12 @@ function SessionCard({ s, layout, user, busy, api, onOpen, onLogs, onEdit, onSha
           {DISTRIBUTION[s.distribution] ?? s.distribution}
           {s.packages?.length > 0 && <span className="text-ink-4"> · {s.packages.join(', ')}</span>}
         </p>
-        <p className={cx('mt-0.5 text-xs', s.version_status === 'newer' ? 'text-warn' : 'text-ink-4')}>
+        <p className="mt-0.5 text-xs text-ink-4">
           Elsewhere {s.installed_version || 'version unavailable'}
-          {s.version_status === 'older' && ` · ${s.expected_version} available`}
-          {s.version_status === 'newer' && ` · Newer than expected (${s.expected_version})`}
-          {s.installed_version && s.version_status === 'unknown' && ' · Version comparison unavailable'}
         </p>
         <div className="mt-2 flex flex-col gap-1.5 empty:mt-0">
           {s.version_error && <Note>{s.version_error}</Note>}
-          {s.repair_available && <Note>Elsewhere installation is incomplete. Repair installs the expected package and leaves the session stopped.</Note>}
+          {s.repair_available && <Note>Elsewhere installation is incomplete. Install the preferred version before starting.</Note>}
           {['preparing', 'upgrading'].includes(s.status) && (
             <p role="status" className="flex items-center gap-1.5 text-xs text-warn">
               <Loader2 className="size-3 shrink-0 animate-spin" />
@@ -100,7 +98,7 @@ function SessionCard({ s, layout, user, busy, api, onOpen, onLogs, onEdit, onSha
                     : 'Relaunch to apply'}
             </Note>
           )}
-          {s.version_status === 'older' && <Note>Upgrade closes running applications and leaves the session stopped.</Note>}
+          {manages && settled && <Note>{installLabel} closes running applications and leaves the session stopped.</Note>}
           {s.error && <p className="callout callout-bad">{s.error}</p>}
         </div>
         <div className="mt-auto flex flex-wrap items-center gap-1.5 pt-4">
@@ -137,18 +135,16 @@ function SessionCard({ s, layout, user, busy, api, onOpen, onLogs, onEdit, onSha
                 <SlidersHorizontal className="size-3.5" strokeWidth={1.75} />
                 Edit settings
               </button>
-              {(s.version_status === 'older' || s.repair_available) && (
-                <button
-                  type="button"
-                  className="btn btn-outline btn-sm"
-                  disabled={busy[s.id] || !settled}
-                  title="Install the expected Elsewhere version and leave the session stopped."
-                  onClick={() => onAction(s, 'upgrade')}
-                >
-                  <Wrench className="size-3.5" strokeWidth={1.75} />
-                  {s.repair_available ? 'Repair' : 'Upgrade'}
-                </button>
-              )}
+              <button
+                type="button"
+                className="btn btn-outline btn-sm"
+                disabled={busy[s.id] || !settled}
+                title="Install the preferred Elsewhere version and leave the session stopped."
+                onClick={() => onAction(s, 'upgrade')}
+              >
+                <Wrench className="size-3.5" strokeWidth={1.75} />
+                {installLabel}
+              </button>
               <button
                 type="button"
                 className="btn btn-outline btn-sm"

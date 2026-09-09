@@ -302,7 +302,28 @@ exec sleep 10000
                 assert state(sid)["installed_version"] == version + "-1"
                 assert state(sid)["version_status"] == "current"
                 assert account.connect(sid)
-                rejected_action(sid, "upgrade", 409)
+                name = "innkeeper-" + sid
+                for installed in (version, "0.4.4.8.dirty"):
+                    if installed != version:
+                        archive = package(distro, "different", installed)
+                        destination = "/tmp/fixture." + ("pkg.tar.zst" if distro == "arch" else "deb")
+                        run("docker", "cp", str(archive), name + ":" + destination)
+                        command = ["pacman", "-U", "--noconfirm"] if distro == "arch" else ["dpkg", "-i"]
+                        run("docker", "exec", name, *command, destination)
+                        restart_manager()
+                        wait(lambda: state(sid)["version_status"] == "unknown")
+                    archive = package(distro, "reinstalled")
+                    shutil.copyfile(archive, generation / archive.name)
+                    before = run("docker", "exec", name, "cat", "/home/elsewhere/launches")
+                    api(f"/sessions/{sid}/upgrade", "POST")
+                    wait(lambda: state(sid)["status"] == "stopped", timeout=90)
+                    assert state(sid)["installed_version"] == version + "-1"
+                    payload = work / "installed-elsewhere"
+                    run("docker", "cp", name + ":/usr/bin/elsewhere", str(payload))
+                    assert "reinstalled" in payload.read_text()
+                    api(f"/sessions/{sid}/start", "POST")
+                    wait(lambda: state(sid)["status"] == "running")
+                    assert run("docker", "exec", name, "cat", "/home/elsewhere/launches").splitlines() == before.splitlines() + ["reinstalled"]
                 # Start uses the installed package even if the local artifact disappears.
                 cached = package(distro, "first")
                 artifact = generation / cached.name
@@ -323,7 +344,7 @@ exec sleep 10000
                 assert invalid.returncode != 0 and "Local Elsewhere package is missing" in invalid.stderr
                 shutil.copyfile(cached, artifact)
                 api(f"/sessions/{sid}/stop", "POST")
-                print(f"{distro}: local dirty package, exact version, token CLI, launch-only Start and missing-package failure passed", flush=True)
+                print(f"{distro}: local dirty package, same-version and incomparable reinstalls, token CLI, launch-only Start and missing-package failure passed", flush=True)
             manager.send_signal(signal.SIGINT)
             manager.wait(timeout=10)
             env.pop("INNKEEPER_LOCAL_ELSEWHERE")
@@ -417,10 +438,13 @@ exec sleep 10000
                 api(f"/sessions/{probe}/stop", "POST")
                 restart_manager()
                 wait(lambda: state(probe)["version_status"] == "newer")
-                assert not state(probe)["repair_available"]
-                rejected_action(probe, "upgrade", 409)
-                assert "Manual package-manager recovery" in rejected_action(probe, "start", 409)
+                assert state(probe)["repair_available"]
+                assert "installation is incomplete" in rejected_action(probe, "start", 409)
                 package(distro, "first")
+                api(f"/sessions/{probe}/upgrade", "POST")
+                wait(lambda: state(probe)["status"] == "stopped", timeout=90)
+                assert state(probe)["installed_version"] == version + "-1"
+                assert not state(probe)["repair_available"]
             api(f"/sessions/{probe}", "DELETE")
             created.remove(probe)
             print(f"{distro}: cancelled/failed creation and explicit initial-install repair passed", flush=True)
@@ -538,20 +562,28 @@ exec sleep 10000
             (recipes / "install.sh").write_text(installer)
             api(f"/sessions/{sid}/start", "POST")
             wait(lambda: state(sid)["status"] == "running")
-            # Newer packages are shown as newer and cannot be downgraded by Upgrade or Start.
+            # Start keeps the installed version; explicit installation uses the preferred package.
             install_fixture("newer", "99.0.0")
             api(f"/sessions/{sid}/stop", "POST")
             restart_manager()
             wait(lambda: state(sid)["version_status"] == "newer")
-            try:
-                api(f"/sessions/{sid}/upgrade", "POST")
-                raise AssertionError("Newer package accepted for upgrade")
-            except urllib.error.HTTPError as e:
-                assert e.code == 409
             package(distro, "upgraded")
             api(f"/sessions/{sid}/start", "POST")
             wait(lambda: state(sid)["status"] == "running")
             assert state(sid)["version_status"] == "newer"
+            for label in ("downgraded", "reinstalled"):
+                package(distro, label)
+                api(f"/sessions/{sid}/upgrade", "POST")
+                wait(lambda: state(sid)["status"] == "stopped", timeout=90)
+                assert state(sid)["installed_version"] == version + "-1"
+                assert state(sid)["error"] is None
+                assert run("docker", "inspect", name, "--format", "{{.Id}}") == identity
+                payload = work / "installed-elsewhere"
+                run("docker", "cp", name + ":/usr/bin/elsewhere", str(payload))
+                assert label in payload.read_text()
+                api(f"/sessions/{sid}/start", "POST")
+                wait(lambda: state(sid)["status"] == "running")
+                assert run("docker", "exec", name, "cat", "/home/elsewhere/launches").splitlines()[-1] == label
             assert not (tools / "image-attempt").exists()
             (tools / "no-base").unlink()
             api(f"/sessions/{sid}/settings", "PUT", dict(pending_profile, screen_size=None))
@@ -663,7 +695,7 @@ exec sleep 10000
             check_docker_args(sid, docker_args)
             print(f"{distro}: Docker security options and capabilities survive restart, upgrade and relaunch", flush=True)
             print(f"{distro}: saved settings, resets, quoting, pending state, persistence, serialized relaunch and failure retry passed", flush=True)
-            print(f"{distro}: explicit upgrade, stopped version detection, newer warning, launch-only start, cancellation, managed token reuse and restart persistence passed", flush=True)
+            print(f"{distro}: explicit upgrade, downgrade, reinstall, stopped version detection, launch-only start, cancellation, managed token reuse and restart persistence passed", flush=True)
     except BaseException:
         with database(data) as db:
             print("Stored settings:", [dict(row) for row in db.execute("SELECT * FROM session_settings")], flush=True)
