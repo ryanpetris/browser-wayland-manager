@@ -61,8 +61,10 @@ def state(sid):
     return next(s for s in api('/sessions')['sessions'] if s['id']==sid)
 
 try:
-    wait(lambda:(data/'cert.pem').exists() or (data/'state.sqlite3').exists())
-    time.sleep(1)
+    def listening():
+        try:return account.request('/setup')[0]==200
+        except (ConnectionError,OSError):return False
+    wait(listening)
     account.setup()
     viewer_account=Client(origin)
     viewer_user=api('/users','POST',dict(username='viewer',display_name='Viewer',password=PASSWORD))['user']

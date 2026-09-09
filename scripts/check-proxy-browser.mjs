@@ -16,6 +16,7 @@ try {
     window.RTCPeerConnection = class extends Original { constructor(...args) { super(...args); peers.push(this); } };
   });
   const manager = await context.newPage();
+  manager.setDefaultTimeout(15000);
   await manager.goto(origin);
   await manager.getByLabel('Username', {exact:true}).fill('fixture');
   await manager.getByLabel('Password', {exact:true}).fill(password);
@@ -33,8 +34,55 @@ try {
   const saved=manager.waitForResponse(r=>new URL(r.url()).pathname==='/api/me' && r.request().method()==='PATCH');
   await accountDialog.getByRole('button',{name:'Save display name',exact:true}).click();
   assert.equal((await saved).status(),200);
+  console.log('Checking account creation');
+  const createUser=accountDialog.locator('form').filter({has:manager.getByRole('button',{name:'Create user',exact:true})});
+  await createUser.getByLabel('Username',{exact:true}).fill('browser-account');
+  await createUser.getByLabel('Display name',{exact:true}).fill('Browser account');
+  await createUser.getByLabel('Password',{exact:true}).fill(password);
+  const createdUser=manager.waitForResponse(r=>new URL(r.url()).pathname==='/api/users' && r.request().method()==='POST');
+  await createUser.getByRole('button',{name:'Create user',exact:true}).click();
+  assert.equal((await createdUser).status(),201);
+  const accountId=(await (await context.request.get(origin+'/api/users')).json()).users.find(u=>u.username==='browser-account').id;
+  console.log('Checking account rename');
+  const editUser=accountDialog.locator('form').filter({has:manager.getByRole('heading',{name:'Browser account',exact:true})});
+  await editUser.getByLabel('Username',{exact:true}).fill('browser-renamed');
+  const renamed=manager.waitForResponse(r=>new URL(r.url()).pathname==='/api/users/'+accountId && r.request().method()==='PATCH');
+  await editUser.getByRole('button',{name:'Save account',exact:true}).click();
+  assert.equal((await renamed).status(),200);
   await accountDialog.getByRole('button',{name:'Close dialog',exact:true}).click();
   const cards = manager.locator('.session');
+  await cards.filter({hasText:'Proxy '+sessions[0].distribution}).getByRole('button',{name:'Share',exact:true}).click();
+  console.log('Checking sharing');
+  const sharing=manager.getByRole('dialog',{name:'Share Proxy '+sessions[0].distribution,exact:true});
+  const assigned=manager.waitForResponse(r=>new URL(r.url()).pathname.endsWith('/access/'+accountId) && r.request().method()==='PUT');
+  await sharing.locator('label').filter({hasText:'Browser account'}).locator('select').selectOption('viewer');
+  assert.equal((await assigned).status(),200);
+  await sharing.getByRole('button',{name:'Close dialog',exact:true}).click();
+  const userContext=await browser.newContext({ignoreHTTPSErrors:true});
+  const userPage=await userContext.newPage();userPage.setDefaultTimeout(15000);
+  async function signInUser(secret) {
+    await userPage.getByLabel('Username',{exact:true}).fill('browser-renamed');
+    await userPage.getByLabel('Password',{exact:true}).fill(secret);
+    await userPage.getByRole('button',{name:'Sign in',exact:true}).click();
+    await userPage.getByRole('button',{name:'Browser account',exact:true}).waitFor();
+  }
+  await userPage.goto(origin);await signInUser(password);
+  await userPage.locator('.session').waitFor();
+  assert.equal(await userPage.locator('.session').count(),1);
+  assert.equal(await userPage.getByRole('button',{name:'Share',exact:true}).count(),0);
+  await userPage.getByRole('button',{name:'Browser account',exact:true}).click();
+  const ownAccount=userPage.getByRole('dialog',{name:'Account',exact:true});
+  assert.equal(await ownAccount.getByRole('button',{name:'Create user',exact:true}).count(),0);
+  assert.equal(await ownAccount.getByLabel('Username',{exact:true}).count(),0);
+  await ownAccount.getByLabel('Current password',{exact:true}).fill(password);
+  await ownAccount.getByLabel('New password',{exact:true}).fill('browser replacement password');
+  await ownAccount.getByRole('button',{name:'Change password and sign out',exact:true}).click();
+  await signInUser('browser replacement password');
+  await userContext.close();
+  console.log('Account creation, rename, sharing, user restrictions, password change and re-login passed');
+  const current=await (await context.request.get(origin+'/api/me')).json();
+  assert.equal((await context.request.delete(origin+'/api/users/'+accountId,{headers:{Origin:origin,'X-Innkeeper-CSRF':current.csrf_token},data:{}})).status(),204);
+
   for (let index = 0; index < sessions.length; index++) {
     const session = sessions[index], prefix = '/e/' + session.id;
     const card = cards.filter({ hasText: 'Proxy ' + session.distribution });
