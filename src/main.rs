@@ -1670,6 +1670,13 @@ async fn main() -> Result<()> {
             Some("reset-password") if std::env::args().nth(3).as_deref() == Some("--id") => {
                 let id = std::env::args().nth(4).context("Supply --id UUID")?;
                 accounts::valid_id(&id)?;
+                let target = id.clone();
+                let account = db
+                    .run(move |db| accounts::read_user(db, "id", &target))
+                    .await?;
+                if account.is_none_or(|u| !u.enabled) {
+                    bail!("Enabled account not found")
+                }
                 let password = rpassword::prompt_password("New password: ")?;
                 let confirm = rpassword::prompt_password("Repeat password: ")?;
                 if password != confirm {

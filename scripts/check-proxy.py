@@ -20,6 +20,7 @@ import tempfile
 import time
 import uuid
 from sqlite_fixture import seed
+from auth_fixture import Client
 
 TOKEN = "opaque+/=?%:token"
 
@@ -94,13 +95,14 @@ def backend():
                 self.wfile.flush()
                 return
             body = json.dumps({"path": self.path, "session": os.environ["SESSION_ID"],
-                               "leaked": self.headers.get("X-Remove-Me"),
+                               "leaked": self.headers.get("X-Remove-Me"), "cookie": self.headers.get("Cookie"), "csrf": self.headers.get("X-Innkeeper-CSRF"),
                                "forwarded": self.headers.get("Forwarded"), "closed_stalls": Handler.closed_stalls}).encode()
             self.send_response(200)
             self.send_header("Content-Length", str(len(body)))
             self.send_header("Connection", "X-Remove-Response")
             self.send_header("X-Remove-Response", "private")
             self.send_header("Service-Worker-Allowed", "/")
+            self.send_header("Set-Cookie", "innkeeper_session=poison; Path=/api")
             self.end_headers()
             self.wfile.write(body)
 
@@ -140,7 +142,7 @@ def check():
                 sid = str(uuid.uuid4())
                 port = next(available_ports)
                 name = "innkeeper-" + sid
-                args = ["docker", "run", "-d", "--name", name, "--label", "io.innkeeper.owner=" + owner,
+                args = ["docker", "run", "-d", "--name", name, "--label", "io.innkeeper.installation=" + owner,
                         "--network", network, "-e", "SESSION_ID=" + sid, "-p", f"0.0.0.0:{port}:{port}/udp"]
                 if not docker_mode:
                     args += ["-p", f"127.0.0.1:{port}:19443/tcp"]
@@ -185,7 +187,9 @@ def check():
                     time.sleep(.1)
             else:
                 raise AssertionError("Manager did not start")
-            admin = {"Authorization": "Bearer " + (data / "admin-token").read_text().strip()}
+            account = Client(("http" if plain else "https") + "://127.0.0.1:29300")
+            account.setup()
+            admin = {"Cookie": account.cookie}
             headers = {"Authorization": "Bearer " + TOKEN}
             assert request("/api/sessions")[0] == 401
             assert request("/api/sessions", headers=admin)[0] == 200
@@ -195,15 +199,14 @@ def check():
                 assert json.loads(request(prefix + "/", headers=headers)[2])["session"] == session["id"]
                 assert request(prefix + "/api/windows")[0] == 401
                 status, response_headers, body = request(prefix + "/api/windows?q=a%2Fb&x=1", headers={**headers,
-                    "Connection": "X-Remove-Me", "X-Remove-Me": "private", "Forwarded": "host=evil"})
+                    "Connection": "X-Remove-Me", "X-Remove-Me": "private", "Forwarded": "host=evil", "Cookie":"innkeeper_session=private", "X-Innkeeper-CSRF":"private"})
                 parsed = json.loads(body)
                 assert status == 200 and parsed["session"] == session["id"]
                 assert parsed["path"] == prefix + "/api/windows?q=a%2Fb&x=1"
                 assert parsed["leaked"] is None and parsed["forwarded"] is None
                 assert "X-Remove-Response" not in response_headers
                 assert "Service-Worker-Allowed" not in response_headers
-                status, _, body = request("/api/sessions/" + session["id"] + "/link", "POST", headers=admin)
-                assert status == 200 and json.loads(body)["url"].startswith(prefix + "/#token=")
+                assert "Set-Cookie" not in response_headers and parsed["cookie"] is None and parsed["csrf"] is None
             prefix = "/e/" + sessions[0]["id"]
             with concurrent.futures.ThreadPoolExecutor(max_workers=32) as pool:
                 statuses = list(pool.map(lambda _: request(prefix + "/api/windows", headers=headers)[0], range(32)))

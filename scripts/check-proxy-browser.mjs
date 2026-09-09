@@ -5,7 +5,7 @@ import { chromium } from '../web/node_modules/playwright-core/index.mjs';
 
 const work = '/work', origin = process.env.PROXY_BROWSER_ORIGIN || 'https://127.0.0.1:29301';
 const sessions = JSON.parse(await readFile(work + '/browser.json', 'utf8'));
-const admin = (await readFile(work + '/data/admin-token', 'utf8')).trim();
+const password = 'fixture password with enough characters';
 const browser = await chromium.launch({ executablePath: '/usr/bin/chromium', headless: true, args: ['--no-sandbox'] });
 let success = false;
 try {
@@ -17,21 +17,35 @@ try {
   });
   const manager = await context.newPage();
   await manager.goto(origin);
-  await manager.getByLabel('Administrator token').fill(admin);
+  await manager.getByLabel('Username', {exact:true}).fill('fixture');
+  await manager.getByLabel('Password', {exact:true}).fill(password);
   await manager.getByRole('button', { name: 'Sign in', exact: true }).click();
+  await manager.getByRole('button', {name:'Fixture Administrator',exact:true}).waitFor();
+  // Another tab replaces the cookie while this tab retains its previous CSRF value.
+  const previous = await (await context.request.get(origin + '/api/me')).json();
+  assert.equal((await context.request.post(origin + '/api/logout', {headers:{Origin:origin,'X-Innkeeper-CSRF':previous.csrf_token},data:{}})).status(),204);
+  assert.equal((await context.request.post(origin + '/api/login', {headers:{Origin:origin},data:{username:'fixture',password}})).status(),200);
+  const recovered = manager.waitForResponse(r=>new URL(r.url()).pathname==='/api/me' && r.status()===200);
+  await manager.evaluate(() => window.dispatchEvent(new Event('focus')));
+  await recovered;
+  await manager.getByRole('button', {name:'Fixture Administrator',exact:true}).click();
+  const accountDialog=manager.getByRole('dialog',{name:'Account',exact:true});
+  const saved=manager.waitForResponse(r=>new URL(r.url()).pathname==='/api/me' && r.request().method()==='PATCH');
+  await accountDialog.getByRole('button',{name:'Save display name',exact:true}).click();
+  assert.equal((await saved).status(),200);
+  await accountDialog.getByRole('button',{name:'Close dialog',exact:true}).click();
   const cards = manager.locator('.session');
   for (let index = 0; index < sessions.length; index++) {
     const session = sessions[index], prefix = '/e/' + session.id;
-    const card = cards.filter({ hasText: index === 0 ? 'Proxy arch' : 'Proxy debian' });
+    const card = cards.filter({ hasText: 'Proxy ' + session.distribution });
     const popup = manager.waitForEvent('popup');
     await card.getByRole('button', { name: 'Open', exact: true }).click();
     const page = await popup;
     await page.waitForFunction(() => window.elsewhere?.store.get().role === 'controller');
     await page.waitForFunction(() => elsewhere.store.get().stats.frames > 0);
     assert.equal(new URL(page.url()).pathname, prefix + '/');
-    assert.equal(await page.evaluate(() => sessionStorage.getItem('innkeeper-token')), null);
     assert.equal(await page.evaluate(() => window.opener), null);
-    assert.equal(await manager.evaluate(() => sessionStorage.getItem('innkeeper-token')), admin);
+    assert.equal(await manager.evaluate(() => Object.keys(sessionStorage).length), 0);
     assert.equal(await page.evaluate(() => document.baseURI), origin + prefix + '/');
     assert.ok((await page.evaluate(() => elsewhere.snapshot(null).then(blob => blob.size))) > 0);
     const control = new URLSearchParams(session.link.split('#')[1]).get('token');
@@ -77,8 +91,20 @@ try {
     await viewer.goto(origin + prefix + '/#' + new URLSearchParams({ token: session.viewer }));
     await viewer.waitForFunction(() => window.elsewhere?.store.get().role === 'viewer');
     await viewer.waitForFunction(() => elsewhere.store.get().stats.frames > 0);
-    console.log(`${index === 0 ? 'Arch' : 'Debian'}: Open/token isolation, assets, decoded frames, files, MCP, terminal, direct WebRTC and fallback, viewer passed`);
-    // Leave both controller tabs open to exercise simultaneous instance preferences and tokens.
+    assert.equal(await viewer.getByRole('button', {name:'Broadcasts',exact:true}).count(), 0);
+    console.log(`${session.distribution}: Open/token isolation, assets, decoded frames, files, MCP, terminal, direct WebRTC and fallback, viewer passed`);
+    const identity = await (await context.request.get(origin + '/api/me')).json();
+    const users = await (await context.request.get(origin + '/api/users')).json();
+    const viewerUser = users.users.find(user => user.username === 'viewer');
+    const changed = await context.request.put(origin + `/api/sessions/${session.id}/access/${viewerUser.id}`, {
+      headers: {'Origin':origin, 'X-Innkeeper-CSRF':identity.csrf_token}, data:{role:'interactive'},
+    });
+    assert.equal(changed.status(),200,await changed.text());
+    await viewer.waitForFunction(() => elsewhere.store.get().status === 'unauthorized');
+    assert.equal(await page.evaluate(() => elsewhere.store.get().status), 'connected');
+    assert.equal((await context.request.get(origin + prefix + '/api/me', {headers:{Authorization:'Bearer '+session.viewer}})).status(),401);
+    console.log('Revocation disconnects the Viewer while the other user remains connected');
+    // Leave controller tabs open to exercise simultaneous instance preferences and tokens.
   }
   success = true;
 } finally {

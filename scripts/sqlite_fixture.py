@@ -19,7 +19,7 @@ def database(data):
         connection.close()
 
 
-def seed(data, sessions, owner):
+def seed(data, sessions, installation_id):
     env = dict(os.environ, INNKEEPER_DATA_DIR=str(data), INNKEEPER_LISTEN='127.0.0.1:0',
                INNKEEPER_IN_DOCKER='0', INNKEEPER_DOCKER_CONTAINER='', INNKEEPER_DOCKER_NETWORK='',
                INNKEEPER_TLS_CERT='', INNKEEPER_TLS_KEY='')
@@ -32,7 +32,7 @@ def seed(data, sessions, owner):
             if (Path(data) / 'state.sqlite3').exists():
                 try:
                     with database(data) as db:
-                        if db.execute('SELECT owner FROM metadata').fetchone():
+                        if db.execute('SELECT installation_id FROM metadata').fetchone():
                             break
                 except sqlite3.DatabaseError:
                     pass
@@ -43,7 +43,7 @@ def seed(data, sessions, owner):
         process.terminate()
         process.communicate(timeout=10)
     with database(data) as db:
-        db.execute('UPDATE metadata SET owner = ?', [owner])
+        db.execute('UPDATE metadata SET installation_id = ?', [installation_id])
         for s in sessions:
             db.execute('''INSERT INTO sessions
                 (id,name,distribution,port,started_ms,status,stage,error,repair_available,upgrade_started_ms)

@@ -306,6 +306,18 @@ pub async fn internal(app: &crate::App, s: &Session) -> Result<String> {
             }
             retire(app, &s.id, &t.id).await?;
         }
+        // The HTTP listener starts after Elsewhere initializes its database.
+        // Wait for it before the CLI opens that database on a fresh machine.
+        let probe = app
+            .client
+            .get(format!("{url}/api/me"))
+            .send()
+            .await
+            .map_err(|_| anyhow::anyhow!("Waiting for Elsewhere initialization"))?;
+        ensure!(
+            probe.status() == StatusCode::UNAUTHORIZED,
+            "Waiting for Elsewhere initialization"
+        );
         app.owned(&s.id).await?;
         let output = tokio::time::timeout(
             Duration::from_secs(10),
@@ -628,4 +640,33 @@ pub async fn connect(
         }.await;
         match result{Ok(token)=>Ok(Redirect::to(&format!("/e/{id}/#token={token}")).into_response()),Err(_)=>{if ready(&app,&id).await{failed(&app,&id).await;}let mut res=accounts::unavailable().into_response();res.headers_mut().insert(header::RETRY_AFTER,"5".parse().unwrap());Ok(res)}}
     }).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn retry_delays_are_bounded_and_do_not_reset_on_observation() {
+        let mut retry = Retry::default();
+        assert!(retry.ready());
+        for seconds in [5, 10, 20, 40, 80, 160, 300, 300] {
+            let before = Instant::now();
+            retry.fail();
+            let deadline = retry.deadline.unwrap();
+            assert!(deadline.duration_since(before) >= Duration::from_secs(seconds));
+            assert!(deadline.duration_since(before) < Duration::from_secs(seconds + 1));
+            for _ in 0..10 {
+                assert!(!retry.ready());
+                assert_eq!(retry.deadline, Some(deadline));
+            }
+            retry.deadline = Some(Instant::now() - Duration::from_secs(1));
+            assert!(retry.ready());
+        }
+        assert_eq!(grants("manager"), grants("interactive"));
+        assert!(grants("viewer").is_subset(&grants("interactive")));
+        for role in ["viewer", "interactive", "manager"] {
+            assert!(!grants(role).contains("tokens.manage"));
+            assert!(!grants(role).contains("server.manage"));
+        }
+    }
 }

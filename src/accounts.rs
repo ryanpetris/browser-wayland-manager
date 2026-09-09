@@ -358,10 +358,17 @@ pub async fn guard(auth: Auth, State(app): State<Shared>, req: Request, next: Ne
                 .get(header::ORIGIN)
                 .and_then(|v| v.to_str().ok())
                 .ok_or_else(forbidden)?;
-            if origin != format!("https://{host}") {
+            let form = path.ends_with("/connect");
+            // Native form navigation under no-referrer sends Origin: null.
+            // Fetch metadata still attests the same-origin source; the form also requires CSRF.
+            let private_navigation = form
+                && origin == "null"
+                && headers
+                    .get("sec-fetch-site")
+                    .is_some_and(|v| v == "same-origin");
+            if origin != format!("https://{host}") && !private_navigation {
                 return Err(forbidden());
             }
-            let form = path.ends_with("/connect");
             let content = headers
                 .get(header::CONTENT_TYPE)
                 .and_then(|v| v.to_str().ok())
@@ -660,10 +667,10 @@ pub async fn write_password(store: &Store, id: String, hash: String) -> Result<(
             let tx = db.transaction()?;
             ensure!(
                 tx.execute(
-                    "UPDATE users SET password_hash=?1 WHERE id=?2 AND enabled=1",
+                    "UPDATE users SET password_hash=?1 WHERE id=?2",
                     params![hash, id]
                 )? == 1,
-                "Enabled account not found"
+                "Account not found"
             );
             tx.execute("DELETE FROM login_sessions WHERE user_id=?1", [id])?;
             tx.commit()?;
@@ -864,6 +871,15 @@ async fn reset_password(
         let hash = hash_password(input.password).await?;
         let _guard = app.authorization.write().await;
         admin(&app, &auth).await?;
+        let target = id.clone();
+        if app
+            .db
+            .run(move |db| read_user(db, "id", &target))
+            .await?
+            .is_none()
+        {
+            return Err(Error(StatusCode::NOT_FOUND, "User not found".into()));
+        }
         write_password(&app.db, id, hash).await?;
         Ok(StatusCode::NO_CONTENT)
     })

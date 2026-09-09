@@ -50,6 +50,14 @@ with tempfile.TemporaryDirectory(prefix='innkeeper-accounts-') as temporary:
         with db() as conn:
             hashes=[r[0] for r in conn.execute('SELECT password_hash FROM users')]
         assert len(set(hashes))==2 and all(h.startswith('$argon2id$v=19$m=19456,t=2,p=1$') for h in hashes)
+        disabled=a.api('/users','POST',dict(username='disabled',display_name='Disabled',password=PASSWORD))['user']
+        a.api('/users/'+disabled['id'],'PATCH',{'enabled':False})
+        a.api('/users/'+disabled['id']+'/password','PUT',{'password':'reset while disabled password'})
+        a.api('/users/'+disabled['id'],'PATCH',{'enabled':True})
+        recovered=Client(a.origin);recovered.login('disabled','reset while disabled password')
+        recovered.api('/me/password','PUT',dict(current_password='reset while disabled password',password='self service replacement password'))
+        assert recovered.request('/me')[0]==401
+        assert a.request('/users/'+str(uuid.uuid4())+'/password','PUT',{'password':PASSWORD})[0]==404
         viewer=Client(a.origin);viewer.login('person')
         assert viewer.request('/users')[0]==403
         assert viewer.request('/me','PATCH',{'username':'changed'})[0]==400

@@ -8,3 +8,5 @@
 
 /.elsewhere-local/
 /tls/
+
+__pycache__/

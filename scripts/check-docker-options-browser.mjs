@@ -7,7 +7,7 @@ import { chromium } from '../web/node_modules/playwright-core/index.mjs';
 const dockerArgs = ['--security-opt=seccomp=unconfined', '--security-opt=apparmor=unconfined', '--cap-add=SYS_ADMIN'];
 const session = {
   id: 'docker-options-fixture', name: 'Steam', distribution: 'debian', packages: [],
-  docker_args: dockerArgs, status: 'stopped', screen_size: null, kiosk: false,
+  access_role: 'manager', docker_args: dockerArgs, status: 'stopped', screen_size: null, kiosk: false,
   startup_command: '', settings_pending: false,
 };
 const server = createServer(async (request, response) => {
@@ -28,8 +28,8 @@ try {
   page.on('pageerror', error => errors.push(error.message));
   await page.route('**/api/**', async route => {
     const request = route.request(), path = new URL(request.url()).pathname;
-    if (request.headers().authorization !== 'Bearer fixture-admin') {
-      await route.fulfill({ status: 401, json: {} });
+    if (path === '/api/me') {
+      await route.fulfill({json: {user:{id:'fixture',username:'fixture',display_name:'Fixture',role:'administrator'},csrf_token:'fixture-csrf',session_expires_at_ms:Date.now()+7*86400000,server_time_ms:Date.now()}});
     } else if (path === '/api/sessions' && request.method() === 'GET') {
       await route.fulfill({ json: { sessions: [session], version: 'fixture' } });
     } else if (path === '/api/sessions' && request.method() === 'POST') {
@@ -42,8 +42,6 @@ try {
     }
   });
   await page.goto(`http://127.0.0.1:${server.address().port}`);
-  await page.getByLabel('Administrator token').fill('fixture-admin');
-  await page.getByRole('button', { name: 'Sign in', exact: true }).click();
   await page.getByRole('button', { name: 'New session', exact: true }).click();
   const create = page.getByRole('dialog', { name: 'New session', exact: true });
   await create.getByText('Import profile', { exact: true }).click();
@@ -62,11 +60,11 @@ try {
     assert.equal(await options.inputValue(), dockerArgs.join('\n'));
     assert.equal(await create.getByLabel('Session name').inputValue(), 'Steam');
   }
-  await importProfile({ name: 'Legacy profile' });
+  await importProfile({ name: 'Basic profile' });
   assert.equal(await options.inputValue(), '');
-  const legacyRequest = page.waitForRequest(request => request.method() === 'POST' && new URL(request.url()).pathname === '/api/sessions');
+  const basicRequest = page.waitForRequest(request => request.method() === 'POST' && new URL(request.url()).pathname === '/api/sessions');
   await create.getByRole('button', { name: 'Create session', exact: true }).click();
-  assert.deepEqual((await legacyRequest).postDataJSON().docker_args, []);
+  assert.deepEqual((await basicRequest).postDataJSON().docker_args, []);
   await create.waitFor({ state: 'detached' });
 
   await page.getByRole('button', { name: 'New session', exact: true }).click();
@@ -94,7 +92,7 @@ try {
   });
   await edit.waitFor({ state: 'detached' });
   assert.deepEqual(errors, []);
-  console.log('Docker options: profile imports, legacy reset, repeated creation arguments, read-only settings and Save payload passed');
+  console.log('Docker options: profile imports, default options, repeated creation arguments, read-only settings and Save payload passed');
 } finally {
   await browser.close();
   await new Promise(resolve => server.close(resolve));

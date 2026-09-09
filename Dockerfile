@@ -17,6 +17,9 @@ RUN if [ -z "$INNKEEPER_VERSION" ]; then unset INNKEEPER_VERSION; fi; \
     rustup component add rustfmt && cargo test --locked && cargo fmt --check && \
     test "$(target/release/elsewhere-innkeeper --version)" = "elsewhere-innkeeper ${INNKEEPER_VERSION:-0.0.0-dev}"
 
+RUN INNKEEPER_BINARY=/src/target/release/elsewhere-innkeeper python3 scripts/check-accounts.py && \
+    INNKEEPER_BINARY=/src/target/release/elsewhere-innkeeper python3 scripts/check-token-sync.py
+
 RUN useradd --create-home local-check && runuser -u local-check -- python3 scripts/check-elsewhere-local.py
 RUN runuser -u local-check -- env INNKEEPER_BINARY=/src/target/release/elsewhere-innkeeper python3 scripts/check-tls.py
 
@@ -34,7 +37,7 @@ FROM runtime AS proxy-rig
 RUN apt-get update && apt-get install -y --no-install-recommends python3 openssl zstd \
     && rm -rf /var/lib/apt/lists/* && useradd -m elsewhere
 COPY --chmod=755 scripts/check-proxy.py /check-proxy.py
-COPY scripts/sqlite_fixture.py /sqlite_fixture.py
+COPY scripts/sqlite_fixture.py scripts/auth_fixture.py /
 RUN ln -s /check-proxy.py /usr/local/bin/elsewhere
 
 FROM web AS proxy-browser

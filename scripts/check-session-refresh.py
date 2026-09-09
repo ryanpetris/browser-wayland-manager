@@ -4,6 +4,9 @@
 Uses tiny real Arch/Debian packages and disposable sessions to check upgrades and settings.
 """
 import concurrent.futures
+import secrets
+import uuid
+from auth_fixture import Client
 import http.server
 import json
 from sqlite_fixture import database, settings as stored_settings, reject_updates
@@ -39,20 +42,50 @@ with tempfile.TemporaryDirectory(prefix="innkeeper-refresh-") as temporary:
         )
     (recipes / "packages.sh").write_text("exit 0\n")
     # Exercise the production launcher with a fixture session bus and desktop.
+    permissions = ['apps.launch','audio.listen','broadcasts.manage','camera.send','clipboard.read','clipboard.write','commands.execute','desktop.control','desktop.view','dragdrop.upload','files.browse','files.download','files.manage','files.upload','microphone.send','tokens.manage','server.manage']
+    inventories = {}
     class Ready(http.server.BaseHTTPRequestHandler):
-        def do_GET(self):
+        def reply(self, status, body=None):
+            self.send_response(status); self.send_header('Content-Type','application/json'); self.end_headers()
+            if body is not None: self.wfile.write(json.dumps(body).encode())
+        def inventory(self):
+            with database(data) as db:
+                sid = db.execute('SELECT id FROM sessions WHERE port=?',[self.server.server_port]).fetchone()[0]
+            entries = inventories.setdefault(sid,{})
+            lines=run('docker','exec','innkeeper-'+sid,'cat','/home/elsewhere/.config/elsewhere/fixture-tokens').splitlines()
+            for line in lines:
+                token_id, secret = line.split()
+                entries.setdefault(secret,dict(id=token_id,label='Admin',created_at_ms=0,expires_at_ms=None,permissions=permissions))
+            return entries
+        def authorized(self):
+            if not self.headers.get('Authorization'): self.reply(401); return None
             try:
-                with database(data) as db:
-                    sid = db.execute("SELECT id FROM sessions WHERE port = ?", [self.server.server_port]).fetchone()[0]
-                token = run("docker", "exec", "--user", "elsewhere", "--env", "HOME=/home/elsewhere", "innkeeper-" + sid, "elsewhere", "token", "--viewer")
-                authenticated = self.headers.get("Authorization") == "Bearer " + token
-            except Exception:
-                authenticated = False
-            self.send_response(503 if (work / "not-ready").exists() else 200 if authenticated else 401)
-            self.end_headers()
-            self.wfile.write(b"[]")
-        def log_message(self, *args):
-            pass
+                entries=self.inventory(); secret=self.headers.get('Authorization','').removeprefix('Bearer ')
+                if secret not in entries: self.reply(401);return None
+                if (work/'not-ready').exists(): self.reply(503);return None
+                return entries,secret
+            except Exception: self.reply(503);return None
+        def do_GET(self):
+            auth=self.authorized()
+            if auth is None:return
+            entries,secret=auth
+            if self.path.endswith('/api/me'):self.reply(200,dict(metadata=entries[secret],permissions=entries[secret]['permissions'],available_permissions=permissions,features={}))
+            elif self.path.endswith('/api/tokens'):self.reply(200,dict(tokens=list(entries.values())))
+            else:self.reply(200,[])
+        def do_POST(self):
+            auth=self.authorized()
+            if auth is None:return
+            entries,_=auth;body=json.loads(self.rfile.read(int(self.headers['Content-Length'])))
+            secret=secrets.token_hex(32);metadata=dict(id=str(uuid.uuid4()),label=body['label'],created_at_ms=0,expires_at_ms=body['expires_at_ms'],permissions=body['permissions']);entries[secret]=metadata
+            self.reply(201,dict(token=secret,metadata=metadata))
+        def do_DELETE(self):
+            auth=self.authorized()
+            if auth is None:return
+            entries,_=auth;token_id=self.path.rsplit('/',1)[-1]
+            for secret,meta in list(entries.items()):
+                if meta['id']==token_id:del entries[secret];self.reply(204);return
+            self.reply(404)
+        def log_message(self,*args):pass
     for port in (19500, 19501):
         readiness = http.server.ThreadingHTTPServer(("127.0.0.1", port), Ready)
         threading.Thread(target=readiness.serve_forever, daemon=True).start()
@@ -99,16 +132,15 @@ os.execv('/usr/bin/docker', ['docker', *args])
         binary.write_text("""#!/bin/sh
 set -eu
 if [ "${1:-}" = token ]; then
-    file=token
-    if [ "${2:-}" = --viewer ]; then file=viewer-token; fi
+    test "${2:-}" = create && test "${3:-}" = --admin
     if [ -f "$HOME/token-command-fails" ]; then echo credential-output-must-not-leak; echo credential-diagnostic-must-not-leak >&2; exit 1; fi
-    cat "$HOME/.config/elsewhere/$file"
-    printf '\n'
+    mkdir -p "$HOME/.config/elsewhere"
+    secret=$(od -An -N32 -tx1 /dev/urandom | tr -d ' \n')
+    id=$(cat /proc/sys/kernel/random/uuid)
+    printf '%s %s\n' "$id" "$secret" >> "$HOME/.config/elsewhere/fixture-tokens"
+    printf '%s\n' "$secret"
     exit 0
 fi
-mkdir -p "$HOME/.config/elsewhere"
-if [ ! -f "$HOME/.config/elsewhere/token" ]; then printf 'opaque control+/=?%%:initial' > "$HOME/.config/elsewhere/token"; fi
-if [ ! -f "$HOME/.config/elsewhere/viewer-token" ]; then printf 'opaque.viewer+/=?%%:initial' > "$HOME/.config/elsewhere/viewer-token"; fi
 printf '%s\\0' "$@" > "$HOME/launch-args"
 printf '%s\n' LABEL >> "$HOME/launches"
 echo 'https://example.invalid/#token=opaque control+/=?%%:initial'
@@ -134,7 +166,7 @@ exec sleep 10000
                 f"Package: elsewhere\nVersion: {installed}-1\nArchitecture: amd64\n"
                 "Maintainer: Test <test@example.invalid>\nDescription: Refresh fixture\n"
             )
-            path = cache / f"elsewhere_{version}-1_amd64.deb"
+            path = cache / f"elsewhere_{version}-1_debian-13_amd64.deb"
             run("dpkg-deb", "--build", "--root-owner-group", str(root), str(path))
         return path
 
@@ -163,16 +195,8 @@ exec sleep 10000
     manager = subprocess.Popen(["elsewhere-innkeeper"], env=env, stdout=log, stderr=log)
     created = []
 
-    def api(path, method="GET", body=None):
-        request = urllib.request.Request(
-            "http://127.0.0.1:29300/api" + path, method=method,
-            data=json.dumps(body).encode() if body is not None else None,
-            headers={"Authorization": "Bearer " + (data / "admin-token").read_text().strip(),
-                     "Content-Type": "application/json"},
-        )
-        with urllib.request.urlopen(request, timeout=10) as response:
-            payload = response.read()
-            return json.loads(payload) if payload else None
+    account = Client('http://127.0.0.1:29300')
+    api = account.api
 
     def wait(check, timeout=45):
         deadline = time.monotonic() + timeout
@@ -235,7 +259,9 @@ exec sleep 10000
         raise AssertionError("Request unexpectedly succeeded")
 
     try:
-        wait(lambda: (data / "admin-token").exists())
+        wait(lambda: (data / "state.sqlite3").exists())
+        time.sleep(1)
+        account.setup()
         for invalid in (["--privileged=true"], ["--name=override"], ["--network=host"],
                         ["--entrypoint=sh"], ["--security-opt", "seccomp=unconfined"],
                         ["--cap-add="], ["--cap-add=SYS_ADMIN\n"], ["--cap-add=SYS_ADMIN\r"],
@@ -246,7 +272,7 @@ exec sleep 10000
             assert "Docker" in error or "docker" in error, error
         for invalid in (None, "--cap-add=SYS_ADMIN", [42]):
             rejected("/sessions", "POST", {"name": "Invalid option type", "distribution": "debian",
-                     "packages": [], "docker_args": invalid}, 422)
+                     "packages": [], "docker_args": invalid}, 400)
         assert api("/sessions")["sessions"] == []
         assert not (tools / "resource-created").exists()
         print("Invalid Docker options rejected before session or Docker resource creation", flush=True)
@@ -275,7 +301,7 @@ exec sleep 10000
                 assert state(sid)["expected_version"] == version
                 assert state(sid)["installed_version"] == version + "-1"
                 assert state(sid)["version_status"] == "current"
-                assert api(f"/sessions/{sid}/link", "POST")["url"]
+                assert account.connect(sid)
                 rejected_action(sid, "upgrade", 409)
                 # Start uses the installed package even if the local artifact disappears.
                 cached = package(distro, "first")
@@ -486,7 +512,7 @@ exec sleep 10000
             wait(lambda: "Fixture interrupted download" in api(f"/sessions/{sid}/logs")["text"])
             restart_manager()
             wait(lambda: state(sid)["status"] == "running")
-            assert api(f"/sessions/{sid}/link", "POST")["url"]
+            assert account.connect(sid)
             assert run("docker", "exec", name, "cat", "/home/elsewhere/launches").splitlines()[-1] == "old-again"
             package(distro, "upgraded")
             # A slow maintenance operation stays monitored across restart and late success.
@@ -531,30 +557,8 @@ exec sleep 10000
             api(f"/sessions/{sid}/settings", "PUT", dict(pending_profile, screen_size=None))
             api(f"/sessions/{sid}/relaunch", "POST")
             wait(lambda: state(sid)["status"] == "running")
-            # Credentials are read on demand and opaque, with no database copies.
-            def token(viewer=False):
-                return run("docker", "exec", "--user", "elsewhere", "--env", "HOME=/home/elsewhere", name, "elsewhere", "token", *(["--viewer"] if viewer else []))
-            def link_token():
-                link = api(f"/sessions/{sid}/link", "POST")["url"]
-                return urllib.parse.parse_qs(urllib.parse.urlparse(link).fragment)["token"][0]
-            assert link_token() == token()
-            run("docker", "exec", name, "sh", "-c", "printf 'rotated opaque+/=?%%:value' > /home/elsewhere/.config/elsewhere/token; printf 'rotated.viewer+/=?%%:value' > /home/elsewhere/.config/elsewhere/viewer-token")
-            assert link_token() == token()
-            run("docker", "exec", name, "sh", "-c", "cat /home/elsewhere/.config/elsewhere/token > /proc/1/fd/1; printf '\\n' > /proc/1/fd/1")
-            assert token() not in api(f"/sessions/{sid}/logs")["text"]
-            assert "opaque control" not in api(f"/sessions/{sid}/logs")["text"]
-            run("docker", "exec", name, "touch", "/home/elsewhere/token-command-fails")
-            try:
-                api(f"/sessions/{sid}/link", "POST")
-                raise AssertionError("Failed token command accepted")
-            except urllib.error.HTTPError as e:
-                assert e.code == 500 and b"must-not-leak" not in e.read()
-            api(f"/sessions/{sid}/relaunch", "POST")
-            wait(lambda: state(sid)["error"] and "token" in state(sid)["error"])
-            assert state(sid)["status"] == "preparing"
-            assert "must-not-leak" not in json.dumps(state(sid))
-            run("docker", "exec", name, "rm", "/home/elsewhere/token-command-fails")
-            wait(lambda: state(sid)["status"] == "running")
+            # Connect persists credentials and reuses the same active token.
+            assert account.connect(sid) == account.connect(sid)
             baseline = len(run("docker", "exec", name, "cat", "/home/elsewhere/launches").splitlines())
             run("docker", "exec", name, "sh", "-c", "echo retained > /root/settings-sentinel")
             restart_manager()
@@ -580,9 +584,9 @@ exec sleep 10000
                 rejected(f"/sessions/{sid}/settings", "PUT", bad, 400)
             missing = dict(edited)
             del missing["screen_size"]
-            rejected(f"/sessions/{sid}/settings", "PUT", missing, 422)
-            rejected(f"/sessions/{sid}/settings", "PUT", dict(edited, packages=[]), 422)
-            rejected(f"/sessions/{sid}/settings", "PUT", dict(edited, docker_args=[]), 422)
+            rejected(f"/sessions/{sid}/settings", "PUT", missing, 400)
+            rejected(f"/sessions/{sid}/settings", "PUT", dict(edited, packages=[]), 400)
+            rejected(f"/sessions/{sid}/settings", "PUT", dict(edited, docker_args=[]), 400)
             # A failed write cannot publish edits in memory.
             reject_updates(data, sid, True)
             rejected(f"/sessions/{sid}/settings", "PUT", renamed, 500)
@@ -659,7 +663,7 @@ exec sleep 10000
             check_docker_args(sid, docker_args)
             print(f"{distro}: Docker security options and capabilities survive restart, upgrade and relaunch", flush=True)
             print(f"{distro}: saved settings, resets, quoting, pending state, persistence, serialized relaunch and failure retry passed", flush=True)
-            print(f"{distro}: explicit upgrade, stopped version detection, newer warning, launch-only start, cancellation, opaque token commands and restart persistence passed", flush=True)
+            print(f"{distro}: explicit upgrade, stopped version detection, newer warning, launch-only start, cancellation, managed token reuse and restart persistence passed", flush=True)
     except BaseException:
         with database(data) as db:
             print("Stored settings:", [dict(row) for row in db.execute("SELECT * FROM session_settings")], flush=True)

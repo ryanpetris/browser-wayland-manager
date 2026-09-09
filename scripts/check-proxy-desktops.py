@@ -8,7 +8,9 @@ import subprocess
 import time
 import urllib.request
 import uuid
-from sqlite_fixture import seed
+from sqlite_fixture import seed, database
+from auth_fixture import Client, PASSWORD
+import shutil
 
 work = Path('/work')
 for marker in ('browser.json', 'browser-done'):
@@ -33,19 +35,19 @@ cert, key = work / 'cert.pem', work / 'key.pem'
 subprocess.run(['openssl','req','-x509','-newkey','rsa:2048','-nodes','-days','1','-subj','/CN=localhost',
                 '-keyout',str(key),'-out',str(cert)],check=True,capture_output=True)
 env = dict(os.environ, INNKEEPER_DATA_DIR=str(data), INNKEEPER_LISTEN='0.0.0.0:29301',
-           INNKEEPER_TLS_CERT=str(cert), INNKEEPER_TLS_KEY=str(key), INNKEEPER_LOCAL_ELSEWHERE='/local/manifest.json')
+           INNKEEPER_TLS_CERT=str(cert), INNKEEPER_TLS_KEY=str(key))
+if Path('/local/manifest.json').exists(): env['INNKEEPER_LOCAL_ELSEWHERE']='/local/manifest.json'
+if Path('/packages').exists():
+    for distro, filename in [('arch','elsewhere-0.7.0-1-x86_64.pkg.tar.zst'),('debian','elsewhere_0.7.0-1_debian-13_amd64.deb')]:
+        cache=data/'packages'/'0.7.0'/'x86_64'/distro;cache.mkdir(parents=True,exist_ok=True);shutil.copyfile(Path('/packages')/filename,cache/filename)
 log = (work/'manager.log').open('w')
 manager = subprocess.Popen(['elsewhere-innkeeper'],env=env,stdout=log,stderr=log)
 context = ssl._create_unverified_context()
 origin = 'https://127.0.0.1:29301'
 created = []
 
-def api(path, method='GET', body=None):
-    req = urllib.request.Request(origin+'/api'+path,method=method,data=json.dumps(body).encode() if body is not None else None,
-            headers={'Authorization':'Bearer '+(data/'admin-token').read_text().strip(),'Content-Type':'application/json'})
-    with urllib.request.urlopen(req,context=context,timeout=20) as response:
-        body=response.read()
-        return json.loads(body) if body else None
+account=Client(origin)
+api=account.api
 
 def wait(test, timeout=120):
     deadline=time.monotonic()+timeout
@@ -59,15 +61,21 @@ def state(sid):
     return next(s for s in api('/sessions')['sessions'] if s['id']==sid)
 
 try:
-    wait(lambda:(data/'admin-token').exists())
+    wait(lambda:(data/'cert.pem').exists() or (data/'state.sqlite3').exists())
     time.sleep(1)
+    account.setup()
+    viewer_account=Client(origin)
+    viewer_user=api('/users','POST',dict(username='viewer',display_name='Viewer',password=PASSWORD))['user']
+    viewer_account.login('viewer')
     browser=[]
-    for distro in ('arch','debian'):
+    for distro in os.environ.get('PROXY_DISTROS','arch,debian').split(','):
         sid=api('/sessions','POST',dict(name='Proxy '+distro,distribution=distro,packages=['foot'],startup_command='foot',screen_size={'width':640,'height':480}))['id']
         created.append(sid)
         def ready():
             s=state(sid)
-            if s['status']=='failed': raise AssertionError(s)
+            if s['status']=='failed':
+                print(api('/sessions/'+sid+'/logs')['text'],flush=True)
+                raise AssertionError(s)
             return s['status']=='running'
         wait(ready,600)
         name='innkeeper-'+sid
@@ -81,18 +89,41 @@ try:
         assert '--rtc-port ' + str(port) in desktop
         assert '19443/tcp' not in bindings
         assert bindings[str(port)+'/udp']==[{'HostIp':'0.0.0.0','HostPort':str(port)}]
-        tokens=[subprocess.check_output(['docker','exec','--user','elsewhere','--env','HOME=/home/elsewhere',name,'elsewhere','token',*args],text=True).removesuffix('\n') for args in ([],['--viewer'])]
-        link=api('/sessions/'+sid+'/link','POST')['url']
+        api('/sessions/'+sid+'/access/'+viewer_user['id'],'PUT',{'role':'viewer'})
+        preview=account.request('/sessions/'+sid+'/preview?width=320')
+        assert preview[0]==200 and preview[2].startswith(b'\x89PNG'), preview
+        with database(data) as db: assert db.execute("SELECT count(*) FROM instance_tokens WHERE kind='user' AND session_id=?",[sid]).fetchone()[0]==0
+        link=account.connect(sid)
+        viewer_link=viewer_account.connect(sid)
+        viewer_token=viewer_link.split('#token=')[1]
+        assert account.connect(sid)==link
         with urllib.request.urlopen(origin+link.split('#')[0],context=context) as response:
             assert ('<base href="/e/'+sid+'/">').encode() in response.read()
-        req=urllib.request.Request(origin+'/e/'+sid+'/api/screenshot.png',headers={'Authorization':'Bearer '+tokens[1]})
+        req=urllib.request.Request(origin+'/e/'+sid+'/api/screenshot.png',headers={'Authorization':'Bearer '+viewer_token})
         with urllib.request.urlopen(req,context=context,timeout=20) as response: assert response.read().startswith(b'\x89PNG')
-        req=urllib.request.Request(origin+'/api/sessions/'+sid+'/preview?width=320',headers={'Authorization':'Bearer '+(data/'admin-token').read_text().strip()})
-        with urllib.request.urlopen(req,context=context,timeout=20) as response: assert response.read().startswith(b'\x89PNG')
+        req=urllib.request.Request(origin+'/e/'+sid+'/api/me',headers={'Authorization':'Bearer '+viewer_token})
+        with urllib.request.urlopen(req,context=context,timeout=20) as response:
+            identity=json.load(response)
+            assert set(identity['permissions'])=={'audio.listen','clipboard.read','desktop.view'} and identity['metadata']['expires_at_ms'] is None
+        def bearer_status(token,path='/api/me'):
+            request=urllib.request.Request(origin+'/e/'+sid+path,headers={'Authorization':'Bearer '+token})
+            try:
+                with urllib.request.urlopen(request,context=context,timeout=20) as response:return response.status
+            except urllib.error.HTTPError as error:return error.code
+        assert bearer_status(viewer_token,'/api/tokens')==403
+        # Access changes revoke remotely without creating a replacement.
+        api('/sessions/'+sid+'/access/'+viewer_user['id'],'PUT',{'role':'interactive'})
+        wait(lambda:bearer_status(viewer_token)==401)
+        with database(data) as db: assert db.execute("SELECT count(*) FROM instance_tokens WHERE kind='user' AND user_id=? AND session_id=?",[viewer_user['id'],sid]).fetchone()[0]==0
+        replacement=viewer_account.connect(sid).split('#token=')[1]
+        assert replacement!=viewer_token and bearer_status(replacement)==200
+        api('/sessions/'+sid+'/access/'+viewer_user['id'],'PUT',{'role':'viewer'})
+        wait(lambda:bearer_status(replacement)==401)
+        viewer_token=viewer_account.connect(sid).split('#token=')[1]
         api('/sessions/'+sid+'/stop','POST')
         api('/sessions/'+sid+'/start','POST')
         wait(ready)
-        browser.append(dict(id=sid,link=link,viewer=tokens[1],port=port))
+        browser.append(dict(id=sid,distribution=distro,link=link,viewer=viewer_token,port=port))
         print(distro+': package installation, plain HTTP/prefix, private mapping, public UDP, tokens, screenshots, preview, Stop/Start passed',flush=True)
     (work/'browser.json').write_text(json.dumps(browser))
     if os.environ.get('PROXY_WAIT_BROWSER')=='1':

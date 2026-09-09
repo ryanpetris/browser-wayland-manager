@@ -209,6 +209,7 @@ function App() {
         const data = await response.json();
         if (!live) return;
         setUser(data.user);
+        if (data.csrf_token !== token) { setToken(data.csrf_token); return; }
         loginClock.current = {remaining: data.session_expires_at_ms - data.server_time_ms, at: performance.now()};
         if (loginClock.current.remaining > 0 && loginClock.current.remaining <= 2 * 86400000) {
           const renewal = await api("/session/renew", {method: "POST"});
