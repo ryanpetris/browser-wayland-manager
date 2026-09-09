@@ -2,6 +2,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { ExternalLink, Loader2, Monitor, Play, Share2, SlidersHorizontal, Square, Terminal, Trash2, Wrench } from 'lucide-react';
 import { Badge, IconButton, cx } from './ui.jsx';
+import { Dialog } from './Dialog.jsx';
 
 // status → [badge tone, dot, pulse]
 const STATUS = {
@@ -58,6 +59,7 @@ export function SessionList({ sessions, layout, user, busy, api, onOpen, onLogs,
 }
 
 function SessionCard({ s, layout, user, busy, api, onOpen, onLogs, onEdit, onShare, onAction }) {
+  const [confirmingInstall, setConfirmingInstall] = useState(false);
   const [tone, dot, pulse] = STATUS[s.status] ?? STATUS.stopped;
   const manages = s.access_role === 'manager';
   const settled = ['running', 'stopped'].includes(s.status);
@@ -98,7 +100,6 @@ function SessionCard({ s, layout, user, busy, api, onOpen, onLogs, onEdit, onSha
                     : 'Relaunch to apply'}
             </Note>
           )}
-          {manages && settled && <Note>{installLabel} closes running applications and leaves the session stopped.</Note>}
           {s.error && <p className="callout callout-bad">{s.error}</p>}
         </div>
         <div className="mt-auto flex flex-wrap items-center gap-1.5 pt-4">
@@ -140,7 +141,7 @@ function SessionCard({ s, layout, user, busy, api, onOpen, onLogs, onEdit, onSha
                 className="btn btn-outline btn-sm"
                 disabled={busy[s.id] || !settled}
                 title="Install the preferred Elsewhere version and leave the session stopped."
-                onClick={() => onAction(s, 'upgrade')}
+                onClick={() => setConfirmingInstall(true)}
               >
                 <Wrench className="size-3.5" strokeWidth={1.75} />
                 {installLabel}
@@ -174,6 +175,25 @@ function SessionCard({ s, layout, user, busy, api, onOpen, onLogs, onEdit, onSha
           )}
         </div>
       </div>
+      {confirmingInstall && manages && (
+        <Dialog title={`${installLabel} ${s.name}`} close={() => setConfirmingInstall(false)}>
+          <p className="p-4 text-sm">Install the preferred Elsewhere version? Running applications will close and the session will be left stopped.</p>
+          <div className="flex justify-end gap-2 border-t border-line p-4">
+            <button type="button" className="btn btn-outline btn-sm" onClick={() => setConfirmingInstall(false)}>Cancel</button>
+            <button
+              type="button"
+              className="btn btn-primary btn-sm"
+              disabled={busy[s.id] || !settled}
+              onClick={() => {
+                setConfirmingInstall(false);
+                onAction(s, 'upgrade');
+              }}
+            >
+              {installLabel}
+            </button>
+          </div>
+        </Dialog>
+      )}
     </article>
   );
 }

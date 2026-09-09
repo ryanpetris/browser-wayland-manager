@@ -52,9 +52,25 @@ try {
       await button.waitFor();
       assert.equal(await button.isEnabled(), true);
       assert.equal(await card.locator('p').filter({ hasText: /^Elsewhere / }).innerText(), 'Elsewhere 0.7.3-1');
-      const request = page.waitForRequest(request => request.method() === 'POST' && new URL(request.url()).pathname.endsWith('/upgrade'));
+      const count = installs.length;
       await button.click();
+      const confirm = page.getByRole('dialog', { name: `${label} ${session.name}`, exact: true });
+      await confirm.waitFor();
+      assert.equal(await confirm.locator('p').innerText(), 'Install the preferred Elsewhere version? Running applications will close and the session will be left stopped.');
+      assert.equal(installs.length, count);
+      await confirm.getByRole('button', { name: 'Cancel', exact: true }).click();
+      await confirm.waitFor({ state: 'detached' });
+      assert.equal(installs.length, count);
+      await button.click();
+      await confirm.waitFor();
+      await page.keyboard.press('Escape');
+      await confirm.waitFor({ state: 'detached' });
+      assert.equal(installs.length, count);
+      await button.click();
+      const request = page.waitForRequest(request => request.method() === 'POST' && new URL(request.url()).pathname.endsWith('/upgrade'));
+      await confirm.getByRole('button', { name: label, exact: true }).click();
       assert.deepEqual((await request).postDataJSON(), {});
+      await confirm.waitFor({ state: 'detached' });
     }
   }
   session.installed_version = null;
@@ -79,7 +95,7 @@ try {
   }
   assert.equal(installs.length, 8);
   assert.deepEqual(errors, []);
-  console.log('Session installation: labels, installed version, requests, incomplete packages, states and manager access passed');
+  console.log('Session installation: labels, installed version, confirmation, cancellation, requests, incomplete packages, states and manager access passed');
 } finally {
   await browser.close();
   await new Promise(resolve => server.close(resolve));

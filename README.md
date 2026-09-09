@@ -173,6 +173,8 @@ Managers can install the preferred package on any running or stopped session. Th
 says **Upgrade** when the preferred version is newer, **Downgrade** when it is older, and
 **Reinstall** when the versions match or cannot be compared. Release versions, numbered Git
 builds, and numeric package revisions are compared numerically.
+Clicking the button opens a confirmation modal before closing running applications and leaving
+the session stopped. Cancelling leaves the session untouched.
 
 **Start** and **Relaunch** use the installed package without downloading, upgrading,
 downgrading, or prompting about an available upgrade. The install action downloads the preferred
