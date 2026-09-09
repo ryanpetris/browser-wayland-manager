@@ -86,6 +86,8 @@ or invalid explicit files fail startup. For HTTP behind an external HTTPS gatewa
 
 Restart Innkeeper after renewing certificates. An external HTTPS gateway must connect to Innkeeper using HTTP/1.1 and forward the complete path, authorization, WebSocket upgrades and streaming bodies. Session links use the browser's origin; no public-host override is needed. URL prefixes keep Elsewhere preferences and tokens separate but do not isolate applications within the browser origin.
 
+Login permits five failed attempts per username and 30 per transport peer IP each minute. Behind an HTTPS gateway, all users share the gateway IP budget. Forwarded address headers are not trusted.
+
 After changing Compose configuration, rebuild and recreate Innkeeper with `docker compose up -d --build`.
 
 Innkeeper controls Docker and keeps recoverable Elsewhere credentials in its private SQLite database. Protect its data directory, backups, and Docker socket as host-administrator resources. Back up the complete Innkeeper data directory together with session volumes. Login credentials are sent only in Secure cookies; the UI stores no login bearer secret in browser storage. No cross-origin API access is enabled.
@@ -353,7 +355,7 @@ INNKEEPER_ASSETS_DIR="$PWD" INNKEEPER_DATA_DIR="$PWD/data" ./elsewhere-innkeeper
 
 Docker must be installed and accessible to the account running Innkeeper.
 
-The pinned Elsewhere `0.5.0` release requires an explicit RTC address behind the proxy. Hostname fallback with the assigned UDP port requires an Elsewhere build containing the `--rtc-port` advertisement fix; use the local package workflow above until that fix is released.
+Elsewhere `0.7.0` advertises the assigned UDP port with hostname fallback. `INNKEEPER_RTC_ADDR` is an optional address override.
 
 ## Proxy verification
 

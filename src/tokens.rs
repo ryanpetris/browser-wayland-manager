@@ -365,7 +365,7 @@ pub async fn internal(app: &crate::App, s: &Session) -> Result<String> {
             false,
         )
         .await?;
-        inventory(app, s, &url, &secret, true).await?;
+        inventory(app, s, &url, &secret).await?;
         Ok(secret)
     }
     .await;
@@ -379,7 +379,6 @@ async fn inventory(
     s: &Session,
     url: &str,
     secret: &str,
-    _recovery: bool,
 ) -> Result<Vec<Metadata>> {
     let response = app
         .client
@@ -523,12 +522,32 @@ async fn remove_retired(
     }
     Ok(())
 }
+// Each launch gets fresh readiness scheduling; deletion deadlines stay independent.
+pub async fn launching(app: &crate::App, id: &str) {
+    app.token_retries
+        .lock()
+        .await
+        .0
+        .entry(id.into())
+        .or_default()
+        .machine = Retry::default();
+}
+pub async fn readiness(app: &crate::App, s: &Session) -> Result<()> {
+    // Listener startup is polled by reconciliation, not token-failure backoff.
+    let url = app.endpoint(s).await?;
+    let response = app.client.get(format!("{url}/api/me")).send().await?;
+    ensure!(
+        response.status() == StatusCode::UNAUTHORIZED,
+        "Waiting for Elsewhere initialization"
+    );
+    sync(app, s).await
+}
 pub async fn sync(app: &crate::App, s: &Session) -> Result<()> {
     ensure!(ready(app, &s.id).await, "Elsewhere retry pending");
     let result: Result<()> = async {
         let secret = internal(app, s).await?;
         let url = app.endpoint(s).await?;
-        let remote = inventory(app, s, &url, &secret, false).await?;
+        let remote = inventory(app, s, &url, &secret).await?;
         remove_retired(app, s, &url, &secret, &remote).await?;
         Ok(())
     }
@@ -620,11 +639,11 @@ pub async fn connect(
         return Err(accounts::forbidden());
     }
     crate::finish_operation(async move{
-        let _auth=app.authorization.read().await;let role=accounts::machine(&app,&auth,&id,false).await?;let user=accounts::current(&app,&auth).await?;
-        let lock=app.lock(&id).await;let _guard=lock.lock().await;
-        accounts::machine(&app,&auth,&id,false).await?;let s=app.session(&id).await?;if s.status!="running"{return Err(Error(StatusCode::CONFLICT,"Session is not ready".into()))}
+        let _auth=app.authorization.read().await;accounts::machine(&app,&auth,&id,false).await?;drop(_auth);
+        let (_auth,_guard)=app.operation(&id).await;
+        let role=accounts::machine(&app,&auth,&id,false).await?;let user=accounts::current(&app,&auth).await?;let s=app.session(&id).await?;if s.status!="running"{return Err(Error(StatusCode::CONFLICT,"Session is not ready".into()))}
         let result:Result<String>=async{
-            ensure!(ready(&app,&id).await,"Elsewhere retry pending");let secret=internal(&app,&s).await?;let url=app.endpoint(&s).await?;let remote=inventory(&app,&s,&url,&secret,false).await?;
+            ensure!(ready(&app,&id).await,"Elsewhere retry pending");let secret=internal(&app,&s).await?;let url=app.endpoint(&s).await?;let remote=inventory(&app,&s,&url,&secret).await?;
             let desired=grants(&role);let mut reusable=None;
             for t in recorded(&app,&id).await?.into_iter().filter(|t|t.kind=="user"&&!t.revoked&&t.user.as_deref()==Some(&user.id)){
                 if let Some(token)=t.secret.filter(|s|accounts::valid_secret(s)){

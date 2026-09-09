@@ -92,6 +92,10 @@ try {
   });
   await edit.waitFor({ state: 'detached' });
   assert.deepEqual(errors, []);
+  await page.route('**/api/me', route => route.fulfill({status:503,json:{error:'unavailable'}}));
+  await page.reload();
+  await page.getByRole('button', {name:'Sign in',exact:true}).waitFor();
+  assert.deepEqual(errors, []);
   console.log('Docker options: profile imports, default options, repeated creation arguments, read-only settings and Save payload passed');
 } finally {
   await browser.close();

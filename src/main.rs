@@ -229,6 +229,19 @@ impl App {
             .or_default()
             .clone()
     }
+    async fn operation(
+        &self,
+        id: &str,
+    ) -> (
+        tokio::sync::RwLockReadGuard<'_, ()>,
+        tokio::sync::OwnedMutexGuard<()>,
+    ) {
+        // Blocking admission takes the machine lock first. Background paths holding
+        // authorization only try the machine lock and never wait for it.
+        let operation = self.lock(id).await.lock_owned().await;
+        let authorization = self.authorization.read().await;
+        (authorization, operation)
+    }
     async fn change(&self, id: &str, f: impl FnOnce(&mut Session) + Send + 'static) -> Result<()> {
         self.db.change(id, f).await
     }
@@ -392,8 +405,8 @@ async fn settings(
         let _authorization = app.authorization.read().await;
         accounts::machine(&app, &auth, &id, true).await?;
         validate_settings(&input.name, input.screen_size, &input.startup_command)?;
-        let lock = app.lock(&id).await;
-        let _guard = lock.lock().await;
+        drop(_authorization);
+        let (_authorization, _guard) = app.operation(&id).await;
         accounts::machine(&app, &auth, &id, true).await?;
         let s = app.session(&id).await?;
         if !matches!(s.status.as_str(), "running" | "stopped") {
@@ -640,6 +653,7 @@ async fn prepare(app: Shared, id: &str, new_container: bool, attempt_ms: u64) ->
     if !matches!(s.status.as_str(), "preparing" | "upgrading") || s.started_ms != attempt_ms {
         return Ok(());
     }
+    tokens::launching(&app, id).await;
     let result: Result<()> = async {
         app.change(id, move |s| {
             s.stage = "container".into();
@@ -1192,7 +1206,7 @@ async fn reconcile(app: Shared) {
             }
             let mut readiness_error = None;
             let ready = if stage == "launch" {
-                match tokens::sync(&app, &s).await {
+                match tokens::readiness(&app, &s).await {
                     Ok(()) => true,
                     Err(_) => {
                         readiness_error = Some("Waiting for Elsewhere initialization".into());
@@ -1281,8 +1295,8 @@ async fn stop(
     finish_operation(async move {
         let _authorization = app.authorization.read().await;
         accounts::machine(&app, &auth, &id, true).await?;
-        let lock = app.lock(&id).await;
-        let _guard = lock.lock().await;
+        drop(_authorization);
+        let (_authorization, _guard) = app.operation(&id).await;
         accounts::machine(&app, &auth, &id, true).await?;
         let s = app.session(&id).await?;
         let downloading = matches!(s.stage.as_str(), "image" | "download");
@@ -1325,8 +1339,8 @@ async fn start(
     finish_operation(async move {
         let _authorization = app.authorization.read().await;
         accounts::machine(&app, &auth, &id, true).await?;
-        let lock = app.lock(&id).await;
-        let _guard = lock.lock().await;
+        drop(_authorization);
+        let (_authorization, _guard) = app.operation(&id).await;
         accounts::machine(&app, &auth, &id, true).await?;
         begin_start(&app, &id, false).await
     })
@@ -1341,8 +1355,8 @@ async fn relaunch(
     finish_operation(async move {
         let _authorization = app.authorization.read().await;
         accounts::machine(&app, &auth, &id, true).await?;
-        let lock = app.lock(&id).await;
-        let _guard = lock.lock().await;
+        drop(_authorization);
+        let (_authorization, _guard) = app.operation(&id).await;
         accounts::machine(&app, &auth, &id, true).await?;
         begin_start(&app, &id, true).await
     })
@@ -1410,8 +1424,8 @@ async fn upgrade(
     finish_operation(async move {
         let _authorization = app.authorization.read().await;
         accounts::machine(&app, &auth, &id, true).await?;
-        let lock = app.lock(&id).await;
-        let _guard = lock.lock().await;
+        drop(_authorization);
+        let (_authorization, _guard) = app.operation(&id).await;
         accounts::machine(&app, &auth, &id, true).await?;
         let s = app.session(&id).await?;
         if !matches!(s.status.as_str(), "running" | "stopped") {
@@ -1449,8 +1463,8 @@ async fn destroy(State(app): State<Shared>, auth: Auth, Path(id): Path<String>) 
     finish_operation(async move {
         let _authorization = app.authorization.read().await;
         accounts::machine(&app, &auth, &id, true).await?;
-        let lock = app.lock(&id).await;
-        let _guard = lock.lock().await;
+        drop(_authorization);
+        let (_authorization, _guard) = app.operation(&id).await;
         accounts::machine(&app, &auth, &id, true).await?;
         app.session(&id).await?;
         let ids = docker(&[
@@ -1550,8 +1564,8 @@ async fn preview(
 ) -> Api<Response> {
     let _authorization = app.authorization.read().await;
     accounts::machine(&app, &auth, &id, false).await?;
-    let lock = app.lock(&id).await;
-    let _guard = lock.lock().await;
+    drop(_authorization);
+    let (_authorization, _guard) = app.operation(&id).await;
     accounts::machine(&app, &auth, &id, false).await?;
     if !(1..=1600).contains(&q.width) {
         return Err(Error(
@@ -1594,7 +1608,8 @@ async fn preview(
             q.width
         ),
     )
-    .await?;
+    .await
+    .map_err(|_| accounts::unavailable())?;
     if !r.status().is_success() {
         return Err(Error(
             StatusCode::SERVICE_UNAVAILABLE,

@@ -4,6 +4,8 @@ import concurrent.futures
 import hashlib
 import json
 import os
+import pty
+import select
 from pathlib import Path
 import socket
 import sqlite3
@@ -38,6 +40,8 @@ with tempfile.TemporaryDirectory(prefix='innkeeper-accounts-') as temporary:
         a=candidates[next(i for i,r in enumerate(results) if r[0]==201)]
         admin=a.api('/me')['user'];assert uuid.UUID(admin['id']).version==4
         assert not a.api('/setup')['required']
+        # Configured setup refuses requests before even validating or hashing a password.
+        assert a.request('/setup','POST',dict(username='other',display_name='Other',password='short'))[0]==409
         assert a.request('/setup','POST',dict(username='other',display_name='Other',password=PASSWORD))[0]==409
         cookie=results[next(i for i,r in enumerate(results) if r[0]==201)][1]
         cookie=next(v for k,v in cookie.items() if k.lower()=='set-cookie')
@@ -105,9 +109,54 @@ with tempfile.TemporaryDirectory(prefix='innkeeper-accounts-') as temporary:
         with db() as conn:
             assert conn.execute('SELECT user_id,revoked FROM instance_tokens WHERE token_id=?',(token_id,)).fetchone()==(None,1)
             assert conn.execute('SELECT count(*) FROM sessions WHERE id=?',(sid,)).fetchone()[0]==1
+        # Ordinary requests retain the exact stored deadline.
+        with db() as conn: before=list(conn.execute('SELECT secret_hash,expires_at_unix_seconds,expires_at_nanosecond FROM login_sessions ORDER BY secret_hash'))
+        for _ in range(5): a.api('/me');a.api('/sessions')
+        with db() as conn: assert before==list(conn.execute('SELECT secret_hash,expires_at_unix_seconds,expires_at_nanosecond FROM login_sessions ORDER BY secret_hash'))
+        second_admin=a.api('/users','POST',dict(username='second-admin',display_name='Second',password=PASSWORD,role='administrator'))['user']
+        other=Client(a.origin);other.login('second-admin')
+        with concurrent.futures.ThreadPoolExecutor() as pool:
+            responses=list(pool.map(lambda pair:pair[0].request('/users/'+pair[1],'PATCH',{'role':'user'}),[(a,admin['id']),(other,second_admin['id'])]))
+        assert sorted(r[0] for r in responses)==[200,409],responses
+        with db() as conn: assert conn.execute("SELECT count(*) FROM users WHERE role='administrator' AND enabled=1").fetchone()[0]==1
+        binary=os.environ.get('INNKEEPER_BINARY','elsewhere-innkeeper')
+        locked=subprocess.run([binary,'users','list'],env=env,capture_output=True)
+        assert locked.returncode and b'Another Innkeeper' in locked.stderr
         wrong=Client(a.origin)
         assert [wrong.request('/login','POST',dict(username='missing',password=PASSWORD))[0] for _ in range(6)]==[401]*5+[429]
         a.api('/logout','POST');assert a.request('/me')[0]==401
+        process.terminate();process.wait(timeout=10)
+        listing=subprocess.run([binary,'users','list'],env=env,capture_output=True)
+        assert listing.returncode==0 and admin['id'].encode() in listing.stdout
+        # Recovery uses a controlling terminal and never echoes passwords.
+        pid,terminal=pty.fork()
+        if pid==0: os.execve(binary,[binary,'users','reset-password','--id',second_admin['id']],env)
+        transcript=b'';sent=0;deadline=time.monotonic()+10
+        try:
+            while time.monotonic()<deadline:
+                if select.select([terminal],[],[],.1)[0]:
+                    try: chunk=os.read(terminal,4096)
+                    except OSError: break
+                    if not chunk:break
+                    transcript+=chunk
+                    if sent==0 and b'New password:' in transcript:
+                        os.write(terminal,b'local recovery password\n');sent=1
+                    if sent==1 and b'Repeat password:' in transcript:
+                        os.write(terminal,b'local recovery password\n');sent=2
+            else:
+                os.kill(pid,9);raise AssertionError('Recovery prompt timed out')
+        finally: os.close(terminal)
+        _,status=os.waitpid(pid,0)
+        assert status==0 and sent==2 and b'local recovery password' not in transcript,transcript
+        with db() as conn: assert conn.execute('SELECT count(*) FROM login_sessions WHERE user_id=?',[second_admin['id']]).fetchone()[0]==0
+        process=subprocess.Popen([binary],env=env,stdout=log,stderr=log)
+        for _ in range(100):
+            try:
+                if other.request('/setup')[0]==200:break
+            except (ConnectionError,OSError):pass
+            time.sleep(.1)
+        assert other.request('/me')[0]==401
+        other.login('second-admin','local recovery password')
         print('PASS: setup races, UUID accounts, salted hashes, CSRF, roles, sharing, renewal, revocation markers, password resets, logout, login limits')
     finally:
         process.terminate();process.wait(timeout=10)

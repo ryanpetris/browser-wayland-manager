@@ -464,9 +464,32 @@ struct Setup {
 }
 async fn setup(
     State(app): State<Shared>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
     mut auth: Auth,
     Json(input): Json<Setup>,
 ) -> Api<Response> {
+    if app
+        .db
+        .run(|db| {
+            Ok(db.query_row("SELECT EXISTS(SELECT 1 FROM users)", [], |r| {
+                r.get::<_, bool>(0)
+            })?)
+        })
+        .await?
+    {
+        return Err(Error(StatusCode::CONFLICT, "setup_complete".into()));
+    }
+    if !app
+        .login_attempts
+        .lock()
+        .await
+        .admit(format!("setup:{}", peer.ip()), 30)
+    {
+        return Err(Error(
+            StatusCode::TOO_MANY_REQUESTS,
+            "Setup rate limit exceeded".into(),
+        ));
+    }
     let username = normalize_username(&input.username)?;
     let name = display_name(&input.display_name)?;
     password(&input.password)?;
@@ -476,7 +499,7 @@ async fn setup(
         let user = app
             .db
             .run(move |db| {
-                let tx = db.transaction()?;
+                let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
                 let count: i64 = tx.query_row("SELECT count(*) FROM users", [], |r| r.get(0))?;
                 if count != 0 {
                     return Ok(None);

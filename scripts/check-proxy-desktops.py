@@ -93,6 +93,8 @@ try:
         preview=account.request('/sessions/'+sid+'/preview?width=320')
         assert preview[0]==200 and preview[2].startswith(b'\x89PNG'), preview
         with database(data) as db: assert db.execute("SELECT count(*) FROM instance_tokens WHERE kind='user' AND session_id=?",[sid]).fetchone()[0]==0
+        with database(data) as db: internal=db.execute("SELECT secret FROM instance_tokens WHERE kind='internal' AND revoked=0 AND session_id=?",[sid]).fetchone()[0]
+        assert internal not in json.dumps(api('/sessions')) and internal not in api('/sessions/'+sid+'/logs')['text']
         link=account.connect(sid)
         viewer_link=viewer_account.connect(sid)
         viewer_token=viewer_link.split('#token=')[1]
@@ -120,9 +122,13 @@ try:
         api('/sessions/'+sid+'/access/'+viewer_user['id'],'PUT',{'role':'viewer'})
         wait(lambda:bearer_status(replacement)==401)
         viewer_token=viewer_account.connect(sid).split('#token=')[1]
+        with database(data) as db: before_stop=list(db.execute('SELECT token_id,revoked FROM instance_tokens WHERE session_id=? ORDER BY token_id',[sid]))
         api('/sessions/'+sid+'/stop','POST')
+        assert viewer_account.request('/sessions/'+sid+'/connect')[0]==409
+        with database(data) as db: assert before_stop==list(db.execute('SELECT token_id,revoked FROM instance_tokens WHERE session_id=? ORDER BY token_id',[sid]))
         api('/sessions/'+sid+'/start','POST')
         wait(ready)
+        assert account.connect(sid)==link and viewer_account.connect(sid).endswith(viewer_token)
         browser.append(dict(id=sid,distribution=distro,link=link,viewer=viewer_token,port=port))
         print(distro+': package installation, plain HTTP/prefix, private mapping, public UDP, tokens, screenshots, preview, Stop/Start passed',flush=True)
     (work/'browser.json').write_text(json.dumps(browser))

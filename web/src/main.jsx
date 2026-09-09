@@ -52,7 +52,7 @@ function App() {
           if (!setup.ok) throw new Error("Account setup is unavailable.");
           const data = await setup.json(); if (live) setSetupRequired(data.required);
         } else throw new Error("Account service is unavailable.");
-      } catch (e) { if (live) setError(e.message); }
+      } catch (e) { if (live) { setSetupRequired(false); setError(e.message); } }
     })();
     return () => { live = false; };
   }, []);
