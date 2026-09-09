@@ -276,7 +276,7 @@ async fn docker(args: &[&str]) -> Result<String> {
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 fn public_session(s: &Session) -> serde_json::Value {
-    serde_json::json!({"id":s.id,"name":s.name,"distribution":s.distribution,"packages":s.packages,"docker_args":s.docker_args,"startup_command":s.startup_command,"screen_size":s.screen_size,"kiosk":s.kiosk,"settings_pending":s.applied_settings.as_ref().is_some_and(|applied| *applied != LaunchSettings::from(s)),"installed_version":s.installed_version,"repair_available":s.repair_available,"version_error":s.version_error,"expected_version":elsewhere_version(),"version_status":version_status(s.installed_version.as_deref()),"port":s.port,"status":s.status,"stage":s.stage,"error":s.error,"timings":s.timings})
+    serde_json::json!({"id":s.id,"name":s.name,"distribution":s.distribution,"packages":s.packages,"docker_args":s.docker_args,"startup_command":s.startup_command,"screen_size":s.screen_size,"kiosk":s.kiosk,"settings_pending":s.applied_settings.as_ref().is_some_and(|applied| *applied != LaunchSettings::from(s)),"installed_version":s.installed_version,"repair_available":s.repair_available,"version_error":s.version_error,"expected_version":elsewhere_version(),"version_status":version_status(s.installed_version.as_deref()),"port":s.port,"started_ms":s.started_ms,"status":s.status,"stage":s.stage,"error":s.error,"timings":s.timings})
 }
 fn authorized_session(s: &Session, role: &str) -> serde_json::Value {
     let mut value = if role == "manager" {
