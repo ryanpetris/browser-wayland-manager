@@ -22,11 +22,13 @@ export function Sharing({ api, machine, close }) {
         {error && <Alert>{error}</Alert>}
         {users === null && !error && <p role="status" className="text-xs text-ink-4">Loading accounts…</p>}
         {(users ?? []).map(user => (
-          <label key={user.id} className="flex items-center gap-3 rounded-lg border border-line bg-surface-2 px-3 py-2 transition-colors hover:border-line-2">
-            <span className="min-w-0 flex-1 truncate text-sm text-ink">{user.display_name}</span>
-            {user.role === 'administrator' && <Badge tone="accent">Administrator</Badge>}
+          <label key={user.id} className="flex flex-col gap-3 rounded-lg border border-line bg-surface-2 px-3 py-2 transition-colors hover:border-line-2 sm:flex-row sm:items-center">
+            <span className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
+              <span className="text-sm text-ink [overflow-wrap:anywhere]">{user.display_name}</span>
+              {user.role === 'administrator' && <Badge tone="accent">Administrator</Badge>}
+            </span>
             <select
-              className="select select-md shrink-0"
+              className="select select-md w-full min-w-0 shrink-0 sm:w-auto"
               aria-label={`Access for ${user.display_name}`}
               disabled={busy}
               value={assignments.find(a => a.user_id === user.id)?.role || ''}

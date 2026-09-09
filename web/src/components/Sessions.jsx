@@ -63,7 +63,7 @@ function SessionCard({ s, layout, user, busy, api, onOpen, onLogs, onEdit, onSha
   const settled = ['running', 'stopped'].includes(s.status);
   // `session` is the marker the browser checks select cards by; it carries no styling.
   return (
-    <article className={cx('session card flex overflow-hidden', layout === 'list' ? 'flex-row' : 'flex-col')}>
+    <article className={cx('session card flex overflow-hidden [overflow-wrap:anywhere]', layout === 'list' ? 'flex-row' : 'flex-col')}>
       <Preview session={s} layout={layout} api={api} />
       <div className="flex min-w-0 flex-1 flex-col p-4">
         <div className="flex items-start gap-2">
