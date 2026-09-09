@@ -1,12 +1,13 @@
-// Small shared pieces: buttons, badges, fields, and the brand mark. The viewer draws its chrome from the same set.
+// Small shared pieces: buttons, badges, page furniture, and the brand mark.
 import { cloneElement, useId } from 'react';
-
+import { ArrowLeft, Loader2 } from 'lucide-react';
+import { Link } from '../router.jsx';
 
 /// Class names, skipping the falsy ones.
 export const cx = (...parts) => parts.filter(Boolean).join(' ');
 
 /// An icon button. `active` marks a toggle that is on; leave it out on a button that is not a toggle.
-export function IconButton({ icon: Icon, label, active, className = '', tone = 'neutral', ...props }) {
+export function IconButton({ icon: Icon, label, active, className = '', ...props }) {
   return (
     <button
       {...props}
@@ -17,7 +18,6 @@ export function IconButton({ icon: Icon, label, active, className = '', tone = '
       className={cx(
         'inline-flex size-7 shrink-0 cursor-pointer items-center justify-center rounded-md transition-colors focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent disabled:pointer-events-none disabled:opacity-40',
         active ? 'bg-accent/15 text-accent-2 ring-1 ring-accent/40 ring-inset' : 'text-ink-3 hover:bg-surface-3 hover:text-ink',
-        tone === 'danger' && !active && 'hover:bg-bad/10 hover:text-bad',
         className,
       )}
     >
@@ -47,9 +47,6 @@ export function Badge({ tone = 'neutral', dot = false, pulse = false, className 
 /// A vertical hairline between toolbar groups.
 export const Divider = ({ className = '' }) => <span aria-hidden="true" className={cx('mx-1 h-5 w-px shrink-0 bg-line-2', className)} />;
 
-/// A section title.
-export const Eyebrow = ({ className = '', children }) => <h3 className={cx('eyebrow', className)}>{children}</h3>;
-
 /// The brand mark: the monitor glyph on an accent tile.
 export function Logo({ className = 'size-7' }) {
   return (
@@ -78,3 +75,90 @@ export function Field({ label, hint, className = '', children }) {
 
 /// A form-wide message.
 export const Alert = ({ children }) => <p role="alert" className="callout callout-bad">{children}</p>;
+
+/// A waiting line.
+export const Loading = ({ children }) => (
+  <p role="status" className="flex items-center gap-2 text-xs text-ink-4">
+    <Loader2 className="size-3.5 shrink-0 animate-spin" />
+    {children}
+  </p>
+);
+
+/// The title block a page opens with: where it sits, what it is, and its one primary action.
+export function PageHeader({ back, eyebrow, title, badge, description, children, action }) {
+  return (
+    <div className="min-w-0">
+      {back && (
+        <Link to={back.to} className="-ml-1.5 mb-3 inline-flex items-center gap-1.5 rounded-md px-1.5 py-1 text-xs text-ink-3 transition-colors hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent">
+          <ArrowLeft className="size-3.5" strokeWidth={2} />
+          {back.label}
+        </Link>
+      )}
+      <div className="flex flex-wrap items-start justify-between gap-x-6 gap-y-4">
+        <div className="min-w-0 flex-1">
+          {eyebrow && <p className="eyebrow">{eyebrow}</p>}
+          <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-2">
+            <h1 className="text-2xl font-semibold tracking-tight text-ink [overflow-wrap:anywhere]">{title}</h1>
+            {badge}
+          </div>
+          {description && <p className="mt-1.5 text-sm text-ink-3">{description}</p>}
+          {children}
+        </div>
+        {action && <div className="flex shrink-0 items-center gap-2">{action}</div>}
+      </div>
+    </div>
+  );
+}
+
+/// A titled group of related settings or actions.
+export function Section({ title, description, action, className = '', children }) {
+  return (
+    <section className={cx('card overflow-hidden', className)}>
+      <div className="flex items-start gap-3 border-b border-line px-4 py-3">
+        <div className="min-w-0 flex-1">
+          <h2 className="text-sm font-semibold text-ink">{title}</h2>
+          {description && <p className="mt-0.5 text-xs leading-relaxed text-ink-3">{description}</p>}
+        </div>
+        {action && <div className="flex shrink-0 items-center gap-2">{action}</div>}
+      </div>
+      {children}
+    </section>
+  );
+}
+
+/// The rows a section uses to state facts. Rows with no value are left out.
+export function DataList({ items, className = '' }) {
+  return (
+    <dl className={cx('divide-y divide-line', className)}>
+      {items
+        .filter(item => item && item.value !== null && item.value !== undefined && item.value !== '')
+        .map(item => (
+          <div key={item.label} className="flex flex-col gap-1 px-4 py-2.5 sm:flex-row sm:gap-4">
+            <dt className="shrink-0 text-xs text-ink-4 sm:w-32">{item.label}</dt>
+            <dd className="min-w-0 flex-1 text-xs text-ink-2 [overflow-wrap:anywhere]">{item.value}</dd>
+          </div>
+        ))}
+    </dl>
+  );
+}
+
+/// The placeholder a page shows when it has nothing to list.
+export function EmptyState({ icon: Icon, title, description, children, className = '' }) {
+  return (
+    <div className={cx('flex flex-col items-center gap-3 rounded-xl border border-dashed border-line-2 px-6 py-16 text-center', className)}>
+      {Icon && (
+        <span className="flex size-12 items-center justify-center rounded-xl border border-line bg-surface-2 text-ink-4">
+          <Icon className="size-6" strokeWidth={1.5} />
+        </span>
+      )}
+      <h2 className="text-sm font-semibold text-ink">{title}</h2>
+      {description && <p className="max-w-sm text-xs leading-relaxed text-ink-4">{description}</p>}
+      {children}
+    </div>
+  );
+}
+
+/// The row a form ends with, carrying the way out and the commit.
+export function FormActions({ children }) {
+  return <div className="card mt-1 flex flex-wrap items-center justify-end gap-2 px-3 py-2.5">{children}</div>;
+}

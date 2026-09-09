@@ -1,6 +1,6 @@
 # Elsewhere Innkeeper
 
-A separate Rust/Axum and React/Vite application that creates and manages Elsewhere desktops in Docker. Choose Arch Linux or Debian, add package names, and open a ready desktop in a new tab. List and grid views show authenticated desktop previews. Each session has live download, setup, and runtime logs.
+A separate Rust/Axum and React/Vite application that creates and manages Elsewhere desktops in Docker. Choose Arch Linux or Debian, add package names, and open a ready desktop in a new tab. The workspace lists sessions as a grid of authenticated desktop previews or as a dense list, and each session has a page of its own carrying its configuration, live logs, sharing, and every action grouped by what it changes.
 
 ## Run with Docker Compose
 
@@ -16,7 +16,7 @@ Open `https://<server-hostname>:19300` and create the first Administrator with y
 The browser shows a certificate warning for the self-signed certificate. Compare its
 SHA-256 fingerprint with `docker compose logs innkeeper` before accepting the exception.
 
-Innkeeper downloads the pinned Elsewhere release package from GitHub and caches it in its data directory. It pulls a stock distribution image if needed, then installs the package and its dependencies inside each new container. Open **Logs** to follow downloads and setup. Innkeeper does not clone or compile Elsewhere at runtime.
+Innkeeper downloads the pinned Elsewhere release package from GitHub and caches it in its data directory. It pulls a stock distribution image if needed, then installs the package and its dependencies inside each new container. Open the session to follow downloads and setup under **Logs**. Innkeeper does not clone or compile Elsewhere at runtime.
 
 Sessions open at `/e/<session-uuid>/` on Innkeeper's origin. Serve that origin over HTTPS for WebCodecs and browser capture features. Outside Compose, set `INNKEEPER_TLS=1` for an automatically generated certificate, set `INNKEEPER_TLS_CERT` and `INNKEEPER_TLS_KEY` to your own PEM files, or put Innkeeper behind an HTTPS gateway. Elsewhere serves plain HTTP privately; Innkeeper proxies HTTP and WebSockets. WebRTC uses a separate encrypted UDP connection directly to each session.
 
@@ -37,9 +37,28 @@ Use `:X.Y.Z` to select a specific Innkeeper release. Every release pushes both i
 `latest`; `latest` points to whichever release most recently pushed that tag. The network and HTTPS
 configuration below applies to the published image too.
 
+## The web interface
+
+Every page has an address, so a session can be linked to, reloaded, and reached with the
+browser's own back and forward buttons.
+
+| Address | Page |
+| --- | --- |
+| `/` | The workspace: every session you can reach, as a grid or a list |
+| `/sessions/new` | Create a session |
+| `/sessions/<id>` | One session: preview, configuration, runtime, logs, sharing, and its actions |
+| `/sessions/<id>/settings` | Change that session's name, screen size, kiosk mode, and startup command |
+| `/account` | Your display name and password |
+| `/users` | Every account (Administrators) |
+| `/users/new` | Create an account (Administrators) |
+| `/users/<id>` | One account: identity, role, password reset, and deletion (Administrators) |
+
+The grid and list choice is remembered in the browser. Innkeeper serves the same document
+for every one of these addresses; the browser decides which page to draw.
+
 ## Accounts and sharing
 
-Accounts use a unique username, display name, and password. Administrators create accounts; there is no signup page, email configuration, or email recovery. Users can change their display name and password from the account dialog. Only Administrators can rename usernames, manage accounts, and change machine sharing.
+Accounts use a unique username, display name, and password. Administrators create accounts; there is no signup page, email configuration, or email recovery. Users can change their display name and password on their own account page. Only Administrators can rename usernames, manage accounts, and change machine sharing; **Users** lists every account and opens one for editing.
 
 | Machine access | Allowed actions |
 | --- | --- |
@@ -118,7 +137,7 @@ including applications activated through the session bus. Values already set in 
 session environment, including empty values, are preserved. Innkeeper's own environment
 is not forwarded to session containers.
 
-An empty package list is valid. Package names cannot contain shell syntax, whitespace, paths, version expressions, or leading-dash options. Failed installations stop startup and expose their stage and output in Logs. Setup stages time out after 30 minutes; launch readiness times out after two minutes; release download and base-image preparation time out after 30 minutes. A failed session remains available for Stop and Destroy.
+An empty package list is valid. Package names cannot contain shell syntax, whitespace, paths, version expressions, or leading-dash options. Failed installations stop startup and expose their stage and output in the session's logs. Setup stages time out after 30 minutes; launch readiness times out after two minutes; release download and base-image preparation time out after 30 minutes. A failed session remains available for Stop and Destroy.
 
 **Stop** terminates the container while retaining the complete session home directory. **Start** relaunches a stopped session with the same tokens and data. **Destroy** removes the owned container, home volume, and Innkeeper preparation log. It permanently deletes that session's data. Shared base images and downloaded packages remain available for reuse. Remove obsolete image tags individually with `docker image rm <exact-tag>` after checking that no retained container uses them; Innkeeper never prunes shared Docker resources. Cancelling a session during download or base-image preparation terminates that preparation process group. A cancelled preparation has no desktop to restart; destroy its record and create a new session.
 
@@ -126,7 +145,7 @@ Innkeeper restarts preserve sessions. Innkeeper inspects its recorded containers
 
 Previews use the shared screenshot API with a width in device pixels, preserving aspect ratio. Visible sessions refresh every five seconds, with at most two requests in flight. Hidden tabs and offscreen previews pause. The backend also limits captures to two concurrent requests and one request per session every two seconds. Unavailable previews leave the session controls usable.
 
-The Logs dialog polls without overlapping requests. It shows the last 128 KiB of download and image-pull output and the last 1,000 Docker log lines. Docker logs rotate at 10 MiB, with three files retained. Token-bearing URL fragments and the rest of their line are redacted before output reaches the browser and before Docker persists desktop output. Stored credentials are also redacted verbatim. Token-command diagnostics are never returned to the browser.
+The log view on the session page polls without overlapping requests. It shows the last 128 KiB of download and image-pull output and the last 1,000 Docker log lines. Docker logs rotate at 10 MiB, with three files retained. Token-bearing URL fragments and the rest of their line are redacted before output reaches the browser and before Docker persists desktop output. Stored credentials are also redacted verbatim. Token-command diagnostics are never returned to the browser.
 
 ## Supported session images
 
@@ -165,9 +184,9 @@ docker build --target check .
 
 ## Elsewhere upgrades
 
-Each session displays its installed package version, read from the container's package
+Each session's page displays its installed package version, read from the container's package
 metadata even while stopped. Innkeeper refreshes this information periodically and after
-installation or launch. Failed inspection shows “Version unavailable”.
+installation or launch. Failed inspection reports the version as unavailable.
 
 Managers can install the preferred package on any running or stopped session. The button
 says **Upgrade** when the preferred version is newer, **Downgrade** when it is older, and
@@ -183,7 +202,7 @@ and exits. It leaves the session stopped so the user can choose **Start**. Insta
 not run the startup command or apply pending desktop settings. It retains the container and
 session home volume.
 
-Installation failures remain visible in Logs and the session error. Stop a failed session
+Installation failures remain visible in the session's logs and error. Stop a failed session
 before retrying installation. Start selects a normal launch and never retries an interrupted
 installation automatically. The same install action repairs an absent or incomplete Elsewhere
 installation, regardless of version. Unreadable metadata and a pending Debian package-manager
@@ -277,7 +296,7 @@ settings and are separate from pending desktop settings. Create a new session to
 different Docker options.
 
 Use **Edit settings** on a running or stopped session to change its name, screen size,
-kiosk mode, or startup command. **Save** updates the name immediately and saves the
+kiosk mode, or startup command. **Save changes** updates the name immediately and saves the
 other settings for the next launch. It does not interrupt the desktop. Distribution
 and extra packages are set at creation.
 
@@ -384,10 +403,18 @@ docker run --rm --entrypoint node \
 
 Run `scripts/check-session-install-browser.mjs` in the same browser image with the script
 mounted at `/src/scripts/check-session-install-browser.mjs` to check install labels, requests,
-session states, and manager access. Run the session refresh check with `--local` to verify
-same-version and incomparable dirty builds using the selected local packages.
-Use `--distribution arch` or `--distribution debian` to run the session refresh check for
-one distribution.
+session states, and manager access. `scripts/check-sessions-browser.mjs` checks the workspace in
+both layouts: the stage a working session announces, quick actions taking precedence over the card
+that links to the session, navigation and browser history, the name and state filters, settings
+that stay closed while a session cannot save them, a creation that answers after its form is
+abandoned, and the reduced session page a non-manager receives.
+`scripts/check-accounts-browser.mjs` checks the account pages: the directory, per-account identity
+across a history jump between two accounts, the save payload, deletion, password rules, and the
+Administrator guards. Mount each at the matching path under `/src/scripts/`.
+
+Run the session refresh check with `--local` to verify same-version and incomparable dirty builds
+using the selected local packages. Use `--distribution arch` or `--distribution debian` to run the
+session refresh check for one distribution.
 
 `scripts/check-proxy-desktops.py` checks fresh real Arch and Debian packages through the production creation and launch flow. Mount the script at `/check.py`; `proxy-rig` includes its SQLite fixture helper. Run it in `proxy-rig` with the Docker socket, the session scripts, a writable directory at `/work`, and a local package manifest and artifacts at `/local`. Mount `/dev/dri` to exercise the host GPU. Publish `127.0.0.1:29301:29301` for a local browser rig. Leave `INNKEEPER_RTC_ADDR` unset to check hostname fallback, or set it to check an explicit override. It reserves ports used by unrelated Docker containers and removes only its own sessions.
 

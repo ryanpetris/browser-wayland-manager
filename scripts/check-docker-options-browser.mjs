@@ -8,12 +8,14 @@ const dockerArgs = ['--security-opt=seccomp=unconfined', '--security-opt=apparmo
 const session = {
   id: 'docker-options-fixture', name: 'Steam', distribution: 'debian', packages: [],
   access_role: 'manager', docker_args: dockerArgs, status: 'stopped', screen_size: null, kiosk: false,
-  startup_command: '', settings_pending: false,
+  startup_command: '', settings_pending: false, installed_version: '0.7.3-1', expected_version: '0.7.3',
+  version_status: 'current', repair_available: false, port: 0, started_ms: 0, timings: {},
 };
 const server = createServer(async (request, response) => {
   try {
     const path = new URL(request.url, 'http://localhost').pathname;
-    const file = path === '/' ? '/index.html' : path;
+    // Innkeeper serves the same document for every in-app path; the browser routes it.
+    const file = path === '/app.js' || path === '/app.css' ? path : '/index.html';
     response.setHeader('Content-Type', file.endsWith('.js') ? 'text/javascript' : file.endsWith('.css') ? 'text/css' : 'text/html');
     response.end(await readFile(new URL('../web/dist' + file, import.meta.url)));
   } catch {
@@ -33,64 +35,80 @@ try {
     } else if (path === '/api/sessions' && request.method() === 'GET') {
       await route.fulfill({ json: { sessions: [session], version: 'fixture' } });
     } else if (path === '/api/sessions' && request.method() === 'POST') {
-      await route.fulfill({ status: 202, json: { id: 'created-fixture' } });
+      await route.fulfill({ status: 202, json: { ...session } });
     } else if (path === `/api/sessions/${session.id}/settings` && request.method() === 'PUT') {
       await route.fulfill({ json: { ...session, ...request.postDataJSON() } });
+    } else if (path === '/api/users') {
+      await route.fulfill({ json: { users: [] } });
+    } else if (path.endsWith('/access')) {
+      await route.fulfill({ json: { assignments: [] } });
+    } else if (path.endsWith('/logs')) {
+      await route.fulfill({ json: { text: 'fixture log' } });
+    } else if (path.endsWith('/preview')) {
+      await route.fulfill({ status: 404, body: '' });
     } else {
       errors.push(`Unexpected API request: ${request.method()} ${path}`);
       await route.fulfill({ status: 500, json: {} });
     }
   });
-  await page.goto(`http://127.0.0.1:${server.address().port}`);
-  await page.getByRole('button', { name: 'New session', exact: true }).click();
-  const create = page.getByRole('dialog', { name: 'New session', exact: true });
-  await create.getByText('Import profile', { exact: true }).click();
-  await create.getByText('Advanced Docker options', { exact: true }).click();
-  const options = create.locator('textarea[name="docker_args"]');
+  const origin = `http://127.0.0.1:${server.address().port}`;
+  await page.goto(origin);
+  await page.getByRole('link', { name: 'New session', exact: true }).click();
+  const create = page.getByRole('heading', { name: 'New session', exact: true });
+  await create.waitFor();
+  assert.equal(new URL(page.url()).pathname, '/sessions/new');
+  await page.getByText('Import profile', { exact: true }).click();
+  await page.getByText('Advanced Docker options', { exact: true }).click();
+  const options = page.locator('textarea[name="docker_args"]');
   async function importProfile(profile) {
-    await create.getByLabel('Profile JSON').fill(JSON.stringify(profile));
-    await create.getByRole('button', { name: 'Apply profile', exact: true }).click();
+    await page.getByLabel('Profile JSON').fill(JSON.stringify(profile));
+    await page.getByRole('button', { name: 'Apply profile', exact: true }).click();
   }
   await importProfile({ name: 'Steam', docker_args: dockerArgs });
   assert.equal(await options.inputValue(), dockerArgs.join('\n'));
   assert.equal(await options.evaluate(element => element.readOnly), false);
   for (const invalid of ['--cap-add=SYS_ADMIN', ['--cap-add=SYS_ADMIN\n--cap-drop=NET_RAW']]) {
     await importProfile({ name: 'Invalid profile', docker_args: invalid });
-    assert.equal(await create.getByRole('alert').innerText(), 'Invalid profile field types.');
+    assert.equal(await page.locator('form').getByRole('alert').innerText(), 'Invalid profile field types.');
     assert.equal(await options.inputValue(), dockerArgs.join('\n'));
-    assert.equal(await create.getByLabel('Session name').inputValue(), 'Steam');
+    assert.equal(await page.getByLabel('Session name').inputValue(), 'Steam');
   }
   await importProfile({ name: 'Basic profile' });
   assert.equal(await options.inputValue(), '');
   const basicRequest = page.waitForRequest(request => request.method() === 'POST' && new URL(request.url()).pathname === '/api/sessions');
-  await create.getByRole('button', { name: 'Create session', exact: true }).click();
+  await page.getByRole('button', { name: 'Create session', exact: true }).click();
   assert.deepEqual((await basicRequest).postDataJSON().docker_args, []);
-  await create.waitFor({ state: 'detached' });
+  // Creating lands on the new session's own page.
+  await page.getByRole('heading', { name: session.name, exact: true }).waitFor();
+  assert.equal(new URL(page.url()).pathname, `/sessions/${session.id}`);
 
-  await page.getByRole('button', { name: 'New session', exact: true }).click();
-  await create.getByText('Import profile', { exact: true }).click();
-  await create.getByText('Advanced Docker options', { exact: true }).click();
+  await page.goto(origin + '/sessions/new');
+  await page.getByText('Import profile', { exact: true }).click();
+  await page.getByText('Advanced Docker options', { exact: true }).click();
   await importProfile({ name: 'Steam', docker_args: dockerArgs });
   assert.equal(await options.inputValue(), dockerArgs.join('\n'));
   await options.fill(`  ${dockerArgs.join('\n\n')}  \n`);
   const createRequest = page.waitForRequest(request => request.method() === 'POST' && new URL(request.url()).pathname === '/api/sessions');
-  await create.getByRole('button', { name: 'Create session', exact: true }).click();
+  await page.getByRole('button', { name: 'Create session', exact: true }).click();
   assert.deepEqual((await createRequest).postDataJSON().docker_args, dockerArgs);
-  await create.waitFor({ state: 'detached' });
+  await page.getByRole('heading', { name: session.name, exact: true }).waitFor();
 
-  await page.getByRole('button', { name: 'Edit settings', exact: true }).click();
-  const edit = page.getByRole('dialog', { name: 'Edit settings', exact: true });
-  await edit.getByText('Advanced Docker options', { exact: true }).click();
-  const savedOptions = edit.locator('textarea[name="docker_args"]');
-  assert.equal(await savedOptions.inputValue(), dockerArgs.join('\n'));
-  assert.equal(await savedOptions.evaluate(element => element.readOnly), true);
-  await edit.getByLabel('Session name').fill('Steam renamed');
+  // Settings are reached from the session, and keep the creation-time options read-only.
+  await page.getByRole('link', { name: 'Edit settings', exact: true }).click();
+  await page.getByRole('heading', { name: 'Edit settings', exact: true }).waitFor();
+  assert.equal(new URL(page.url()).pathname, `/sessions/${session.id}/settings`);
+  await page.getByText('Advanced Docker options', { exact: true }).click();
+  assert.equal(await options.inputValue(), dockerArgs.join('\n'));
+  assert.equal(await options.evaluate(element => element.readOnly), true);
+  await page.getByLabel('Session name').fill('Steam renamed');
   const saveRequest = page.waitForRequest(request => request.method() === 'PUT');
-  await edit.getByRole('button', { name: 'Save', exact: true }).click();
+  await page.getByRole('button', { name: 'Save changes', exact: true }).click();
   assert.deepEqual((await saveRequest).postDataJSON(), {
     name: 'Steam renamed', screen_size: null, kiosk: false, startup_command: '',
   });
-  await edit.waitFor({ state: 'detached' });
+  // Saving returns to the session.
+  await page.getByRole('heading', { name: session.name, exact: true }).waitFor();
+  assert.equal(new URL(page.url()).pathname, `/sessions/${session.id}`);
   assert.deepEqual(errors, []);
   await page.route('**/api/me', route => route.fulfill({status:503,json:{error:'unavailable'}}));
   await page.reload();
