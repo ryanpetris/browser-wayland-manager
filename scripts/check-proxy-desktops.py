@@ -38,8 +38,8 @@ env = dict(os.environ, INNKEEPER_DATA_DIR=str(data), INNKEEPER_LISTEN='0.0.0.0:2
            INNKEEPER_TLS_CERT=str(cert), INNKEEPER_TLS_KEY=str(key))
 if Path('/local/manifest.json').exists(): env['INNKEEPER_LOCAL_ELSEWHERE']='/local/manifest.json'
 if Path('/packages').exists():
-    for distro, filename in [('arch','elsewhere-0.7.1-1-x86_64.pkg.tar.zst'),('debian','elsewhere_0.7.1-1_debian-13_amd64.deb')]:
-        cache=data/'packages'/'0.7.1'/'x86_64'/distro;cache.mkdir(parents=True,exist_ok=True);shutil.copyfile(Path('/packages')/filename,cache/filename)
+    for distro, filename in [('arch','elsewhere-0.7.2-1-x86_64.pkg.tar.zst'),('debian','elsewhere_0.7.2-1_debian-13_amd64.deb')]:
+        cache=data/'packages'/'0.7.2'/'x86_64'/distro;cache.mkdir(parents=True,exist_ok=True);shutil.copyfile(Path('/packages')/filename,cache/filename)
 log = (work/'manager.log').open('w')
 manager = subprocess.Popen(['elsewhere-innkeeper'],env=env,stdout=log,stderr=log)
 context = ssl._create_unverified_context()
