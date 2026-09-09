@@ -4,6 +4,7 @@
 Uses tiny real Arch/Debian packages and disposable sessions to check upgrades and settings.
 """
 import concurrent.futures
+import argparse
 import secrets
 import uuid
 from auth_fixture import Client
@@ -14,7 +15,6 @@ import os
 from pathlib import Path
 import shutil
 import signal
-import sys
 import threading
 import subprocess
 import tempfile
@@ -22,6 +22,12 @@ import time
 import tomllib
 import urllib.request
 import urllib.parse
+
+parser = argparse.ArgumentParser(description=__doc__)
+parser.add_argument("--local", action="store_true")
+parser.add_argument("--distribution", choices=("arch", "debian"))
+options = parser.parse_args()
+distributions = (options.distribution,) if options.distribution else ("arch", "debian")
 
 
 def run(*args):
@@ -118,12 +124,12 @@ os.execv('/usr/bin/docker', ['docker', *args])
 """)
     wrapper.chmod(0o755)
     version = tomllib.loads((Path(__file__).resolve().parent.parent / "Cargo.toml").read_text())["package"]["metadata"]["elsewhere"]["version"]
-    local_mode = sys.argv[1:] == ["--local"]
+    local_mode = options.local
     if local_mode:
         version = "0.4.4.7.dirty"
 
 
-    def package(distro, label, installed=None):
+    def package(distro, label, installed=None, depends=None):
         installed = installed or version
         root = work / f"package-{distro}"
         shutil.rmtree(root, ignore_errors=True)
@@ -165,6 +171,7 @@ exec sleep 10000
             (root / "DEBIAN/control").write_text(
                 f"Package: elsewhere\nVersion: {installed}-1\nArchitecture: amd64\n"
                 "Maintainer: Test <test@example.invalid>\nDescription: Refresh fixture\n"
+                + (f"Depends: {depends}\n" if depends else "")
             )
             path = cache / f"elsewhere_{version}-1_debian-13_amd64.deb"
             run("dpkg-deb", "--build", "--root-owner-group", str(root), str(path))
@@ -290,7 +297,7 @@ exec sleep 10000
         print("Container creation error survives status polling", flush=True)
         if local_mode:
             assert api("/sessions")["local_elsewhere"] is True
-            for distro in ("arch", "debian"):
+            for distro in distributions:
                 sid = api("/sessions", "POST", {"name": "Local " + distro,
                           "distribution": distro, "packages": []})["id"]
                 created.append(sid)
@@ -356,7 +363,7 @@ exec sleep 10000
             pinned = tomllib.loads((Path(__file__).resolve().parent.parent / "Cargo.toml").read_text())["package"]["metadata"]["elsewhere"]["version"]
             assert all(s["expected_version"] == pinned for s in api("/sessions")["sessions"])
             print("Ordinary startup restores the Cargo release pin without changing installed packages", flush=True)
-        for distro in (() if local_mode else ("arch", "debian")):
+        for distro in (() if local_mode else distributions):
             # Creation failures retain their cause even when no container exists.
             cached = package(distro, "first")
             cached.unlink()
@@ -427,11 +434,14 @@ exec sleep 10000
                 restart_manager()
                 wait(lambda: state(probe)["repair_available"])
                 assert state(probe)["installed_version"] == version + "-1"
+                package(distro, "repaired", depends="ed")
                 api(f"/sessions/{probe}/upgrade", "POST")
                 wait(lambda: state(probe)["status"] == "stopped", timeout=90)
                 assert not state(probe)["repair_available"]
                 api(f"/sessions/{probe}/start", "POST")
                 wait(lambda: state(probe)["status"] == "running")
+                assert run("docker", "exec", probe_name, "cat", "/home/elsewhere/launches").splitlines()[-1] == "repaired"
+                assert run("docker", "exec", probe_name, "dpkg-query", "-W", "-f=${db:Status-Status}", "ed") == "installed"
                 archive = package(distro, "newer", "99.0.0")
                 run("docker", "cp", str(archive), probe_name + ":/tmp/fixture.deb")
                 run("docker", "exec", probe_name, "dpkg", "--unpack", "/tmp/fixture.deb")

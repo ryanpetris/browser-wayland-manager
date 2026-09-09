@@ -386,6 +386,8 @@ Run `scripts/check-session-install-browser.mjs` in the same browser image with t
 mounted at `/src/scripts/check-session-install-browser.mjs` to check install labels, requests,
 session states, and manager access. Run the session refresh check with `--local` to verify
 same-version and incomparable dirty builds using the selected local packages.
+Use `--distribution arch` or `--distribution debian` to run the session refresh check for
+one distribution.
 
 `scripts/check-proxy-desktops.py` checks fresh real Arch and Debian packages through the production creation and launch flow. Mount the script at `/check.py`; `proxy-rig` includes its SQLite fixture helper. Run it in `proxy-rig` with the Docker socket, the session scripts, a writable directory at `/work`, and a local package manifest and artifacts at `/local`. Mount `/dev/dri` to exercise the host GPU. Publish `127.0.0.1:29301:29301` for a local browser rig. Leave `INNKEEPER_RTC_ADDR` unset to check hostname fallback, or set it to check an explicit override. It reserves ports used by unrelated Docker containers and removes only its own sessions.
 
