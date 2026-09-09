@@ -56,7 +56,7 @@ try {
       await button.click();
       const confirm = page.getByRole('dialog', { name: `${label} ${session.name}`, exact: true });
       await confirm.waitFor();
-      assert.equal(await confirm.locator('p').innerText(), 'Install the preferred Elsewhere version? Running applications will close and the session will be left stopped.');
+      assert.equal(await confirm.locator('p').innerText(), 'This will close all running applications and stop the session. Unsaved changes may be lost.');
       assert.equal(installs.length, count);
       await confirm.getByRole('button', { name: 'Cancel', exact: true }).click();
       await confirm.waitFor({ state: 'detached' });

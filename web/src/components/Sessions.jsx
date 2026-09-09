@@ -177,7 +177,7 @@ function SessionCard({ s, layout, user, busy, api, onOpen, onLogs, onEdit, onSha
       </div>
       {confirmingInstall && manages && (
         <Dialog title={`${installLabel} ${s.name}`} close={() => setConfirmingInstall(false)}>
-          <p className="p-4 text-sm">Install the preferred Elsewhere version? Running applications will close and the session will be left stopped.</p>
+          <p className="p-4 text-sm">This will close all running applications and stop the session. Unsaved changes may be lost.</p>
           <div className="flex justify-end gap-2 border-t border-line p-4">
             <button type="button" className="btn btn-outline btn-sm" onClick={() => setConfirmingInstall(false)}>Cancel</button>
             <button
