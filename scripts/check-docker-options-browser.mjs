@@ -6,7 +6,7 @@ import { chromium } from '../web/node_modules/playwright-core/index.mjs';
 
 const dockerArgs = ['--security-opt=seccomp=unconfined', '--security-opt=apparmor=unconfined', '--cap-add=SYS_ADMIN'];
 const session = {
-  id: 'docker-options-fixture', name: 'Steam', distribution: 'debian', packages: [],
+  id: 'docker-options-fixture', name: 'Steam', distribution: 'ubuntu', packages: [],
   access_role: 'manager', docker_args: dockerArgs, status: 'stopped', screen_size: null, kiosk: false,
   startup_command: '', settings_pending: false, installed_version: '0.7.3-1', expected_version: '0.7.3',
   version_status: 'current', repair_available: false, port: 0, started_ms: 0, timings: {},
@@ -71,6 +71,10 @@ try {
     await page.getByLabel('Profile JSON').fill(JSON.stringify(profile));
     await page.getByRole('button', { name: 'Apply Profile', exact: true }).click();
   }
+  for (const distro of ['arch', 'debian', 'ubuntu']) {
+    await importProfile({ name: 'Distribution profile', distribution: distro });
+    assert.equal(await page.locator('select[name=distribution]').inputValue(), distro);
+  }
   await importProfile({ name: 'Steam', docker_args: dockerArgs });
   assert.equal(await options.inputValue(), dockerArgs.join('\n'));
   assert.equal(await options.evaluate(element => element.readOnly), false);
@@ -80,14 +84,17 @@ try {
     assert.equal(await options.inputValue(), dockerArgs.join('\n'));
     assert.equal(await page.getByLabel('Session name').inputValue(), 'Steam');
   }
-  await importProfile({ name: 'Basic profile' });
+  await importProfile({ name: 'Basic profile', distribution: 'ubuntu' });
   assert.equal(await options.inputValue(), '');
   const basicRequest = page.waitForRequest(request => request.method() === 'POST' && new URL(request.url()).pathname === '/api/sessions');
   await page.getByRole('button', { name: 'Create Session', exact: true }).click();
-  assert.deepEqual((await basicRequest).postDataJSON().docker_args, []);
+  const basic = (await basicRequest).postDataJSON();
+  assert.deepEqual(basic.docker_args, []);
+  assert.equal(basic.distribution, 'ubuntu');
   // Creating lands on the new session's own page.
   await page.getByRole('heading', { name: session.name, exact: true }).waitFor();
   assert.equal(new URL(page.url()).pathname, `/sessions/${session.id}`);
+  await page.getByText('Ubuntu 26.04 LTS', { exact: true }).waitFor();
 
   await page.goto(origin + '/sessions/new');
   await page.getByText('Import Profile', { exact: true }).click();

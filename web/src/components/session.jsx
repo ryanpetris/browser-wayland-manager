@@ -11,7 +11,7 @@ const STATUS = {
   cancelled: ['neutral', false, false],
 };
 
-const DISTRIBUTION = { arch: 'Arch Linux', debian: 'Debian 13' };
+const DISTRIBUTION = { arch: 'Arch Linux', debian: 'Debian 13', ubuntu: 'Ubuntu 26.04 LTS' };
 
 export const distribution = s => DISTRIBUTION[s.distribution] ?? s.distribution;
 

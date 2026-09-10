@@ -404,6 +404,7 @@ mod tests {
         let first = db.create(session()).await.unwrap().unwrap();
         let mut without_options = session();
         without_options.docker_args.clear();
+        without_options.distribution = "ubuntu".into();
         let second = db.create(without_options).await.unwrap().unwrap();
         assert!(db.session(&first.id).await.unwrap().unwrap() == first);
         assert!(

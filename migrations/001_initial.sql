@@ -7,7 +7,7 @@ CREATE TABLE sessions (
     ordinal INTEGER PRIMARY KEY AUTOINCREMENT,
     id TEXT NOT NULL UNIQUE,
     name TEXT NOT NULL,
-    distribution TEXT NOT NULL CHECK (distribution IN ('arch', 'debian')),
+    distribution TEXT NOT NULL CHECK (distribution IN ('arch', 'debian', 'ubuntu')),
     port INTEGER NOT NULL UNIQUE CHECK (port >= 19500 AND port < 20000),
     started_ms INTEGER NOT NULL CHECK (started_ms >= 0),
     status TEXT NOT NULL,

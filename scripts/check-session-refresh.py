@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Run in the Innkeeper Docker image with Python, zstd, OpenSSL and the Docker socket.
 
-Uses tiny real Arch/Debian packages and disposable sessions to check upgrades and settings.
+Uses tiny real Arch, Debian and Ubuntu packages and disposable sessions to check upgrades and settings.
 """
 import concurrent.futures
 import argparse
@@ -25,9 +25,9 @@ import urllib.parse
 
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("--local", action="store_true")
-parser.add_argument("--distribution", choices=("arch", "debian"))
+parser.add_argument("--distribution", choices=("arch", "debian", "ubuntu"))
 options = parser.parse_args()
-distributions = (options.distribution,) if options.distribution else ("arch", "debian")
+distributions = (options.distribution,) if options.distribution else ("arch", "debian", "ubuntu")
 
 
 def run(*args):
@@ -42,9 +42,9 @@ with tempfile.TemporaryDirectory(prefix="innkeeper-refresh-") as temporary:
     recipes.mkdir(parents=True)
     source = Path("/usr/share/elsewhere-innkeeper/sessions")
     shutil.copytree(source, recipes, dirs_exist_ok=True)
-    for distro in ("arch", "debian"):
+    for distro in ("arch", "debian", "ubuntu"):
         (recipes / f"setup-{distro}.sh").write_text(
-            "set -eu\nuseradd -m -u 1000 elsewhere\n"
+            "set -eu\nuseradd -m " + ("" if distro == "ubuntu" else "-u 1000 ") + "elsewhere\n"
         )
     (recipes / "packages.sh").write_text("exit 0\n")
     # Exercise the production launcher with a fixture session bus and desktop.
@@ -92,7 +92,7 @@ with tempfile.TemporaryDirectory(prefix="innkeeper-refresh-") as temporary:
                 if meta['id']==token_id:del entries[secret];self.reply(204);return
             self.reply(404)
         def log_message(self,*args):pass
-    for port in (19500, 19501):
+    for port in (19500, 19501, 19502):
         readiness = http.server.ThreadingHTTPServer(("127.0.0.1", port), Ready)
         threading.Thread(target=readiness.serve_forever, daemon=True).start()
     # Use Docker-assigned host ports so the rig can coexist with live sessions.
@@ -173,14 +173,15 @@ exec sleep 10000
                 "Maintainer: Test <test@example.invalid>\nDescription: Refresh fixture\n"
                 + (f"Depends: {depends}\n" if depends else "")
             )
-            path = cache / f"elsewhere_{version}-1_debian-13_amd64.deb"
+            release = "debian-13" if distro == "debian" else "ubuntu-26.04"
+            path = cache / f"elsewhere_{version}-1_{release}_amd64.deb"
             run("dpkg-deb", "--build", "--root-owner-group", str(root), str(path))
         return path
 
-    # Pre-pull only the two stock images used by our disposable containers.
-    for image in ("archlinux:base", "debian:trixie-slim"):
+    # Pre-pull only the stock images used by our disposable containers.
+    for image in ("archlinux:base", "debian:trixie-slim", "ubuntu:26.04"):
         run("docker", "pull", image)
-    for distro in ("arch", "debian"):
+    for distro in ("arch", "debian", "ubuntu"):
         package(distro, "first")
     env = dict(os.environ, PATH=f"{tools}:{os.environ['PATH']}",
                INNKEEPER_DATA_DIR=str(data), INNKEEPER_ASSETS_DIR=str(assets),
@@ -189,7 +190,7 @@ exec sleep 10000
         local = work / "local"
         generation = local / "build-fixture"
         generation.mkdir(parents=True)
-        for distro in ("arch", "debian"):
+        for distro in ("arch", "debian", "ubuntu"):
             archive = package(distro, "first")
             shutil.copyfile(archive, generation / archive.name)
         manifest = local / "manifest.json"

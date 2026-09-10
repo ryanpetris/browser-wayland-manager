@@ -13,7 +13,7 @@ maintainer = "Elsewhere Innkeeper contributors <noreply@localhost>"
 section = "admin"
 priority = "optional"
 extended-description = """\
-Creates and manages isolated Arch Linux and Debian desktops in Docker, with a web
+Creates and manages isolated Arch Linux, Debian and Ubuntu desktops in Docker, with a web
 interface for session startup, logs, previews, and persistent home directories."""
 license-file = ["LICENSE", "0"]
 depends = "$auto, docker.io, docker-cli, curl, ca-certificates, systemd, init-system-helpers"

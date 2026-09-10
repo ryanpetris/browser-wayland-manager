@@ -1,6 +1,6 @@
 # Elsewhere Innkeeper
 
-A separate Rust/Axum and React/Vite application that creates and manages Elsewhere desktops in Docker. Choose Arch Linux or Debian, add package names, and open a ready desktop in a new tab. The workspace lists sessions as a grid of authenticated desktop previews or as a dense list, and each session has a page of its own carrying its configuration, live logs, sharing, and every action grouped by what it changes.
+A separate Rust/Axum and React/Vite application that creates and manages Elsewhere desktops in Docker. Choose Arch Linux, Debian or Ubuntu, add package names, and open a ready desktop in a new tab. The workspace lists sessions as a grid of authenticated desktop previews or as a dense list, and each session has a page of its own carrying its configuration, live logs, sharing, and every action grouped by what it changes.
 
 ## Run with Docker Compose
 
@@ -128,7 +128,7 @@ Creation validates package names, records the session, downloads a release packa
 
 Inside the session container, setup installs runtime services, prepares the user and runtime directories, and installs Elsewhere with `apt` or `pacman`. The package manager resolves the package's declared dependencies, including Debian recommendations. A separate script installs requested extra packages before Elsewhere starts. Innkeeper requires Elsewhere 0.8.1 and creates a private non-expiring internal credential with `elsewhere token create --admin` in the server's execution environment. It stores credentials privately and never includes them in startup logs, machine listings, or previews. Initialization includes authenticated token inventory. Browser tokens are created only through the CSRF-protected connect POST and are non-expiring. Previews use Innkeeper's internal credential. Setup and installation markers allow stopped sessions to restart without reinstalling packages.
 
-Both distributions include xterm for sessions with no extra packages. Sessions use hardware encoding when a supported GPU is available, and software encoding without a GPU. Release packages are assumed compatible with the selected distribution; Innkeeper does not perform a separate binary or shared-library compatibility check.
+All distributions include xterm for sessions with no extra packages. Sessions use hardware encoding when a supported GPU is available, and software encoding without a GPU. Release packages are assumed compatible with the selected distribution; Innkeeper does not perform a separate binary or shared-library compatibility check.
 
 Sessions default to `GSK_RENDERER=ngl` to work around GTK 4 Vulkan rendering artifacts
 and `QT_QPA_PLATFORM='wayland;xcb'` so Qt tries Wayland, then X11 when its Wayland
@@ -149,10 +149,13 @@ The log view on the session page starts folded away and polls without overlappin
 
 ## Supported session images
 
-Release packages currently support x86_64 Docker hosts. Base images are reused locally; refresh them for future sessions with `docker pull archlinux:base` and `docker pull debian:trixie-slim`.
+Release packages currently support x86_64 Docker hosts. Base images are reused locally; refresh them for future sessions with `docker pull archlinux:base`, `docker pull debian:trixie-slim`, and `docker pull ubuntu:26.04`.
 
 - Arch Linux `archlinux:base`, rolling repositories.
 - Debian 13 `debian:trixie-slim`, Trixie repositories with `main`, `contrib`, `non-free`, and `non-free-firmware` enabled.
+- Ubuntu 26.04 LTS `ubuntu:26.04`, Resolute repositories.
+
+Ubuntu sessions use `elsewhere_<version>-1_ubuntu-26.04_amd64.deb`. They require an Elsewhere release that publishes that artifact. Debian packages and packages for other Ubuntu releases are not interchangeable because their FFmpeg library ABIs differ. A missing Ubuntu artifact fails the session download; Innkeeper never substitutes a Debian package. Ubuntu setup provides PipeWire and PulseAudio services, VA-API and Vulkan drivers, XWayland, and xterm. Elsewhere audio requires PipeWire 1.4.2 or later and WirePlumber 0.5.6 or later, provided by Resolute. The Elsewhere package declares the media-library dependencies.
 
 The Elsewhere release version is pinned in `package.metadata.elsewhere.version` in `Cargo.toml` and embedded in the application at build time. Innkeeper generates GitHub download URLs and package filenames from that single version using the release package naming convention. Packages are cached under `packages/<version>/x86_64/<distribution>/<asset>` in Innkeeper's data directory. Downloads use HTTPS and a temporary file renamed only after a successful transfer. Concurrent session creation shares the preparation lock and reuses completed downloads. Interrupted transfers are retried on the next request.
 
@@ -218,9 +221,9 @@ Run `make local` as a non-root user with Python 3.9+, Git, Make, and Docker with
 The adjacent `../elsewhere` checkout must already exist and have the history and tags required
 by its `make version` target. Innkeeper never clones or fetches that checkout.
 
-Docker Buildx Bake builds Innkeeper and both Elsewhere packages in parallel. Each package
+Docker Buildx Bake builds Innkeeper and all three Elsewhere packages in parallel. Each package
 build copies the adjacent checkout into its image and runs the native packaging target
-with FFmpeg development libraries. The Debian builder targets Debian 13. The checkout's
+with FFmpeg development libraries. The Debian builder targets Debian 13; the Ubuntu builder targets Ubuntu 26.04. The checkout's
 `.dockerignore` controls which files enter the build. Docker reuses unchanged build layers;
 source edits rebuild the packages inside their images. Finished packages are exported
 into `.elsewhere-local/`.
@@ -228,7 +231,7 @@ into `.elsewhere-local/`.
 Package metadata and filenames use Elsewhere's normalized Git version, including `.dirty`
 for uncommitted changes. The version is derived before building and supplied to packaging
 inside each image. Each build validates package metadata before exporting. The local
-selection changes only after both packages succeed. A failed build preserves the previous
+selection changes only after all three packages succeed. A failed build preserves the previous
 selection.
 
 After successful packaging, the command recreates the Innkeeper Compose service with the selected
@@ -276,7 +279,7 @@ They specify packages, startup commands, display settings, and Docker options.
 In **New session**, expand **Import profile**, paste a profile's JSON, and choose **Apply profile**.
 Review the settings and choose **Create session**.
 
-Profiles support `name`, `distribution` (`arch` or `debian`), `packages` (an array of
+Profiles support `name`, `distribution` (`arch`, `debian`, or `ubuntu`), `packages` (an array of
 package names), `startup_command`, `screen_size`, `kiosk`, and `docker_args`. Omitted fields use the
 form defaults. Unknown fields are rejected. `screen_size` is `null` for dynamic sizing, or an object with `width`
 and `height`, both even integers from 2 to 8192. Kiosk mode defaults to `false`.
@@ -395,7 +398,7 @@ docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
 The proxy fixture creates two disposable containers and checks TLS, UUID routing, ownership, authorization, a large upload, an unbuffered stream longer than eight seconds, WebSocket binary/ping/close frames, and restart routing. It selects two ports in `19500`–`19999` that are not published by running Docker containers. Set `PROXY_TEST_HTTP=1` to check the plaintext listener used behind an HTTPS gateway. Set `PROXY_TEST_TIMEOUTS=1` to check a stalled backend and an active upload longer than the response-header idle timeout. Repeat on a custom bridge by adding `--network NETWORK -e PROXY_TEST_NETWORK=NETWORK`, or check native mode with `--network host -e INNKEEPER_IN_DOCKER=0`.
 
 `scripts/check-session-refresh.py` checks session upgrades, settings, and Docker options
-with disposable Arch and Debian containers. Run it in `proxy-rig` with the Docker socket
+with disposable Arch, Debian and Ubuntu containers. Run it in `proxy-rig` with the Docker socket
 and the checkout mounted at `/src`, using `python3 /src/scripts/check-session-refresh.py`.
 The Docker options browser check uses the built frontend and a fixture API:
 
@@ -422,9 +425,11 @@ Policy, and fails on any resource the browser refuses. Keep those headers in ste
 `src/main.rs`.
 
 Run the session refresh check with `--local` to verify same-version and incomparable dirty builds
-using the selected local packages. Use `--distribution arch` or `--distribution debian` to run the
+using the selected local packages. Use `--distribution arch`, `--distribution debian`, or `--distribution ubuntu` to run the
 session refresh check for one distribution.
 
-`scripts/check-proxy-desktops.py` checks fresh real Arch and Debian packages through the production creation and launch flow. Mount the script at `/check.py`; `proxy-rig` includes its SQLite fixture helper. Run it in `proxy-rig` with the Docker socket, the session scripts, a writable directory at `/work`, and a local package manifest and artifacts at `/local`. Mount `/dev/dri` to exercise the host GPU. Publish `127.0.0.1:29301:29301` for a local browser rig. Leave `INNKEEPER_RTC_ADDR` unset to check hostname fallback, or set it to check an explicit override. It reserves ports used by unrelated Docker containers and removes only its own sessions.
+`scripts/check-proxy-desktops.py` checks fresh real Arch, Debian and Ubuntu packages through the production creation and launch flow. Mount the script at `/check.py`; `proxy-rig` includes its SQLite fixture helper. Run it in `proxy-rig` with the Docker socket, the session scripts, a writable directory at `/work`, and a local package manifest and artifacts at `/local`. Mount `/dev/dri` to exercise the host GPU. Publish `127.0.0.1:29301:29301` for a local browser rig. Leave `INNKEEPER_RTC_ADDR` unset to check hostname fallback, or set it to check an explicit override. It reserves ports used by unrelated Docker containers and removes only its own sessions.
 
-For browser checks, set `PROXY_WAIT_BROWSER=1` on that desktop rig, build the `proxy-browser` target, and run `node /src/scripts/check-proxy-browser.mjs` with host networking and the same `/work` directory after `/work/browser.json` appears. Set `PROXY_BROWSER_ORIGIN=https://localhost:29301` to exercise hostname resolution. This covers simultaneous desktops, Open and token isolation, decoded frames, file transfers, MCP, terminals, viewer access, direct WebRTC and WebSocket fallback. The browser writes `/work/browser-done` so the desktop rig can clean up.
+Set `PROXY_UPGRADE_FROM` to an older Elsewhere release with matching artifacts to check an actual package upgrade to the selected version. The rig installs the older package, requests the upgrade through Innkeeper, verifies the installed version, and starts the same container.
+
+For browser checks, set `PROXY_WAIT_BROWSER=1` on that desktop rig, build the `proxy-browser` target, and run `node /src/scripts/check-proxy-browser.mjs` with host networking and the same `/work` directory after `/work/browser.json` appears. Set `PROXY_BROWSER_ORIGIN=https://localhost:29301` to exercise hostname resolution. This covers simultaneous desktops, Open and token isolation, decoded video and a non-silent audio test tone, file transfers, MCP, terminals, viewer access, direct WebRTC and WebSocket fallback. The browser writes `/work/browser-done` so the desktop rig can clean up.

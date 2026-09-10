@@ -72,9 +72,10 @@ impl LocalElsewhere {
         for asset in [
             format!("elsewhere-{}-1-x86_64.pkg.tar.zst", local.version),
             format!("elsewhere_{}-1_debian-13_amd64.deb", local.version),
+            format!("elsewhere_{}-1_ubuntu-26.04_amd64.deb", local.version),
         ] {
-            let metadata = std::fs::metadata(local.root.join(asset))
-                .context("Local Elsewhere package is missing")?;
+            let metadata = std::fs::metadata(local.root.join(&asset))
+                .with_context(|| format!("Local Elsewhere package is missing: {asset}"))?;
             if !metadata.is_file() || metadata.len() == 0 {
                 bail!("Local Elsewhere package is empty or not a file");
             }
@@ -480,13 +481,13 @@ async fn create(
         let _authorization = app.authorization.read().await;
         let user = accounts::current(&app, &auth).await?;
         if user.role != "administrator" && !input.docker_args.is_empty() { return Err(accounts::forbidden()); }
-        if !["arch", "debian"].contains(&input.distribution.as_str())
+        if !["arch", "debian", "ubuntu"].contains(&input.distribution.as_str())
             || input.name.trim().is_empty()
             || input.name.chars().count() > 80
             || input.packages.len() > 100
             || !input.packages.iter().all(|p| valid_package(p))
         {
-            return Err(Error(StatusCode::BAD_REQUEST, "Choose Arch or Debian, a name of 1–80 characters, and up to 100 valid package names. Shell syntax and options are not allowed.".into()));
+            return Err(Error(StatusCode::BAD_REQUEST, "Choose Arch, Debian or Ubuntu, a name of 1–80 characters, and up to 100 valid package names. Shell syntax and options are not allowed.".into()));
         }
         validate_settings(&input.name, input.screen_size, &input.startup_command)?;
         validate_docker_args(&input.docker_args)?;
@@ -557,16 +558,20 @@ async fn prepare(app: Shared, id: &str, new_container: bool, attempt_ms: u64) ->
             bail!("Release packages currently support only x86_64 Docker hosts");
         }
     }
-    let (image, asset) = if initial.distribution == "arch" {
-        (
+    let (image, asset) = match initial.distribution.as_str() {
+        "arch" => (
             "archlinux:base",
             format!("elsewhere-{version}-1-x86_64.pkg.tar.zst"),
-        )
-    } else {
-        (
+        ),
+        "debian" => (
             "debian:trixie-slim",
             format!("elsewhere_{version}-1_debian-13_amd64.deb"),
-        )
+        ),
+        "ubuntu" => (
+            "ubuntu:26.04",
+            format!("elsewhere_{version}-1_ubuntu-26.04_amd64.deb"),
+        ),
+        _ => bail!("Unsupported session distribution"),
     };
     let package = if let Some(local) = LOCAL_ELSEWHERE.get() {
         local.root.join(&asset)
@@ -1916,7 +1921,7 @@ mod tests {
         );
     }
     #[test]
-    fn local_manifest_requires_valid_version_and_both_packages() {
+    fn local_manifest_requires_valid_version_and_all_packages() {
         let root = std::env::temp_dir().join(format!("innkeeper-local-{}", Uuid::new_v4()));
         let generation = root.join("build-with_underscore");
         std::fs::create_dir_all(&generation).unwrap();
@@ -1930,6 +1935,7 @@ mod tests {
         for asset in [
             "elsewhere-0.4.4.7.dirty-1-x86_64.pkg.tar.zst",
             "elsewhere_0.4.4.7.dirty-1_debian-13_amd64.deb",
+            "elsewhere_0.4.4.7.dirty-1_ubuntu-26.04_amd64.deb",
         ] {
             std::fs::write(generation.join(asset), "fixture").unwrap();
         }

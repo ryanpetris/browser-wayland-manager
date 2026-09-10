@@ -64,7 +64,7 @@ def build():
     publishing = False
     try:
         targets = {'innkeeper': {'tags': [compose_image], 'output': ['type=docker']}}
-        for distro in ('arch', 'debian'):
+        for distro in ('arch', 'debian', 'ubuntu'):
             targets[distro] = {
                 'context': str(SOURCE),
                 'dockerfile': str(ROOT / 'scripts/elsewhere-local.Dockerfile'),
@@ -78,7 +78,8 @@ def build():
             *targets, input=json.dumps({'target': targets}), text=True, cwd=ROOT)
         for distro, asset in (
             ('arch', f'elsewhere-{version}-1-x86_64.pkg.tar.zst'),
-            ('debian', f'elsewhere_{version}-1_debian-13_amd64.deb')):
+            ('debian', f'elsewhere_{version}-1_debian-13_amd64.deb'),
+            ('ubuntu', f'elsewhere_{version}-1_ubuntu-26.04_amd64.deb')):
             archive = generation / distro / asset
             if not archive.is_file() or not archive.stat().st_size:
                 raise RuntimeError(f'Expected package was not produced: {archive.name}')

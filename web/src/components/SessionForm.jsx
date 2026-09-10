@@ -41,7 +41,7 @@ export function SessionForm({ submit, error, initial, administrator = false, can
       const p = { ...defaultProfile, ...value };
       if (
         typeof p.name !== 'string' ||
-        !['arch', 'debian'].includes(p.distribution) ||
+        !['arch', 'debian', 'ubuntu'].includes(p.distribution) ||
         !Array.isArray(p.packages) ||
         p.packages.some(item => typeof item !== 'string' || /\s/.test(item)) ||
         !Array.isArray(p.docker_args) ||
@@ -150,6 +150,7 @@ export function SessionForm({ submit, error, initial, administrator = false, can
               >
                 <option value="arch">Arch Linux · rolling base</option>
                 <option value="debian">Debian 13 · Trixie</option>
+                <option value="ubuntu">Ubuntu 26.04 LTS · Resolute</option>
               </select>
             </Field>
           </div>

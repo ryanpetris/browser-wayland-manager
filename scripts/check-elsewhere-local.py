@@ -32,13 +32,13 @@ if a[0] == 'compose':
     sys.exit(0)
 if a[:2] == ['buildx', 'bake']:
     targets = json.load(sys.stdin)['target']
-    assert set(targets) == {'innkeeper', 'arch', 'debian'}
+    assert set(targets) == {'innkeeper', 'arch', 'debian', 'ubuntu'}
     assert targets['innkeeper']['tags'] == ['innkeeper-local-fixture']
-    assert a[-3:] == ['innkeeper', 'arch', 'debian']
+    assert a[-4:] == ['innkeeper', 'arch', 'debian', 'ubuntu']
     assert targets['innkeeper']['output'] == ['type=docker']
     assert '--allow=fs.read=' + targets['arch']['context'] in a
     if os.environ.get('FAIL_BAKE'): sys.exit(7)
-    for distro in ('arch', 'debian'):
+    for distro in ('arch', 'debian', 'ubuntu'):
         target = targets[distro]
         assert target['target'] == distro
         assert target['platforms'] == ['linux/amd64']
@@ -46,13 +46,14 @@ if a[:2] == ['buildx', 'bake']:
         assert Path(target['dockerfile']).name == 'elsewhere-local.Dockerfile'
         version = target['args']['ELSEWHERE_VERSION'].removeprefix('v').replace('-', '.')
         if distro == 'debian' and os.environ.get('FAIL_DEBIAN'): sys.exit(7)
-        if os.environ.get('NO_OUTPUT'): continue
+        if distro == 'ubuntu' and os.environ.get('FAIL_UBUNTU'): sys.exit(7)
+        if os.environ.get('NO_OUTPUT') or (distro == 'ubuntu' and os.environ.get('NO_UBUNTU')): continue
         destination = target['output'][0]
         assert destination['type'] == 'local'
         directory = Path(destination['dest'])
         directory.mkdir(parents=True)
         archive = ('elsewhere-' + version + '-1-x86_64.pkg.tar.zst' if distro == 'arch'
-                   else 'elsewhere_' + version + '-1_debian-13_amd64.deb')
+                   else 'elsewhere_' + version + '-1_' + ('debian-13' if distro == 'debian' else 'ubuntu-26.04') + '_amd64.deb')
         (directory / archive).write_text(distro)
     sys.exit(0)
 else: sys.exit(8)
@@ -82,7 +83,7 @@ else: sys.exit(8)
     original = manifest.read_bytes()
     selected = json.loads(original)
     assert selected['version'] == '0.4.4.7.dirty'
-    assert len(list((local / selected['directory']).iterdir())) == 2
+    assert len(list((local / selected['directory']).iterdir())) == 3
     assert (local / selected['directory'] / 'elsewhere_0.4.4.7.dirty-1_debian-13_amd64.deb').is_file()
     compose = json.loads((local / 'compose.json').read_text())
     assert compose['services']['innkeeper']['volumes'][0]['read_only'] is True
@@ -90,11 +91,12 @@ else: sys.exit(8)
     assert calls()[-1][-4:] == ['up', '-d', '--no-build', '--force-recreate']
     activations = lambda: sum('up' in call for call in calls())
     assert activations() == 1
-    for failure in ('FAIL_BAKE', 'FAIL_DEBIAN'):
+    for failure in ('FAIL_BAKE', 'FAIL_DEBIAN', 'FAIL_UBUNTU'):
         invoke(success=False, **{failure: '1'})
         assert manifest.read_bytes() == original
         assert activations() == 1
         assert len(list(local.glob('build-*'))) == 1
+    assert 'ubuntu-26.04' in invoke(success=False, NO_UBUNTU='1')
     invoke(success=False, NO_OUTPUT='1')
     assert manifest.read_bytes() == original
     assert len(list(local.glob('build-*'))) == 1

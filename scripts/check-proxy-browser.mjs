@@ -141,7 +141,7 @@ try {
     const terminal = page.getByRole('region', { name: 'Terminal', exact: true });
     await terminal.getByRole('status').filter({ hasText: 'Connected' }).waitFor();
     await terminal.locator('textarea').focus();
-    await page.keyboard.type('printf proxy-terminal-ok > /home/elsewhere/proxy-terminal.txt');
+    await page.keyboard.type('printf proxy-terminal-ok > /home/elsewhere/proxy-terminal.txt; (while paplay /tmp/tone.wav; do :; done) >/home/elsewhere/tone.log 2>&1 &');
     await page.keyboard.press('Enter');
     const terminalFile = origin + prefix + '/api/files/proxy-terminal.txt?path=/home/elsewhere';
     for (let attempt = 0; ; attempt++) {
@@ -150,6 +150,15 @@ try {
       assert.ok(attempt < 30, 'Terminal command did not arrive');
       await page.waitForTimeout(100);
     }
+    await page.evaluate(() => elsewhere.resumeAudio());
+    await page.waitForFunction(() => {
+      const audio = elsewhere.store.get().stats.audio;
+      return audio?.decoded > 0 && audio.state === 'running' && audio.signalPeak > 0.01;
+    }, null, { timeout: 30000 }).catch(async error => {
+      console.error('Audio stats:', await page.evaluate(() => elsewhere.store.get().stats.audio));
+      console.error('Tone output:', await (await context.request.get(origin + prefix + '/api/files/tone.log?path=/home/elsewhere', { headers: auth })).text());
+      throw error;
+    });
     await page.getByRole('button', { name: 'Terminal', exact: true }).click();
     await page.evaluate(() => elsewhere.setTransport('webrtc'));
     await page.waitForFunction(() => elsewhere.store.get().videoVia === 'webrtc', null, { timeout: 30000 });
@@ -163,7 +172,7 @@ try {
     await viewer.waitForFunction(() => window.elsewhere?.store.get().role === 'viewer');
     await viewer.waitForFunction(() => elsewhere.store.get().stats.frames > 0);
     assert.equal(await viewer.getByRole('button', {name:'Broadcasts',exact:true}).count(), 0);
-    console.log(`${session.distribution}: Open/token isolation, assets, decoded frames, files, MCP, terminal, direct WebRTC and fallback, viewer passed`);
+    console.log(`${session.distribution}: Open/token isolation, assets, decoded video and audible test tone, files, MCP, terminal, direct WebRTC and fallback, viewer passed`);
     const identity = await (await context.request.get(origin + '/api/me')).json();
     const users = await (await context.request.get(origin + '/api/users')).json();
     const viewerUser = users.users.find(user => user.username === 'viewer');

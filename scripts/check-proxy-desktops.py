@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 """Run fresh real-package desktops in the Docker rig; optionally wait for browser checks."""
 import json
+import math
+import struct
+import wave
 import os
 from pathlib import Path
 import ssl
@@ -15,6 +18,10 @@ import shutil
 work = Path('/work')
 for marker in ('browser.json', 'browser-done'):
     (work / marker).unlink(missing_ok=True)
+tone=work/'tone.wav'
+with wave.open(str(tone),'wb') as wav:
+    wav.setparams((1,2,48000,0,'NONE','not compressed'))
+    wav.writeframes(b''.join(struct.pack('<h',int(8000*math.sin(2*math.pi*440*i/48000))) for i in range(48000)))
 data = work / 'data'
 data.mkdir(exist_ok=True)
 # Reserve host ports already in use by unrelated containers in this disposable database.
@@ -70,7 +77,7 @@ try:
     viewer_user=api('/users','POST',dict(username='viewer',display_name='Viewer',password=PASSWORD))['user']
     viewer_account.login('viewer')
     browser=[]
-    for distro in os.environ.get('PROXY_DISTROS','arch,debian').split(','):
+    for distro in os.environ.get('PROXY_DISTROS','arch,debian,ubuntu').split(','):
         sid=api('/sessions','POST',dict(name='Proxy '+distro,distribution=distro,packages=['foot'],startup_command='foot',screen_size={'width':640,'height':480}))['id']
         created.append(sid)
         def ready():
@@ -82,6 +89,25 @@ try:
         wait(ready,600)
         name='innkeeper-'+sid
         info=json.loads(subprocess.check_output(['docker','inspect',name]))[0]
+        if older := os.environ.get('PROXY_UPGRADE_FROM'):
+            asset=(f'elsewhere-{older}-1-x86_64.pkg.tar.zst' if distro=='arch' else
+                   f'elsewhere_{older}-1_{dict(debian="debian-13",ubuntu="ubuntu-26.04")[distro]}_amd64.deb')
+            archive=work/asset
+            subprocess.run(['curl','--fail','--location','--output',str(archive),
+                            f'https://github.com/ryanpetris/elsewhere/releases/download/v{older}/{asset}'],check=True)
+            installed='/tmp/'+asset
+            subprocess.run(['docker','cp',str(archive),name+':'+installed],check=True)
+            install=(['pacman','-U','--noconfirm',installed] if distro=='arch' else
+                     ['apt-get','install','-y','--allow-downgrades',installed])
+            subprocess.run(['docker','exec','-e','DEBIAN_FRONTEND=noninteractive',name,*install],check=True)
+            wait(lambda:state(sid)['installed_version']==older+'-1')
+            api('/sessions/'+sid+'/upgrade','POST')
+            wait(lambda:state(sid)['status']=='stopped',600)
+            assert state(sid)['installed_version']==state(sid)['expected_version']+'-1'
+            api('/sessions/'+sid+'/start','POST')
+            wait(ready)
+            assert json.loads(subprocess.check_output(['docker','inspect',name]))[0]['Id']==info['Id']
+            print(distro+': real package upgrade from '+older+' passed',flush=True)
         bindings=info['HostConfig']['PortBindings']
         port=state(sid)['port']
         launch = subprocess.check_output(['docker', 'top', name, '-eo', 'pid,args'], text=True)
@@ -131,8 +157,13 @@ try:
         api('/sessions/'+sid+'/start','POST')
         wait(ready)
         assert account.connect(sid)==link and viewer_account.connect(sid).endswith(viewer_token)
+        api('/sessions/'+sid+'/relaunch','POST')
+        wait(ready)
+        assert json.loads(subprocess.check_output(['docker','inspect',name]))[0]['Id']==info['Id']
+        assert account.connect(sid)==link
+        subprocess.run(['docker','cp',str(tone),name+':/tmp/tone.wav'],check=True)
         browser.append(dict(id=sid,distribution=distro,link=link,viewer=viewer_token,port=port))
-        print(distro+': package installation, plain HTTP/prefix, private mapping, public UDP, tokens, screenshots, preview, Stop/Start passed',flush=True)
+        print(distro+': package installation, plain HTTP/prefix, private mapping, public UDP, tokens, screenshots, preview, Stop/Start and Relaunch passed',flush=True)
     (work/'browser.json').write_text(json.dumps(browser))
     if os.environ.get('PROXY_WAIT_BROWSER')=='1':
         wait(lambda:(work/'browser-done').exists(),600)
