@@ -6,6 +6,8 @@ import json
 import os
 import pty
 import select
+import signal
+import resource
 from pathlib import Path
 import socket
 import sqlite3
@@ -132,7 +134,86 @@ with tempfile.TemporaryDirectory(prefix='innkeeper-accounts-') as temporary:
         # Recovery uses a controlling terminal and never echoes passwords.
         delay=Path(temporary)/'password-prompt-delay.so'
         subprocess.run(['cc','-shared','-fPIC',str(Path(__file__).with_name('password-prompt-delay.c')),'-o',str(delay),'-ldl'],check=True)
-        for mode in ('mismatch', 'separate', 'together', 'delayed'):
+        with db() as conn:
+            password_before=conn.execute('SELECT password_hash FROM users WHERE id=?',[second_admin['id']]).fetchone()
+            sessions_before=list(conn.execute('SELECT * FROM login_sessions ORDER BY secret_hash'))
+        cancellations=[(phase,sig) for sig in (signal.SIGINT,signal.SIGTERM,signal.SIGHUP,signal.SIGQUIT)
+                       for phase in ('first','second','before-first','between')]
+        cancellations += [('first','ctrl-c'),('second','ctrl-c')]
+        for phase,sig in cancellations:
+            release_read,release_write=os.pipe()
+            prompt_read,prompt_write=os.pipe();os.set_inheritable(prompt_write,True)
+            pid,terminal=pty.fork()
+            if pid==0:
+                resource.setrlimit(resource.RLIMIT_CORE,(0,0))
+                os.close(release_write);os.close(prompt_read)
+                os.read(release_read,1);os.close(release_read)
+                child_env=dict(env)
+                if phase in ('before-first','between'):
+                    child_env.update(LD_PRELOAD=str(delay),INNKEEPER_PROMPT_READY_FD=str(prompt_write))
+                os.execve(binary,[binary,'users','reset-password','--id',second_admin['id']],child_env)
+            os.close(release_read);os.close(prompt_write)
+            original=termios.tcgetattr(terminal)
+            os.write(release_write,b'1');os.close(release_write)
+            transcript=b'';cancelled=False;first_sent=False;deadline=time.monotonic()+10
+            slave=None;exited=0;status=0
+            def hold_terminal():
+                return os.open(os.readlink(f'/proc/{pid}/fd/0'),os.O_RDWR|os.O_NONBLOCK|os.O_NOCTTY)
+            secret=b'cancelled recovery password'
+            try:
+                while time.monotonic()<deadline:
+                    readable=select.select([terminal,prompt_read],[],[],.1)[0]
+                    if prompt_read in readable:
+                        prompt=os.read(prompt_read,1)
+                        if not cancelled and ((phase=='before-first' and prompt==b'N') or (phase=='between' and prompt==b'R')):
+                            slave=hold_terminal();os.kill(pid,sig);cancelled=True
+                    if terminal in readable:
+                        try: chunk=os.read(terminal,4096)
+                        except OSError: break
+                        if not chunk: break
+                        transcript+=chunk
+                        if not cancelled and b'New password:' in transcript:
+                            if phase=='first':
+                                slave=hold_terminal()
+                                os.write(terminal,secret)
+                                if sig=='ctrl-c': os.write(terminal,b'\x03')
+                                else: os.kill(pid,sig)
+                                cancelled=True
+                            elif phase in ('second','between') and not first_sent:
+                                os.write(terminal,secret+b'\n');first_sent=True
+                        if not cancelled and phase=='second' and b'Repeat password:' in transcript:
+                            slave=hold_terminal()
+                            os.write(terminal,secret)
+                            if sig=='ctrl-c': os.write(terminal,b'\x03')
+                            else: os.kill(pid,sig)
+                            cancelled=True
+                    if cancelled:
+                        exited,status=os.waitpid(pid,os.WNOHANG)
+                        if exited:
+                            while select.select([terminal],[],[],0)[0]:
+                                transcript+=os.read(terminal,4096)
+                            break
+                else: raise AssertionError(('Cancellation timed out',phase,sig))
+                assert cancelled and termios.tcgetattr(terminal)==original,('Terminal not restored',phase,sig)
+                assert secret not in transcript,transcript
+                os.write(terminal,b'\n')
+                assert select.select([slave],[],[],1)[0],('Terminal input unavailable',phase,sig)
+                assert os.read(slave,4096)==b'\n',('Cancelled input reached shell',phase,sig)
+            finally:
+                if not exited:
+                    exited,status=os.waitpid(pid,os.WNOHANG)
+                    if not exited:
+                        try: os.kill(pid,signal.SIGKILL)
+                        except ProcessLookupError: pass
+                        _,status=os.waitpid(pid,0)
+                if slave is not None: os.close(slave)
+                os.close(terminal);os.close(prompt_read)
+            assert status!=0,(phase,sig,transcript)
+            with db() as conn:
+                assert conn.execute('SELECT password_hash FROM users WHERE id=?',[second_admin['id']]).fetchone()==password_before
+                assert list(conn.execute('SELECT * FROM login_sessions ORDER BY secret_hash'))==sessions_before
+        print('PASS: recovery cancellation restores the terminal and preserves password/login sessions',flush=True)
+        for mode in ('mismatch', 'separate', 'together', 'delayed', 'editing', 'flow'):
             ready_read,ready_write=os.pipe()
             pid,terminal=pty.fork()
             if pid==0:
@@ -151,7 +232,11 @@ with tempfile.TemporaryDirectory(prefix='innkeeper-accounts-') as temporary:
                         transcript+=chunk
                         if sent==0 and b'New password:' in transcript:
                             assert not termios.tcgetattr(terminal)[3] & (termios.ECHO | termios.ECHONL),(mode,transcript)
-                            os.write(terminal,b'local recovery password\n');sent=1
+                            if mode=='flow': os.write(terminal,b'\x13')
+                            os.write(terminal,b'local recovery passworX'+original[6][termios.VERASE]+b'd\n' if mode=='editing' else b'local recovery password\n');sent=1
+                            if mode=='flow':
+                                time.sleep(.15)
+                                os.write(terminal,b'\x11')
                             if mode=='together':
                                 os.write(terminal,b'local recovery password\n');sent=2
                         if sent==1 and b'Repeat password:' in transcript:

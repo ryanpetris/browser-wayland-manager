@@ -35,7 +35,6 @@ async-trait = "0.1"
 time = { version = "0.3", features = ["serde"] }
 argon2 = "0.5"
 rand = "0.8"
-rpassword = "7"
 axum-server = { version = "0.8", features = ["tls-rustls-no-provider"] }
 rcgen = "0.14"
 if-addrs = "0.15"

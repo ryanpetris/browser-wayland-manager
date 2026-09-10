@@ -1657,42 +1657,115 @@ async fn asset(uri: axum::http::Uri) -> Response {
     )
         .into_response()
 }
-fn recovery_passwords() -> Result<(String, String)> {
-    use std::os::fd::AsRawFd;
+async fn recovery_passwords() -> Result<(String, String)> {
+    use std::io::{Read, Write};
+    use std::os::{fd::AsRawFd, unix::fs::OpenOptionsExt};
+    use tokio::io::unix::AsyncFd;
 
-    struct TerminalEcho {
-        tty: std::fs::File,
+    struct TerminalEcho<'a> {
+        tty: &'a std::fs::File,
         original: libc::termios,
     }
-    impl Drop for TerminalEcho {
+    impl Drop for TerminalEcho<'_> {
         fn drop(&mut self) {
-            unsafe { libc::tcsetattr(self.tty.as_raw_fd(), libc::TCSANOW, &self.original) };
+            // Discard unfinished password input before the shell can read it.
+            unsafe {
+                libc::tcflush(self.tty.as_raw_fd(), libc::TCIFLUSH);
+                libc::tcsetattr(self.tty.as_raw_fd(), libc::TCSANOW, &self.original);
+            }
+        }
+    }
+    async fn write_prompt(tty: &AsyncFd<std::fs::File>, mut bytes: &[u8]) -> Result<()> {
+        while !bytes.is_empty() {
+            let count = match tty
+                .async_io(tokio::io::Interest::WRITABLE, |mut file| file.write(bytes))
+                .await
+            {
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+                result => result?,
+            };
+            if count == 0 {
+                bail!("Password prompt output ended")
+            }
+            bytes = &bytes[count..];
+        }
+        Ok(())
+    }
+    async fn read_password(tty: &AsyncFd<std::fs::File>, prompt: &str) -> Result<String> {
+        write_prompt(tty, prompt.as_bytes()).await?;
+        let mut password = Vec::new();
+        let mut buffer = [0; 1024];
+        loop {
+            let mut ready = tty.readable().await?;
+            let count = match ready.try_io(|tty| tty.get_ref().read(&mut buffer)) {
+                Ok(result) => result?,
+                Err(_) => continue,
+            };
+            if count == 0 {
+                bail!("Password input ended")
+            }
+            password.extend_from_slice(&buffer[..count]);
+            if password.last() == Some(&b'\n') {
+                password.pop();
+                write_prompt(tty, b"\n").await?;
+                return Ok(String::from_utf8(password)?);
+            }
         }
     }
 
-    let tty = std::fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .open("/dev/tty")
-        .context("Password recovery requires a controlling terminal")?;
+    let tty = AsyncFd::new(
+        std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .custom_flags(libc::O_NONBLOCK)
+            .open("/dev/tty")
+            .context("Password recovery requires a controlling terminal")?,
+    )?;
     let mut original = std::mem::MaybeUninit::uninit();
     if unsafe { libc::tcgetattr(tty.as_raw_fd(), original.as_mut_ptr()) } != 0 {
         return Err(std::io::Error::last_os_error().into());
     }
     let terminal = TerminalEcho {
-        tty,
+        tty: tty.get_ref(),
         original: unsafe { original.assume_init() },
     };
     let mut hidden = terminal.original;
     hidden.c_lflag &= !(libc::ECHO | libc::ECHONL);
+    hidden.c_lflag |= libc::ICANON | libc::ISIG;
+    hidden.c_iflag &= !(libc::IGNCR | libc::INLCR);
+    hidden.c_iflag |= libc::ICRNL;
+    hidden.c_cc[libc::VEOL] = 0;
+    hidden.c_cc[libc::VEOL2] = 0;
     // Echo stays off before either prompt is visible and between the two reads.
-    if unsafe { libc::tcsetattr(terminal.tty.as_raw_fd(), libc::TCSANOW, &hidden) } != 0 {
+    if unsafe { libc::tcsetattr(tty.as_raw_fd(), libc::TCSANOW, &hidden) } != 0 {
         return Err(std::io::Error::last_os_error().into());
     }
     Ok((
-        rpassword::prompt_password("New password: ")?,
-        rpassword::prompt_password("Repeat password: ")?,
+        read_password(&tty, "New password: ").await?,
+        read_password(&tty, "Repeat password: ").await?,
     ))
+}
+
+async fn recover_password(db: &store::Store, id: String) -> Result<()> {
+    use tokio::signal::unix::{SignalKind, signal};
+    let mut interrupt = signal(SignalKind::interrupt())?;
+    let mut terminate = signal(SignalKind::terminate())?;
+    let mut hangup = signal(SignalKind::hangup())?;
+    let mut quit = signal(SignalKind::quit())?;
+    let hash = tokio::select! {
+        biased;
+        _ = interrupt.recv() => bail!("Password recovery cancelled"),
+        _ = terminate.recv() => bail!("Password recovery cancelled"),
+        _ = hangup.recv() => bail!("Password recovery cancelled"),
+        _ = quit.recv() => bail!("Password recovery cancelled"),
+        result = async {
+            let (password, confirm) = recovery_passwords().await?;
+            if password != confirm { bail!("Passwords differ") }
+            accounts::hash_password(password).await
+        } => result?,
+    };
+    // Finish the accepted password write before leaving the recovery command.
+    accounts::write_password(db, id, hash).await
 }
 
 #[tokio::main]
@@ -1746,12 +1819,7 @@ async fn main() -> Result<()> {
                 if account.is_none_or(|u| !u.enabled) {
                     bail!("Enabled account not found")
                 }
-                let (password, confirm) = recovery_passwords()?;
-                if password != confirm {
-                    bail!("Passwords differ")
-                }
-                let hash = accounts::hash_password(password).await?;
-                accounts::write_password(&db, id, hash).await?;
+                recover_password(&db, id).await?;
             }
             _ => bail!("Use users list or users reset-password --id UUID"),
         }
