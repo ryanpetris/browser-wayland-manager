@@ -34,31 +34,27 @@ if a[:2] == ['buildx', 'bake']:
     targets = json.load(sys.stdin)['target']
     assert set(targets) == {'innkeeper', 'arch', 'debian'}
     assert targets['innkeeper']['tags'] == ['innkeeper-local-fixture']
-    assert a[-4:] == ['--load', 'innkeeper', 'arch', 'debian']
-    for distro in ('arch', 'debian'):
-        assert targets[distro]['target'] == distro
-        assert targets[distro]['platforms'] == ['linux/amd64']
-        assert targets[distro]['args']['BUILDER_UID'] == str(os.getuid())
+    assert a[-3:] == ['innkeeper', 'arch', 'debian']
+    assert targets['innkeeper']['output'] == ['type=docker']
+    assert '--allow=fs.read=' + targets['arch']['context'] in a
     if os.environ.get('FAIL_BAKE'): sys.exit(7)
+    for distro in ('arch', 'debian'):
+        target = targets[distro]
+        assert target['target'] == distro
+        assert target['platforms'] == ['linux/amd64']
+        assert Path(target['context']).name == 'elsewhere'
+        assert Path(target['dockerfile']).name == 'elsewhere-local.Dockerfile'
+        version = target['args']['ELSEWHERE_VERSION'].removeprefix('v').replace('-', '.')
+        if distro == 'debian' and os.environ.get('FAIL_DEBIAN'): sys.exit(7)
+        if os.environ.get('NO_OUTPUT'): continue
+        destination = target['output'][0]
+        assert destination['type'] == 'local'
+        directory = Path(destination['dest'])
+        directory.mkdir(parents=True)
+        archive = ('elsewhere-' + version + '-1-x86_64.pkg.tar.zst' if distro == 'arch'
+                   else 'elsewhere_' + version + '-1_debian-13_amd64.deb')
+        (directory / archive).write_text(distro)
     sys.exit(0)
-source = Path(a[a.index('--workdir') + 1])
-version = (source / 'version').read_text().strip().removeprefix('v').replace('-', '.')
-if 'make' in a:
-    for relative in ('target', 'web/node_modules', 'web/dist'):
-        directory = source / relative
-        assert directory.is_dir() and directory.stat().st_uid == os.getuid()
-    if os.environ.get('NO_OUTPUT'): sys.exit(0)
-    distro = a[-1]
-    if distro == 'package-deb' and os.environ.get('FAIL_DEBIAN'): sys.exit(7)
-    archive = ('elsewhere-' + version + '-1-x86_64.pkg.tar.zst' if distro == 'package-arch'
-               else 'elsewhere_' + version + '-1_debian-13_amd64.deb')
-    (source / 'dist').mkdir(exist_ok=True)
-    (source / 'dist' / archive).write_text(distro)
-elif 'bsdtar' in a:
-    print('pkgname = elsewhere\\npkgver = ' + version + '-1\\narch = x86_64')
-elif 'dpkg-deb' in a:
-    print('Package: elsewhere\\nVersion: ' + ('99.0.0' if os.environ.get('BAD_METADATA') else version)
-          + '-1\\nArchitecture: amd64')
 else: sys.exit(8)
 ''')
     docker.chmod(0o755)
@@ -88,14 +84,13 @@ else: sys.exit(8)
     assert selected['version'] == '0.4.4.7.dirty'
     assert len(list((local / selected['directory']).iterdir())) == 2
     assert (local / selected['directory'] / 'elsewhere_0.4.4.7.dirty-1_debian-13_amd64.deb').is_file()
-    assert 'type=bind' in (work / 'calls').read_text()
     compose = json.loads((local / 'compose.json').read_text())
     assert compose['services']['innkeeper']['volumes'][0]['read_only'] is True
     calls = lambda: [json.loads(line) for line in (work / 'calls').read_text().splitlines()]
     assert calls()[-1][-4:] == ['up', '-d', '--no-build', '--force-recreate']
     activations = lambda: sum('up' in call for call in calls())
     assert activations() == 1
-    for failure in ('FAIL_BAKE', 'FAIL_DEBIAN', 'BAD_METADATA'):
+    for failure in ('FAIL_BAKE', 'FAIL_DEBIAN'):
         invoke(success=False, **{failure: '1'})
         assert manifest.read_bytes() == original
         assert activations() == 1
@@ -119,4 +114,4 @@ else: sys.exit(8)
     invoke('reset')
     assert not manifest.exists() and not (local / 'compose.json').exists()
     assert (local / selected['directory']).exists()
-    print('Missing checkout, Bake image builds, sequential packaging, metadata validation, stale output, atomic selection, lock contention, ignored files, automatic Compose activation and reset passed')
+    print('Missing checkout, Bake package exports, missing output, atomic selection, lock contention, ignored files, automatic Compose activation and reset passed')

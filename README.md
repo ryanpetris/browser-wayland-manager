@@ -218,14 +218,18 @@ Run `make local` as a non-root user with Python 3.9+, Git, Make, and Docker with
 The adjacent `../elsewhere` checkout must already exist and have the history and tags required
 by its `make version` target. Innkeeper never clones or fetches that checkout.
 
-Docker Buildx Bake builds Innkeeper and both packaging images in parallel.
-The target then runs Elsewhere's `make package-arch` and `make package-deb` sequentially in Docker,
-using separate Cargo and Node build caches and native build environments with FFmpeg development
-libraries. The Debian builder targets Debian 13. It copies the packages from the
-checkout's `dist/` into `.elsewhere-local/`, validates their metadata, and selects the build
-only after both packages succeed. A failed
-build preserves the previous selection. Package metadata and filenames use Elsewhere's
-normalized version, including `.dirty` for uncommitted changes.
+Docker Buildx Bake builds Innkeeper and both Elsewhere packages in parallel. Each package
+build copies the adjacent checkout into its image and runs the native packaging target
+with FFmpeg development libraries. The Debian builder targets Debian 13. The checkout's
+`.dockerignore` controls which files enter the build. Docker reuses unchanged build layers;
+source edits rebuild the packages inside their images. Finished packages are exported
+into `.elsewhere-local/`.
+
+Package metadata and filenames use Elsewhere's normalized Git version, including `.dirty`
+for uncommitted changes. The version is derived before building and supplied to packaging
+inside each image. Each build validates package metadata before exporting. The local
+selection changes only after both packages succeed. A failed build preserves the previous
+selection.
 
 After successful packaging, the command recreates the Innkeeper Compose service with the selected
 manifest and packages mounted read-only. Its footer identifies local mode. The override is
@@ -238,14 +242,14 @@ including when that requires a downgrade.
 Missing local packages or an unreadable manifest cause an error rather than a GitHub download. Docker may still pull base
 images and package managers may download dependencies.
 
-All generated configuration, packages, and build caches live under `.elsewhere-local/`, which
+Generated local configuration and exported packages live under `.elsewhere-local/`, which
 is excluded by both `.gitignore` and `.dockerignore`. The override is never written to
 `Cargo.toml` or embedded in an Innkeeper binary. Ordinary builds and Compose runs use the
 release pin. Do not force-add the local directory.
 
 `make elsewhere-local-reset` clears the local selection. Then run `docker compose up -d --build`
 to return to the release pin. Reset does not stop or downgrade existing sessions, and it retains
-staged packages and caches for running local instances. Remove `.elsewhere-local/` manually only
+staged packages for running local instances. Remove `.elsewhere-local/` manually only
 when no local instance needs those files.
 
 ## Hardware encoding

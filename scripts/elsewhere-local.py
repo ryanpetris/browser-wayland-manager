@@ -52,66 +52,38 @@ def build():
         raise RuntimeError('Adjacent elsewhere checkout is missing or lacks its package targets. Nothing was checked out.')
     if output('git', '-C', SOURCE, 'rev-parse', '--show-toplevel') != str(SOURCE):
         raise RuntimeError('The adjacent elsewhere directory must be the checkout root.')
-    git_version = output('make', '--no-print-directory', '-s', '-C', SOURCE, 'version')
+    git_version = output('make', '--no-print-directory', '-s', '-C', SOURCE, 'version',
+                         env=dict(os.environ, GIT_OPTIONAL_LOCKS='0'))
     version = git_version.removeprefix('v').replace('-', '.')
     parts = version.removesuffix('.dirty').split('.')
     if len(parts) < 3 or not all(part.isascii() and part.isdigit() for part in parts):
         raise RuntimeError('Elsewhere returned an unsupported package version.')
     compose_image = output('docker', 'compose', '--project-directory', ROOT,
                            '-f', ROOT / 'compose.yaml', 'config', '--images')
-    targets = {'innkeeper': {'tags': [compose_image]}}
-    for distro in ('arch', 'debian'):
-        targets[distro] = {
-            'context': str(ROOT / 'scripts'),
-            'dockerfile': 'elsewhere-local.Dockerfile',
-            'target': distro,
-            'tags': [f'innkeeper-elsewhere-build:{distro}'],
-            'platforms': ['linux/amd64'],
-            'args': {'BUILDER_UID': str(os.getuid()), 'BUILDER_GID': str(os.getgid())},
-        }
-    run('docker', 'buildx', 'bake', '-f', ROOT / 'compose.yaml', '-f', '-',
-        '--load', *targets, input=json.dumps({'target': targets}), text=True, cwd=ROOT)
     generation = Path(tempfile.mkdtemp(prefix='build-', dir=LOCAL))
     publishing = False
     try:
-        for distro, target, asset in (
-            ('arch', 'package-arch', f'elsewhere-{version}-1-x86_64.pkg.tar.zst'),
-            ('debian', 'package-deb', f'elsewhere_{version}-1_debian-13_amd64.deb')):
-            image = f'innkeeper-elsewhere-build:{distro}'
-            cache = LOCAL / 'cache' / distro
-            for directory in ('target', 'cargo', 'node_modules', 'web-dist'):
-                (cache / directory).mkdir(parents=True, exist_ok=True)
-            for mount in (SOURCE / 'target', SOURCE / 'web/node_modules', SOURCE / 'web/dist'):
-                mount.mkdir(parents=True, exist_ok=True)
-            command = ['docker', 'run', '--rm', '--platform', 'linux/amd64',
-                       '--env', 'GIT_OPTIONAL_LOCKS=0', '--workdir', str(SOURCE),
-                       '--mount', f'type=bind,src={SOURCE},dst={SOURCE}',
-                       '--mount', f'type=bind,src={cache / "target"},dst={SOURCE / "target"}',
-                       '--mount', f'type=bind,src={cache / "cargo"},dst=/cargo-cache',
-                       '--mount', f'type=bind,src={cache / "node_modules"},dst={SOURCE / "web/node_modules"}',
-                       '--mount', f'type=bind,src={cache / "web-dist"},dst={SOURCE / "web/dist"}']
-            git_dir = Path(output('git', '-C', SOURCE, 'rev-parse', '--path-format=absolute', '--git-common-dir'))
-            if not git_dir.is_relative_to(SOURCE):
-                command += ['--mount', f'type=bind,src={git_dir},dst={git_dir},readonly']
-            archive = SOURCE / 'dist' / (f'elsewhere_{version}-1_debian-13_amd64.deb'
-                                        if distro == 'debian' else asset)
-            archive.unlink(missing_ok=True)
-            run(*command, image, 'make', target)
+        targets = {'innkeeper': {'tags': [compose_image], 'output': ['type=docker']}}
+        for distro in ('arch', 'debian'):
+            targets[distro] = {
+                'context': str(SOURCE),
+                'dockerfile': str(ROOT / 'scripts/elsewhere-local.Dockerfile'),
+                'target': distro,
+                'platforms': ['linux/amd64'],
+                'args': {'ELSEWHERE_VERSION': git_version},
+                'output': [{'type': 'local', 'dest': str(generation / distro)}],
+            }
+        run('docker', 'buildx', 'bake', f'--allow=fs.read={SOURCE}',
+            f'--allow=fs.write={generation}', '-f', ROOT / 'compose.yaml', '-f', '-',
+            *targets, input=json.dumps({'target': targets}), text=True, cwd=ROOT)
+        for distro, asset in (
+            ('arch', f'elsewhere-{version}-1-x86_64.pkg.tar.zst'),
+            ('debian', f'elsewhere_{version}-1_debian-13_amd64.deb')):
+            archive = generation / distro / asset
             if not archive.is_file() or not archive.stat().st_size:
                 raise RuntimeError(f'Expected package was not produced: {archive.name}')
-            if distro == 'arch':
-                metadata = output(*command, image, 'bsdtar', '-xOf', archive, '.PKGINFO')
-                fields = dict(line.split(' = ', 1) for line in metadata.splitlines() if ' = ' in line)
-                actual = (fields.get('pkgname'), fields.get('pkgver'), fields.get('arch'))
-                expected = ('elsewhere', version + '-1', 'x86_64')
-            else:
-                metadata = output(*command, image, 'dpkg-deb', '-f', archive, 'Package', 'Version', 'Architecture')
-                fields = dict(line.split(': ', 1) for line in metadata.splitlines() if ': ' in line)
-                actual = (fields.get('Package'), fields.get('Version'), fields.get('Architecture'))
-                expected = ('elsewhere', version + '-1', 'amd64')
-            if actual != expected:
-                raise RuntimeError(f'{distro} package metadata does not match the requested build: {actual}')
-            shutil.copyfile(archive, generation / asset)
+            archive.rename(generation / asset)
+            (generation / distro).rmdir()
             with (generation / asset).open('rb') as stream:
                 os.fsync(stream.fileno())
         sync_directory(generation)
@@ -138,7 +110,7 @@ def main():
     if action == 'local' and not SOURCE.is_dir():
         raise RuntimeError('Adjacent elsewhere checkout does not exist. Nothing was checked out.')
     if os.getuid() == 0:
-        raise RuntimeError('Run local-build commands as a non-root user; Arch makepkg requires it.')
+        raise RuntimeError('Run local-build commands as a non-root user so exported packages belong to you.')
     LOCAL.mkdir(exist_ok=True)
     if output('git', '-C', ROOT, 'ls-files', '--', '.elsewhere-local'):
         raise RuntimeError('.elsewhere-local contains tracked files; refusing to write an override.')
