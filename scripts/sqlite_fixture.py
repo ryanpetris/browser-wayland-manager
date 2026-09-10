@@ -9,18 +9,22 @@ import sys
 import time
 
 
-def docker_ports():
-    ports = set()
-    ids = subprocess.check_output(['docker', 'ps', '-aq'], text=True).split()
+def inspect_containers(ids):
     if not ids:
-        return ports
+        return []
     result = subprocess.run(['docker', 'inspect', *ids], capture_output=True, text=True)
     if result.returncode:
         missing = {f'Error: No such object: {cid}' for cid in ids}
         if result.returncode != 1 or not result.stderr or not set(result.stderr.splitlines()) <= missing:
             sys.stderr.write(result.stderr)
             result.check_returncode()
-    for info in json.loads(result.stdout):
+    return json.loads(result.stdout)
+
+
+def docker_ports():
+    ports = set()
+    ids = subprocess.check_output(['docker', 'ps', '-aq'], text=True).split()
+    for info in inspect_containers(ids):
         for bindings in (info['HostConfig'].get('PortBindings') or {}).values():
             for binding in bindings or []:
                 port = int(binding['HostPort'] or 0)

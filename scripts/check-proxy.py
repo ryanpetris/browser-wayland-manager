@@ -19,7 +19,7 @@ import sys
 import tempfile
 import time
 import uuid
-from sqlite_fixture import seed
+from sqlite_fixture import seed, inspect_containers
 from auth_fixture import Client
 
 TOKEN = "opaque+/=?%:token"
@@ -129,7 +129,7 @@ def check():
     manager = None
     existing = run("docker", "ps", "-q").split()
     used_ports = {int(binding["HostPort"])
-                  for info in (json.loads(run("docker", "inspect", *existing)) if existing else [])
+                  for info in inspect_containers(existing)
                   for bindings in info["NetworkSettings"]["Ports"].values()
                   for binding in (bindings or [])}
     available_ports = iter(port for port in range(19999, 19499, -1) if port not in used_ports)
