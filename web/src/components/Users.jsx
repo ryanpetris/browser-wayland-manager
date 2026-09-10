@@ -25,19 +25,17 @@ export function UsersPage({ api, user }) {
   return (
     <div className="mx-auto flex w-full max-w-3xl flex-col gap-7">
       <PageHeader
-        eyebrow="Administration"
         title="Users"
-        description="Accounts that can sign in to this Innkeeper."
         action={
           <Link to="/users/new" className="btn btn-primary btn-lg">
             <Plus className="size-4" strokeWidth={2} />
-            New user
+            New User
           </Link>
         }
       />
       {error && <Alert>{error}</Alert>}
       {users === null && !error && <Loading>Loading accounts…</Loading>}
-      {users?.length === 0 && <EmptyState icon={UserRound} title="No accounts yet" description="Create an account for each person who needs a desktop." />}
+      {users?.length === 0 && <EmptyState icon={UserRound} title="No Accounts Yet" description="Create an account for each person who needs a desktop." />}
       {users?.length > 0 && (
         <div className="card overflow-hidden">
           {users.map(target => (
@@ -73,12 +71,7 @@ export function NewUserPage({ api }) {
   const [busy, setBusy] = useState(false);
   return (
     <div className="mx-auto flex w-full max-w-2xl flex-col gap-7">
-      <PageHeader
-        back={{ to: '/users', label: 'Users' }}
-        eyebrow="Administration"
-        title="New user"
-        description="The account can sign in as soon as it is created. Share the password over a channel you trust."
-      />
+      <PageHeader back={{ to: '/users', label: 'Users' }} title="New User" />
       <form
         onSubmit={e => {
           e.preventDefault();
@@ -92,7 +85,7 @@ export function NewUserPage({ api }) {
         }}
       >
         <fieldset disabled={busy} className="flex flex-col gap-5">
-          <Section title="Identity" description="The username signs in; the display name is what everyone else sees.">
+          <Section title="Identity">
             <div className="flex flex-col gap-4 p-4">
               <Field label="Username">
                 <input className="input" name="username" required maxLength={64} autoComplete="off" autoFocus />
@@ -102,9 +95,9 @@ export function NewUserPage({ api }) {
               </Field>
             </div>
           </Section>
-          <Section title="Access" description="Administrators manage every account and every machine.">
+          <Section title="Access">
             <div className="flex flex-col gap-4 p-4">
-              <Field label="Account role">
+              <Field label="Account role" hint="An Administrator manages every account and every machine.">
                 <select className="select select-md w-full" name="role">
                   <option value="user">User</option>
                   <option value="administrator">Administrator</option>
@@ -122,7 +115,7 @@ export function NewUserPage({ api }) {
             </Link>
             <button type="submit" className="btn btn-primary btn-sm">
               <UserRoundPlus className="size-3.5" strokeWidth={1.75} />
-              Create user
+              Create User
             </button>
           </FormActions>
         </fieldset>
@@ -154,9 +147,9 @@ export function UserPage({ id, api, user, changed }) {
     ) : (
       <div className="mx-auto flex w-full max-w-2xl flex-col gap-7">
         {error && <Alert>{error}</Alert>}
-        <EmptyState className="mt-6" icon={UserRound} title="This account is not available" description="It may have been deleted.">
+        <EmptyState className="mt-6" icon={UserRound} title="Account Unavailable" description="It may have been deleted.">
           <Link to="/users" className="btn btn-outline btn-sm mt-1">
-            Back to users
+            Back to Users
           </Link>
         </EmptyState>
       </div>
@@ -166,19 +159,18 @@ export function UserPage({ id, api, user, changed }) {
     <div className="mx-auto flex w-full max-w-2xl flex-col gap-7">
       <PageHeader
         back={{ to: '/users', label: 'Users' }}
-        eyebrow="Administration"
         title={target.display_name}
         badge={
           <>
+            {self && <Badge>You</Badge>}
             {target.role === 'administrator' && <Badge tone="accent">Administrator</Badge>}
             {!target.enabled && <Badge tone="warn">Disabled</Badge>}
           </>
         }
-        description={self ? 'This is the account you are signed in as.' : undefined}
       />
       {error && <Alert>{error}</Alert>}
 
-      <Section title="Identity and access" description="A disabled account keeps its machines but cannot sign in.">
+      <Section title="Identity and Access">
         <form
           className="flex flex-col gap-4 p-4"
           onSubmit={e => {
@@ -212,12 +204,15 @@ export function UserPage({ id, api, user, changed }) {
               <option value="administrator">Administrator</option>
             </select>
           </Field>
-          <label className="flex cursor-pointer items-center gap-2.5 text-sm text-ink">
-            <input type="checkbox" className="check" name="enabled" defaultChecked={target.enabled} />
-            Enabled
-          </label>
+          <div>
+            <label className="flex cursor-pointer items-center gap-2.5 text-sm text-ink">
+              <input type="checkbox" className="check" name="enabled" defaultChecked={target.enabled} />
+              Enabled
+            </label>
+            <p className="mt-1.5 text-[11px] leading-relaxed text-ink-4">A disabled account keeps its machines but cannot sign in.</p>
+          </div>
           <button className="btn btn-primary btn-sm self-start" disabled={busy}>
-            Save account
+            Save Account
           </button>
         </form>
       </Section>
@@ -238,27 +233,24 @@ export function UserPage({ id, api, user, changed }) {
             <input className="input" name="reset_password" type="password" autoComplete="new-password" minLength={12} required />
           </Field>
           <button className="btn btn-outline btn-sm self-start" disabled={busy}>
-            Reset password
+            Reset Password
           </button>
         </form>
       </Section>
 
-      <Section title="Danger zone" className="border-bad/25">
-        <div className="flex flex-col gap-2 px-4 py-3.5">
-          <button type="button" className="btn btn-danger btn-sm self-start" disabled={busy} onClick={() => setConfirming(true)}>
+      <Section title="Danger Zone" className="border-bad/25">
+        <div className="flex flex-wrap items-center gap-2 px-4 py-3">
+          <button type="button" className="btn btn-danger btn-sm" disabled={busy} onClick={() => setConfirming(true)}>
             <Trash2 className="size-3.5" strokeWidth={1.75} />
-            Delete account
+            Delete Account
           </button>
-          <p className="text-[11px] leading-relaxed text-ink-4">
-            The machines this account created stay, and Administrators keep managing them.
-          </p>
         </div>
       </Section>
 
       {confirming && (
         <Confirm
           title={`Delete ${target.display_name}`}
-          label="Delete account"
+          label="Delete Account"
           tone="danger"
           close={() => setConfirming(false)}
           confirm={async () => {
@@ -274,8 +266,8 @@ export function UserPage({ id, api, user, changed }) {
           }}
         >
           {self
-            ? 'This deletes the account you are signed in as. You will be signed out immediately.'
-            : 'This account will be signed out and will no longer be able to sign in. Its machine assignments are removed.'}
+            ? 'This deletes the account you are signed in as. You will be signed out immediately. The machines it created stay, and Administrators keep managing them.'
+            : 'This account will be signed out and will no longer be able to sign in. Its machine assignments are removed; the machines it created stay, and Administrators keep managing them.'}
         </Confirm>
       )}
     </div>

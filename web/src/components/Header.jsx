@@ -39,9 +39,9 @@ export function Header({ user, route, onSignOut }) {
           <span className="min-w-0 truncate">{user?.display_name}</span>
         </Link>
         <Divider className="hidden sm:block" />
-        <button type="button" className="btn btn-outline btn-sm" aria-label="Sign out" onClick={onSignOut}>
+        <button type="button" className="btn btn-outline btn-sm" aria-label="Sign Out" onClick={onSignOut}>
           <LogOut className="size-3.5" strokeWidth={1.75} />
-          <span className="hidden sm:inline">Sign out</span>
+          <span className="hidden sm:inline">Sign Out</span>
         </button>
       </div>
     </header>

@@ -7,7 +7,7 @@ import { Preview } from './Preview.jsx';
 import { StatusBadge, busyState, distribution } from './session.jsx';
 
 const FILTERS = [
-  ['all', 'All states'],
+  ['all', 'All States'],
   ['running', 'Running'],
   ['stopped', 'Stopped'],
   ['preparing', 'Preparing'],
@@ -29,13 +29,11 @@ export function SessionsPage({ sessions, loaded, api, layout, setLayout, busy, o
   return (
     <>
       <PageHeader
-        eyebrow="Your workspace"
         title="Sessions"
-        description="Create a desktop. Open it anywhere."
         action={
           <Link to="/sessions/new" className="btn btn-primary btn-lg">
             <Plus className="size-4" strokeWidth={2} />
-            New session
+            New Session
           </Link>
         }
       />
@@ -47,11 +45,11 @@ export function SessionsPage({ sessions, loaded, api, layout, setLayout, busy, o
         <EmptyState
           className="mt-8"
           icon={Monitor}
-          title="Your first desktop starts here"
+          title="No Sessions Yet"
           description="Pick a distribution, add the packages you want, and Innkeeper builds the machine."
         >
           <Link to="/sessions/new" className="btn btn-primary btn-sm mt-1">
-            Create a session
+            Create a Session
           </Link>
         </EmptyState>
       ) : (
@@ -79,12 +77,12 @@ export function SessionsPage({ sessions, loaded, api, layout, setLayout, busy, o
               <span className="font-medium text-ink">{running} running</span> / {sessions.length} total
             </p>
             <div className="flex items-center gap-0.5 rounded-lg border border-line bg-surface-2 p-0.5">
-              <IconButton icon={Grid2X2} label="Grid view" active={layout === 'grid'} onClick={() => setLayout('grid')} />
-              <IconButton icon={List} label="List view" active={layout === 'list'} onClick={() => setLayout('list')} />
+              <IconButton icon={Grid2X2} label="Grid View" active={layout === 'grid'} onClick={() => setLayout('grid')} />
+              <IconButton icon={List} label="List View" active={layout === 'list'} onClick={() => setLayout('list')} />
             </div>
           </div>
           {!shown.length ? (
-            <EmptyState className="mt-5" icon={Search} title="No sessions match" description="Try a different name, package, or state." />
+            <EmptyState className="mt-5" icon={Search} title="No Matches" />
           ) : layout === 'grid' ? (
             <div className="mt-5 grid grid-cols-[repeat(auto-fill,minmax(18rem,1fr))] gap-4">
               {shown.map(s => (
@@ -178,7 +176,7 @@ function SessionTile({ s, api, busy, onOpen, onAction }) {
 function SessionRow({ s, api, busy, onOpen, onAction }) {
   return (
     <article className="session group relative flex items-center gap-3 border-b border-line px-3 py-2.5 transition-colors last:border-0 hover:bg-surface-3 [overflow-wrap:anywhere]">
-      <Preview session={s} api={api} className="aspect-video w-20 shrink-0 rounded border border-line sm:w-28" glyph="size-4" label={false} />
+      <Preview session={s} api={api} className="aspect-video w-20 shrink-0 rounded border border-line sm:w-28" glyph="size-4" />
       <div className="min-w-0 flex-1">
         <h2 className="truncate text-sm font-semibold text-ink">
           <Link to={`/sessions/${s.id}`} className="row-link transition-colors group-hover:text-accent-2">

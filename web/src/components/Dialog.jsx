@@ -20,7 +20,7 @@ export function Dialog({ title, close, children }) {
         <div className="min-w-0 flex-1">
           <h2 className="truncate text-sm font-semibold text-ink">{title}</h2>
         </div>
-        <IconButton icon={X} label="Close dialog" onClick={close} />
+        <IconButton icon={X} label="Close Dialog" onClick={close} />
       </div>
       <div className="flex min-h-0 flex-1 flex-col overflow-y-auto">{children}</div>
     </dialog>

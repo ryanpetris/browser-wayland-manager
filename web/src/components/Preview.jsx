@@ -1,6 +1,6 @@
 // The authenticated desktop preview. Captures are queued so a full page of sessions cannot flood the server.
 import { useEffect, useRef, useState } from 'react';
-import { Loader2, Monitor } from 'lucide-react';
+import { Monitor } from 'lucide-react';
 import { cx } from './ui.jsx';
 
 let active = 0;
@@ -19,14 +19,8 @@ function enqueue(task) {
   drain();
 }
 
-const WAITING = {
-  running: 'Preview unavailable',
-  preparing: 'Preparing desktop…',
-  upgrading: 'Installing Elsewhere…',
-};
-
 /// `interval` is the refresh period in milliseconds; the server allows one capture every two seconds.
-export function Preview({ session, api, interval = 5000, className = '', glyph = 'size-7', label = true }) {
+export function Preview({ session, api, interval = 5000, className = '', glyph = 'size-7' }) {
   const ref = useRef(null);
   const [url, setUrl] = useState('');
   const urlRef = useRef('');
@@ -90,13 +84,11 @@ export function Preview({ session, api, interval = 5000, className = '', glyph =
       {url && session.status === 'running' ? (
         <img src={url} alt={`Desktop preview of ${session.name}`} className="size-full object-contain" />
       ) : (
+        // The session's own state is stated where it belongs; only a running desktop with no frame
+        // to show says anything here.
         <div className="flex flex-col items-center gap-2 px-2 text-center text-ink-4">
-          {WAITING[session.status] && session.status !== 'running' ? (
-            <Loader2 className={cx(glyph, 'animate-spin text-warn/70')} strokeWidth={1.5} />
-          ) : (
-            <Monitor className={glyph} strokeWidth={1.5} />
-          )}
-          {label && <span className="text-[11px] leading-tight">{WAITING[session.status] ?? 'Desktop offline'}</span>}
+          <Monitor className={glyph} strokeWidth={1.5} />
+          {session.status === 'running' && <span className="text-[11px] leading-tight">Preview unavailable</span>}
         </div>
       )}
     </div>

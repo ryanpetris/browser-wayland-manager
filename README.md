@@ -16,7 +16,7 @@ Open `https://<server-hostname>:19300` and create the first Administrator with y
 The browser shows a certificate warning for the self-signed certificate. Compare its
 SHA-256 fingerprint with `docker compose logs innkeeper` before accepting the exception.
 
-Innkeeper downloads the pinned Elsewhere release package from GitHub and caches it in its data directory. It pulls a stock distribution image if needed, then installs the package and its dependencies inside each new container. Open the session to follow downloads and setup under **Logs**. Innkeeper does not clone or compile Elsewhere at runtime.
+Innkeeper downloads the pinned Elsewhere release package from GitHub and caches it in its data directory. It pulls a stock distribution image if needed, then installs the package and its dependencies inside each new container. Open the session and expand **Logs** to follow downloads and setup. Innkeeper does not clone or compile Elsewhere at runtime.
 
 Sessions open at `/e/<session-uuid>/` on Innkeeper's origin. Serve that origin over HTTPS for WebCodecs and browser capture features. Outside Compose, set `INNKEEPER_TLS=1` for an automatically generated certificate, set `INNKEEPER_TLS_CERT` and `INNKEEPER_TLS_KEY` to your own PEM files, or put Innkeeper behind an HTTPS gateway. Elsewhere serves plain HTTP privately; Innkeeper proxies HTTP and WebSockets. WebRTC uses a separate encrypted UDP connection directly to each session.
 
@@ -145,7 +145,7 @@ Innkeeper restarts preserve sessions. Innkeeper inspects its recorded containers
 
 Previews use the shared screenshot API with a width in device pixels, preserving aspect ratio. Visible sessions refresh every five seconds, with at most two requests in flight. Hidden tabs and offscreen previews pause. The backend also limits captures to two concurrent requests and one request per session every two seconds. Unavailable previews leave the session controls usable.
 
-The log view on the session page polls without overlapping requests. It shows the last 128 KiB of download and image-pull output and the last 1,000 Docker log lines. Docker logs rotate at 10 MiB, with three files retained. Token-bearing URL fragments and the rest of their line are redacted before output reaches the browser and before Docker persists desktop output. Stored credentials are also redacted verbatim. Token-command diagnostics are never returned to the browser.
+The log view on the session page starts folded away and polls without overlapping requests while it is open and on screen. It shows the last 128 KiB of download and image-pull output and the last 1,000 Docker log lines. Docker logs rotate at 10 MiB, with three files retained. Token-bearing URL fragments and the rest of their line are redacted before output reaches the browser and before Docker persists desktop output. Stored credentials are also redacted verbatim. Token-command diagnostics are never returned to the browser.
 
 ## Supported session images
 
@@ -292,18 +292,18 @@ client runs. For containerized Innkeeper, mount custom seccomp profiles into tha
 
 Docker options apply when the session container is created and remain in effect through
 Start, Relaunch, Upgrade, Downgrade, Reinstall, and Innkeeper restarts. They are read-only in Edit
-settings and are separate from pending desktop settings. Create a new session to use
+Settings and are separate from pending desktop settings. Create a new session to use
 different Docker options.
 
-Use **Edit settings** on a running or stopped session to change its name, screen size,
-kiosk mode, or startup command. **Save changes** updates the name immediately and saves the
+Use **Edit Settings** on a running or stopped session to change its name, screen size,
+kiosk mode, or startup command. **Save Changes** updates the name immediately and saves the
 other settings for the next launch. It does not interrupt the desktop. Distribution
 and extra packages are set at creation.
 
 **Settings pending** means saved launch settings differ from the last successful launch.
 The indicator survives an Innkeeper restart and clears if edits are reverted or a launch
-successfully applies them. Use **Relaunch** on a running session or **Start** on a stopped
-session to apply saved settings. Relaunch disconnects the desktop and closes running
+successfully applies them. **Relaunch** appears on a running session while settings are pending;
+use it, or **Start** on a stopped session, to apply them. Relaunch disconnects the desktop and closes running
 applications. Save edits before relaunching. The container, installed software, home
 directory, connection tokens, and port are retained. A failed launch retains saved settings
 for retry through Stop and Start. Settings cannot be saved during preparation or failure;

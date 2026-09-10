@@ -53,16 +53,16 @@ try {
   });
   const origin = `http://127.0.0.1:${server.address().port}`;
   await page.goto(origin);
-  await page.getByRole('link', { name: 'New session', exact: true }).click();
-  const create = page.getByRole('heading', { name: 'New session', exact: true });
+  await page.getByRole('link', { name: 'New Session', exact: true }).click();
+  const create = page.getByRole('heading', { name: 'New Session', exact: true });
   await create.waitFor();
   assert.equal(new URL(page.url()).pathname, '/sessions/new');
-  await page.getByText('Import profile', { exact: true }).click();
-  await page.getByText('Advanced Docker options', { exact: true }).click();
+  await page.getByText('Import Profile', { exact: true }).click();
+  await page.getByText('Advanced Docker Options', { exact: true }).click();
   const options = page.locator('textarea[name="docker_args"]');
   async function importProfile(profile) {
     await page.getByLabel('Profile JSON').fill(JSON.stringify(profile));
-    await page.getByRole('button', { name: 'Apply profile', exact: true }).click();
+    await page.getByRole('button', { name: 'Apply Profile', exact: true }).click();
   }
   await importProfile({ name: 'Steam', docker_args: dockerArgs });
   assert.equal(await options.inputValue(), dockerArgs.join('\n'));
@@ -76,33 +76,33 @@ try {
   await importProfile({ name: 'Basic profile' });
   assert.equal(await options.inputValue(), '');
   const basicRequest = page.waitForRequest(request => request.method() === 'POST' && new URL(request.url()).pathname === '/api/sessions');
-  await page.getByRole('button', { name: 'Create session', exact: true }).click();
+  await page.getByRole('button', { name: 'Create Session', exact: true }).click();
   assert.deepEqual((await basicRequest).postDataJSON().docker_args, []);
   // Creating lands on the new session's own page.
   await page.getByRole('heading', { name: session.name, exact: true }).waitFor();
   assert.equal(new URL(page.url()).pathname, `/sessions/${session.id}`);
 
   await page.goto(origin + '/sessions/new');
-  await page.getByText('Import profile', { exact: true }).click();
-  await page.getByText('Advanced Docker options', { exact: true }).click();
+  await page.getByText('Import Profile', { exact: true }).click();
+  await page.getByText('Advanced Docker Options', { exact: true }).click();
   await importProfile({ name: 'Steam', docker_args: dockerArgs });
   assert.equal(await options.inputValue(), dockerArgs.join('\n'));
   await options.fill(`  ${dockerArgs.join('\n\n')}  \n`);
   const createRequest = page.waitForRequest(request => request.method() === 'POST' && new URL(request.url()).pathname === '/api/sessions');
-  await page.getByRole('button', { name: 'Create session', exact: true }).click();
+  await page.getByRole('button', { name: 'Create Session', exact: true }).click();
   assert.deepEqual((await createRequest).postDataJSON().docker_args, dockerArgs);
   await page.getByRole('heading', { name: session.name, exact: true }).waitFor();
 
   // Settings are reached from the session, and keep the creation-time options read-only.
-  await page.getByRole('link', { name: 'Edit settings', exact: true }).click();
-  await page.getByRole('heading', { name: 'Edit settings', exact: true }).waitFor();
+  await page.getByRole('link', { name: 'Edit Settings', exact: true }).click();
+  await page.getByRole('heading', { name: 'Edit Settings', exact: true }).waitFor();
   assert.equal(new URL(page.url()).pathname, `/sessions/${session.id}/settings`);
-  await page.getByText('Advanced Docker options', { exact: true }).click();
+  await page.getByText('Advanced Docker Options', { exact: true }).click();
   assert.equal(await options.inputValue(), dockerArgs.join('\n'));
   assert.equal(await options.evaluate(element => element.readOnly), true);
   await page.getByLabel('Session name').fill('Steam renamed');
   const saveRequest = page.waitForRequest(request => request.method() === 'PUT');
-  await page.getByRole('button', { name: 'Save changes', exact: true }).click();
+  await page.getByRole('button', { name: 'Save Changes', exact: true }).click();
   assert.deepEqual((await saveRequest).postDataJSON(), {
     name: 'Steam renamed', screen_size: null, kiosk: false, startup_command: '',
   });
@@ -112,7 +112,7 @@ try {
   assert.deepEqual(errors, []);
   await page.route('**/api/me', route => route.fulfill({status:503,json:{error:'unavailable'}}));
   await page.reload();
-  await page.getByRole('button', {name:'Sign in',exact:true}).waitFor();
+  await page.getByRole('button', {name:'Sign In',exact:true}).waitFor();
   assert.deepEqual(errors, []);
   console.log('Docker options: profile imports, default options, repeated creation arguments, read-only settings and Save payload passed');
 } finally {

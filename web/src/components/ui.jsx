@@ -1,6 +1,6 @@
 // Small shared pieces: buttons, badges, page furniture, and the brand mark.
 import { cloneElement, useId } from 'react';
-import { ArrowLeft, Loader2 } from 'lucide-react';
+import { ArrowLeft, ChevronRight, Loader2 } from 'lucide-react';
 import { Link } from '../router.jsx';
 
 /// Class names, skipping the falsy ones.
@@ -85,7 +85,7 @@ export const Loading = ({ children }) => (
 );
 
 /// The title block a page opens with: where it sits, what it is, and its one primary action.
-export function PageHeader({ back, eyebrow, title, badge, description, children, action }) {
+export function PageHeader({ back, title, badge, description, children, action }) {
   return (
     <div className="min-w-0">
       {back && (
@@ -96,8 +96,7 @@ export function PageHeader({ back, eyebrow, title, badge, description, children,
       )}
       <div className="flex flex-wrap items-start justify-between gap-x-6 gap-y-4">
         <div className="min-w-0 flex-1">
-          {eyebrow && <p className="eyebrow">{eyebrow}</p>}
-          <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-2">
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
             <h1 className="text-2xl font-semibold tracking-tight text-ink [overflow-wrap:anywhere]">{title}</h1>
             {badge}
           </div>
@@ -123,6 +122,19 @@ export function Section({ title, description, action, className = '', children }
       </div>
       {children}
     </section>
+  );
+}
+
+/// A section that stays folded until it is wanted. `panelRef` reaches the element to open it.
+export function Disclosure({ label, panelRef, children }) {
+  return (
+    <details ref={panelRef} className="group card overflow-hidden">
+      <summary className="flex cursor-pointer items-center gap-3 px-4 py-3 transition-colors select-none hover:bg-surface-3">
+        <ChevronRight className="size-4 shrink-0 text-ink-3 transition-transform group-open:rotate-90" strokeWidth={2} />
+        <h2 className="min-w-0 flex-1 text-sm font-semibold text-ink">{label}</h2>
+      </summary>
+      <div className="border-t border-line">{children}</div>
+    </details>
   );
 }
 
@@ -158,7 +170,12 @@ export function EmptyState({ icon: Icon, title, description, children, className
   );
 }
 
-/// The row a form ends with, carrying the way out and the commit.
-export function FormActions({ children }) {
-  return <div className="card mt-1 flex flex-wrap items-center justify-end gap-2 px-3 py-2.5">{children}</div>;
+/// The row a form ends with, carrying what saving does, the way out and the commit.
+export function FormActions({ note, children }) {
+  return (
+    <div className="card mt-1 flex flex-wrap items-center justify-end gap-x-4 gap-y-2 px-3 py-2.5">
+      {note && <p className="mr-auto max-w-md text-[11px] leading-relaxed text-ink-4">{note}</p>}
+      {children}
+    </div>
+  );
 }

@@ -10,12 +10,13 @@ export function Login({ required, error, submit }) {
           <Logo className="size-10" />
           <div className="min-w-0">
             <h1 className="text-base leading-tight font-semibold text-ink">Elsewhere Innkeeper</h1>
-            <p className="mt-0.5 text-xs text-ink-3">Desktops on demand</p>
           </div>
         </div>
-        <p className="mt-5 text-sm leading-relaxed text-ink-2">
-          {required === null ? 'Loading accounts…' : required ? 'Create the first Administrator account.' : 'Sign in to your account.'}
-        </p>
+        {required !== null && (
+          <p className="mt-5 text-sm leading-relaxed text-ink-2">
+            {required ? 'Create the first Administrator account.' : 'Sign in to your account.'}
+          </p>
+        )}
         {required === null ? (
           <p role="status" className="mt-5 flex items-center gap-2 text-xs text-ink-4"><Loader2 className="size-3.5 animate-spin" /> Contacting the server…</p>
         ) : (
@@ -53,7 +54,7 @@ export function Login({ required, error, submit }) {
                 <input className="input h-9" type="password" name="confirmation" autoComplete="new-password" required onInput={e => e.target.setCustomValidity('')} />
               </Field>
             )}
-            <button type="submit" className="btn btn-primary mt-1 h-10 w-full">{required ? 'Create Administrator' : 'Sign in'}</button>
+            <button type="submit" className="btn btn-primary mt-1 h-10 w-full">{required ? 'Create Administrator' : 'Sign In'}</button>
           </form>
         )}
         {error && <p role="alert" className="callout callout-bad mt-5">{error}</p>}

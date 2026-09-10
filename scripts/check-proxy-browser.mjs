@@ -20,7 +20,7 @@ try {
   await manager.goto(origin);
   await manager.getByLabel('Username', {exact:true}).fill('fixture');
   await manager.getByLabel('Password', {exact:true}).fill(password);
-  await manager.getByRole('button', { name: 'Sign in', exact: true }).click();
+  await manager.getByRole('button', { name: 'Sign In', exact: true }).click();
   await manager.getByRole('link', {name:'Fixture Administrator',exact:true}).waitFor();
   // Another tab replaces the cookie while this tab retains its previous CSRF value.
   const previous = await (await context.request.get(origin + '/api/me')).json();
@@ -30,18 +30,18 @@ try {
   await manager.evaluate(() => window.dispatchEvent(new Event('focus')));
   await recovered;
   await manager.getByRole('link', {name:'Fixture Administrator',exact:true}).click();
-  await manager.getByRole('heading',{name:'Your account',exact:true}).waitFor();
+  await manager.getByRole('heading',{name:'Your Account',exact:true}).waitFor();
   const saved=manager.waitForResponse(r=>new URL(r.url()).pathname==='/api/me' && r.request().method()==='PATCH');
-  await manager.getByRole('button',{name:'Save display name',exact:true}).click();
+  await manager.getByRole('button',{name:'Save Display Name',exact:true}).click();
   assert.equal((await saved).status(),200);
   console.log('Checking account creation');
   await manager.getByRole('navigation',{name:'Sections'}).getByRole('link',{name:'Users',exact:true}).click();
-  await manager.getByRole('link',{name:'New user',exact:true}).click();
+  await manager.getByRole('link',{name:'New User',exact:true}).click();
   await manager.getByLabel('Username',{exact:true}).fill('browser-account');
   await manager.getByLabel('Display name',{exact:true}).fill('Browser account');
   await manager.getByLabel('Password',{exact:true}).fill(password);
   const createdUser=manager.waitForResponse(r=>new URL(r.url()).pathname==='/api/users' && r.request().method()==='POST');
-  await manager.getByRole('button',{name:'Create user',exact:true}).click();
+  await manager.getByRole('button',{name:'Create User',exact:true}).click();
   assert.equal((await createdUser).status(),201);
   const accountId=(await (await context.request.get(origin+'/api/users')).json()).users.find(u=>u.username==='browser-account').id;
   console.log('Checking account rename');
@@ -49,14 +49,14 @@ try {
   await manager.getByRole('heading',{name:'Browser account',exact:true}).waitFor();
   await manager.getByLabel('Username',{exact:true}).fill('browser-renamed');
   const renamed=manager.waitForResponse(r=>new URL(r.url()).pathname==='/api/users/'+accountId && r.request().method()==='PATCH');
-  await manager.getByRole('button',{name:'Save account',exact:true}).click();
+  await manager.getByRole('button',{name:'Save Account',exact:true}).click();
   assert.equal((await renamed).status(),200);
   console.log('Checking sharing');
   const nav=manager.getByRole('navigation',{name:'Sections'});
   await nav.getByRole('link',{name:'Sessions',exact:true}).click();
   const cards = manager.locator('.session');
   await cards.filter({hasText:'Proxy '+sessions[0].distribution}).getByRole('link',{name:'Proxy '+sessions[0].distribution,exact:true}).click();
-  await manager.getByRole('heading',{name:'People with access',exact:true}).waitFor();
+  await manager.getByRole('heading',{name:'People with Access',exact:true}).waitFor();
   const assigned=manager.waitForResponse(r=>new URL(r.url()).pathname.endsWith('/access/'+accountId) && r.request().method()==='PUT');
   await manager.getByLabel('Access for Browser account',{exact:true}).selectOption('viewer');
   assert.equal((await assigned).status(),200);
@@ -67,7 +67,7 @@ try {
   async function signInUser(secret) {
     await userPage.getByLabel('Username',{exact:true}).fill('browser-renamed');
     await userPage.getByLabel('Password',{exact:true}).fill(secret);
-    await userPage.getByRole('button',{name:'Sign in',exact:true}).click();
+    await userPage.getByRole('button',{name:'Sign In',exact:true}).click();
     await userPage.getByRole('link',{name:'Browser account',exact:true}).waitFor();
   }
   await userPage.goto(origin);await signInUser(password);
@@ -76,25 +76,25 @@ try {
   // Account administration is out of reach for a normal user, by navigation and by address.
   assert.equal(await userPage.getByRole('link',{name:'Users',exact:true}).count(),0);
   await userPage.goto(origin+'/users');
-  await userPage.getByRole('heading',{name:'Administrators only',exact:true}).waitFor();
+  await userPage.getByRole('heading',{name:'Administrators Only',exact:true}).waitFor();
   // The shared machine carries no management for a Viewer, and no sharing for a normal user.
   await userPage.goto(origin+'/sessions/'+sessions[0].id);
   await userPage.getByRole('heading',{name:'Proxy '+sessions[0].distribution,exact:true}).waitFor();
-  await userPage.getByRole('button',{name:'Open desktop',exact:true}).waitFor();
-  for (const absent of ['People with access','Logs','Elsewhere version','Danger zone']) {
+  await userPage.getByRole('button',{name:'Open Desktop',exact:true}).waitFor();
+  for (const absent of ['People with Access','Logs','Elsewhere Version','Danger Zone']) {
     assert.equal(await userPage.getByRole('heading',{name:absent,exact:true}).count(),0,absent);
   }
-  for (const absent of ['Edit settings','Start','Stop','Relaunch','Reinstall','Destroy session']) {
+  for (const absent of ['Edit Settings','Start','Stop','Relaunch','Reinstall','Destroy Session']) {
     assert.equal(await userPage.getByRole('button',{name:absent,exact:true}).count(),0,absent);
   }
   await userPage.getByRole('link',{name:'Browser account',exact:true}).click();
-  await userPage.getByRole('heading',{name:'Your account',exact:true}).waitFor();
+  await userPage.getByRole('heading',{name:'Your Account',exact:true}).waitFor();
   // Only an Administrator can rename an account, so the username is stated rather than offered.
   assert.equal(await userPage.locator('input[name="display_name"]').count(),1);
   assert.equal(await userPage.locator('input[name="username"]').count(),0);
   await userPage.getByLabel('Current password',{exact:true}).fill(password);
   await userPage.getByLabel('New password',{exact:true}).fill('browser replacement password');
-  await userPage.getByRole('button',{name:'Change password and sign out',exact:true}).click();
+  await userPage.getByRole('button',{name:'Change Password and Sign Out',exact:true}).click();
   await signInUser('browser replacement password');
   await userContext.close();
   console.log('Account creation, rename, sharing, user restrictions, password change and re-login passed');

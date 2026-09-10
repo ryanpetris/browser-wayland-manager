@@ -51,6 +51,7 @@ try {
   });
   const origin = `http://127.0.0.1:${server.address().port}`;
   const detail = `${origin}/sessions/${session.id}`;
+  const installed = page.locator('dl div').filter({ hasText: 'Installed' }).locator('dd');
   // The grid links into the session; every install control lives on that page.
   await page.goto(origin);
   await page.locator('article.session').getByRole('link', { name: session.name, exact: true }).click();
@@ -64,7 +65,7 @@ try {
       const button = page.getByRole('button', { name: label, exact: true });
       await button.waitFor();
       assert.equal(await button.isEnabled(), true);
-      await page.getByText('Elsewhere 0.7.3-1', { exact: true }).waitFor();
+      assert.equal(await installed.innerText(), '0.7.3-1');
       const count = installs.length;
       await button.click();
       const confirm = page.getByRole('dialog', { name: `${label} ${session.name}`, exact: true });
@@ -80,7 +81,7 @@ try {
       await confirm.waitFor({ state: 'detached' });
       assert.equal(installs.length, count);
       await button.click();
-      await confirm.getByRole('button', { name: 'Close dialog', exact: true }).click();
+      await confirm.getByRole('button', { name: 'Close Dialog', exact: true }).click();
       await confirm.waitFor({ state: 'detached' });
       assert.equal(installs.length, count);
       await button.click();
@@ -96,7 +97,7 @@ try {
   const reinstall = page.getByRole('button', { name: 'Reinstall', exact: true });
   await reinstall.waitFor();
   assert.equal(await reinstall.isEnabled(), true);
-  await page.getByText('Elsewhere version unavailable', { exact: true }).waitFor();
+  assert.equal(await installed.innerText(), 'Unavailable');
   assert.match(await page.textContent('body'), /Elsewhere installation is incomplete/);
   await reinstall.click();
   const repair = page.getByRole('dialog', { name: `Reinstall ${session.name}`, exact: true });
@@ -125,7 +126,7 @@ try {
     await page.goto(detail);
     await page.getByRole('heading', { name: session.name, exact: true }).waitFor();
     assert.equal(await reinstall.count(), 0);
-    assert.equal(await page.getByRole('button', { name: 'Destroy session', exact: true }).count(), 0);
+    assert.equal(await page.getByRole('button', { name: 'Destroy Session', exact: true }).count(), 0);
     assert.equal(await page.getByRole('heading', { name: 'Logs', exact: true }).count(), 0);
     assert.equal(await page.getByRole('button', { name: 'Start', exact: true }).count(), 0);
   }

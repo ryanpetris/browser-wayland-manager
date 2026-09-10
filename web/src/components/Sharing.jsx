@@ -26,7 +26,7 @@ export function Sharing({ api, machine }) {
     };
   }, [machine.id]);
   return (
-    <Section title="People with access" description="Administrators can always manage this machine.">
+    <Section title="People with Access" description="Administrators can always manage this machine.">
       <div className="flex flex-col gap-2 p-4">
         {error && <Alert>{error}</Alert>}
         {users === null && !error && <Loading>Loading accounts…</Loading>}
@@ -61,10 +61,10 @@ export function Sharing({ api, machine }) {
                 }
               }}
             >
-              <option value="">No assignment</option>
-              <option value="viewer">Viewer · video and audio</option>
-              <option value="interactive">Interactive · use desktop</option>
-              <option value="manager">Manager · use and manage machine</option>
+              <option value="">No access</option>
+              <option value="viewer">Viewer</option>
+              <option value="interactive">Interactive</option>
+              <option value="manager">Manager</option>
             </select>
           </label>
         ))}

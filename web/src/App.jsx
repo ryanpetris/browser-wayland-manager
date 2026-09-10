@@ -219,9 +219,9 @@ export function App() {
     administrator ? (
       page
     ) : (
-      <EmptyState className="mt-10" icon={ShieldAlert} title="Administrators only" description="Ask an Administrator to manage accounts for you.">
+      <EmptyState className="mt-10" icon={ShieldAlert} title="Administrators Only" description="Ask an Administrator to manage accounts for you.">
         <Link to="/" className="btn btn-outline btn-sm mt-1">
-          Back to sessions
+          Back to Sessions
         </Link>
       </EmptyState>
     );
@@ -269,9 +269,9 @@ export function App() {
         return guarded(<UserPage key={route.id} id={route.id} api={api} user={user} changed={setUser} />);
       default:
         return (
-          <EmptyState className="mt-10" icon={Compass} title="Page not found" description="The address does not match anything in Innkeeper.">
+          <EmptyState className="mt-10" icon={Compass} title="Page Not Found" description="The address does not match anything in Innkeeper.">
             <Link to="/" className="btn btn-outline btn-sm mt-1">
-              Back to sessions
+              Back to Sessions
             </Link>
           </EmptyState>
         );

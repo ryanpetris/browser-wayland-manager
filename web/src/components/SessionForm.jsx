@@ -1,7 +1,6 @@
 // The settings a session is created with, and the subset that can be changed afterwards.
 import { useRef, useState } from 'react';
-import { ChevronRight } from 'lucide-react';
-import { Alert, Field, FormActions, Section } from './ui.jsx';
+import { Alert, Disclosure, Field, FormActions, Section } from './ui.jsx';
 import { Link } from '../router.jsx';
 
 const defaultProfile = {
@@ -15,24 +14,9 @@ const defaultProfile = {
 };
 const screenPresets = ['1280x720', '1920x1080', '2560x1440', '3840x2160'];
 
-/// A section that stays folded away until it is wanted.
-function Disclosure({ label, description, panelRef, children }) {
-  return (
-    <details ref={panelRef} className="group card overflow-hidden">
-      <summary className="flex cursor-pointer items-start gap-3 px-4 py-3 transition-colors select-none hover:bg-surface-3">
-        <ChevronRight className="mt-0.5 size-4 shrink-0 text-ink-3 transition-transform group-open:rotate-90" strokeWidth={2} />
-        <div className="min-w-0 flex-1">
-          <h2 className="text-sm font-semibold text-ink">{label}</h2>
-          {description && <p className="mt-0.5 text-xs leading-relaxed text-ink-3">{description}</p>}
-        </div>
-      </summary>
-      <div className="flex flex-col gap-4 border-t border-line p-4">{children}</div>
-    </details>
-  );
-}
-
-/// `blocked`, when set, says why this form cannot be saved and holds the commit back.
-export function SessionForm({ submit, error, initial, administrator = false, cancelTo, blocked = '' }) {
+/// `note` says what saving does; `blocked`, when set, replaces it with why it cannot and holds the
+/// commit back.
+export function SessionForm({ submit, error, initial, administrator = false, cancelTo, note = '', blocked = '' }) {
   const [profile, setProfile] = useState(initial || defaultProfile);
   const [packages, setPackages] = useState(initial?.packages.join(' ') || '');
   const [dockerArgs, setDockerArgs] = useState(initial?.docker_args?.join('\n') || '');
@@ -120,8 +104,9 @@ export function SessionForm({ submit, error, initial, administrator = false, can
     >
       <fieldset disabled={pending} className="flex min-w-0 flex-col gap-5">
         {!initial && (
-          <Disclosure label="Import profile" description="Paste a saved profile to fill this form in." panelRef={importPanel}>
-            <Field label="Profile JSON">
+          <Disclosure label="Import Profile" panelRef={importPanel}>
+            <div className="flex flex-col gap-4 p-4">
+              <Field label="Profile JSON">
               <textarea
                 rows={6}
                 value={text}
@@ -133,14 +118,15 @@ export function SessionForm({ submit, error, initial, administrator = false, can
                 className="input min-h-28 resize-y py-2 font-mono text-xs"
               />
             </Field>
-            <button type="button" className="btn btn-outline btn-sm self-start" onClick={importProfile}>
-              Apply profile
-            </button>
+              <button type="button" className="btn btn-outline btn-sm self-start" onClick={importProfile}>
+                Apply Profile
+              </button>
+            </div>
           </Disclosure>
         )}
         {importError && <Alert>{importError}</Alert>}
 
-        <Section title="Basics" description="The name in your workspace and the base the machine is built from.">
+        <Section title="Basics">
           <div className="flex flex-col gap-4 p-4">
             <Field label="Session name">
               <input
@@ -169,7 +155,7 @@ export function SessionForm({ submit, error, initial, administrator = false, can
           </div>
         </Section>
 
-        <Section title="Software" description="Packages installed from the distribution's repositories when the machine is built.">
+        <Section title="Software">
           <div className="p-4">
             <Field
               label="Extra packages"
@@ -188,7 +174,7 @@ export function SessionForm({ submit, error, initial, administrator = false, can
           </div>
         </Section>
 
-        <Section title="Display" description="How large the desktop is, and whether it runs a single full-screen application.">
+        <Section title="Display">
           <div className="flex flex-col gap-4 p-4">
             <Field label="Screen size">
               <select className="select select-md w-full" value={screen} onChange={e => setScreen(e.target.value)}>
@@ -218,7 +204,7 @@ export function SessionForm({ submit, error, initial, administrator = false, can
           </div>
         </Section>
 
-        <Section title="Startup" description="Run when the desktop comes up. Leave it empty for a plain desktop.">
+        <Section title="Startup">
           <div className="p-4">
             <Field label="Startup command">
               <textarea
@@ -234,8 +220,9 @@ export function SessionForm({ submit, error, initial, administrator = false, can
         </Section>
 
         {(administrator || initial) && (
-          <Disclosure label="Advanced Docker options" description="Container privileges some applications need.">
-            <Field
+          <Disclosure label="Advanced Docker Options">
+            <div className="p-4">
+              <Field
               label="Docker options"
               hint={
                 initial
@@ -252,19 +239,19 @@ export function SessionForm({ submit, error, initial, administrator = false, can
                 onChange={e => setDockerArgs(e.target.value)}
                 placeholder={'--security-opt=seccomp=unconfined\n--security-opt=apparmor=unconfined\n--cap-add=SYS_ADMIN'}
               />
-            </Field>
+              </Field>
+            </div>
           </Disclosure>
         )}
 
         {error && <Alert>{error}</Alert>}
 
-        <FormActions>
-          {blocked && <p className="mr-auto text-[11px] leading-relaxed text-ink-4">{blocked}</p>}
+        <FormActions note={blocked || note}>
           <Link to={cancelTo} className="btn btn-outline btn-sm">
             Cancel
           </Link>
           <button type="submit" className="btn btn-primary btn-sm" disabled={!!blocked}>
-            {initial ? 'Save changes' : 'Create session'}
+            {initial ? 'Save Changes' : 'Create Session'}
           </button>
         </FormActions>
       </fieldset>

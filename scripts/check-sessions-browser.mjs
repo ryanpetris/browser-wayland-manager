@@ -114,23 +114,27 @@ try {
     await page.getByLabel('Filter by state', { exact: true }).selectOption('all');
     await page.waitForFunction(count => document.querySelectorAll('article.session').length === count, sessions.length);
 
-    // Output arrives once the pane is on screen, and is not fetched before that.
+    // Logs start folded away and are not fetched until they are opened.
     await page.goto(`${origin}/sessions/${running.id}`);
-    const pane = page.locator('pre');
-    await pane.getByText('Loading logs…', { exact: true }).waitFor();
-    await pane.scrollIntoViewIfNeeded();
-    await pane.getByText('fixture log', { exact: true }).waitFor();
+    const logs = page.locator('details').filter({ has: page.getByRole('heading', { name: 'Logs', exact: true }) });
+    await logs.waitFor();
+    assert.equal(await logs.evaluate(element => element.open), false, layout);
+    await page.waitForTimeout(2500);
+    assert.equal(await logs.locator('pre').evaluate(element => element.textContent), 'Loading logs…', layout);
+    await page.getByRole('heading', { name: 'Logs', exact: true }).click();
+    assert.equal(await logs.evaluate(element => element.open), true, layout);
+    await logs.getByText('fixture log', { exact: true }).waitFor();
 
     // Settings are reachable exactly while they can be saved.
     await page.goto(`${origin}/sessions/${manager.id}`);
-    await page.getByRole('link', { name: 'Edit settings', exact: true }).click();
-    await page.getByRole('heading', { name: 'Edit settings', exact: true }).waitFor();
-    assert.equal(await page.getByRole('button', { name: 'Save changes', exact: true }).isEnabled(), true, layout);
+    await page.getByRole('link', { name: 'Edit Settings', exact: true }).click();
+    await page.getByRole('heading', { name: 'Edit Settings', exact: true }).waitFor();
+    assert.equal(await page.getByRole('button', { name: 'Save Changes', exact: true }).isEnabled(), true, layout);
     await page.goto(`${origin}/sessions/${working.id}`);
-    const shut = page.getByRole('button', { name: 'Edit settings', exact: true });
+    const shut = page.getByRole('button', { name: 'Edit Settings', exact: true });
     await shut.waitFor();
     assert.equal(await shut.isDisabled(), true, layout);
-    assert.equal(await page.getByRole('link', { name: 'Edit settings', exact: true }).count(), 0, layout);
+    assert.equal(await page.getByRole('link', { name: 'Edit Settings', exact: true }).count(), 0, layout);
     await shut.focus().catch(() => {});
     await page.keyboard.press('Enter');
     await page.waitForTimeout(200);
@@ -139,12 +143,12 @@ try {
     await page.goto(`${origin}/sessions/${working.id}/settings`);
     await page.getByText(`This session is ${working.status}.`, { exact: true }).waitFor();
     await page.getByText('Settings can be saved once the session is running or stopped.', { exact: true }).waitFor();
-    assert.equal(await page.getByRole('button', { name: 'Save changes', exact: true }).isDisabled(), true, layout);
+    assert.equal(await page.getByRole('button', { name: 'Save Changes', exact: true }).isDisabled(), true, layout);
 
     // A creation that answers after the reader has left the form does not pull them back to it.
     await page.goto(`${origin}/sessions/new`);
     await page.getByLabel('Session name', { exact: true }).fill('Abandoned fixture');
-    await page.getByRole('button', { name: 'Create session', exact: true }).click();
+    await page.getByRole('button', { name: 'Create Session', exact: true }).click();
     await page.getByRole('link', { name: 'Cancel', exact: true }).click();
     await page.getByRole('heading', { name: 'Sessions', exact: true }).waitFor();
     await page.waitForTimeout(2500);
@@ -153,18 +157,18 @@ try {
     // A non-manager's session page carries no management, even for an Administrator's own view.
     await page.goto(`${origin}/sessions/${viewer.id}`);
     await page.getByRole('heading', { name: viewer.name, exact: true }).waitFor();
-    await page.getByRole('button', { name: 'Open desktop', exact: true }).waitFor();
-    for (const absent of ['Logs', 'Elsewhere version', 'Danger zone']) {
+    await page.getByRole('button', { name: 'Open Desktop', exact: true }).waitFor();
+    for (const absent of ['Logs', 'Elsewhere Version', 'Danger Zone']) {
       assert.equal(await page.getByRole('heading', { name: absent, exact: true }).count(), 0, `${layout}: ${absent}`);
     }
-    // Runtime states what the session is doing; only a manager gets the controls that change it.
-    await page.getByRole('heading', { name: 'Runtime', exact: true }).waitFor();
-    assert.deepEqual(await page.locator('dt').allInnerTexts(), ['Distribution', 'State'], layout);
-    for (const absent of ['Edit settings', 'Start', 'Stop', 'Relaunch', 'Reinstall', 'Destroy session']) {
+    // A non-manager is told only what the machine is and that it is up.
+    assert.deepEqual(await page.locator('dt').allInnerTexts(), ['Distribution'], layout);
+    await page.getByText(viewer.status, { exact: true }).waitFor();
+    for (const absent of ['Edit Settings', 'Start', 'Stop', 'Relaunch', 'Reinstall', 'Destroy Session']) {
       assert.equal(await page.getByRole('button', { name: absent, exact: true }).count(), 0, `${layout}: ${absent}`);
     }
     // Sharing is the Administrator's, not the access role's.
-    await page.getByRole('heading', { name: 'People with access', exact: true }).waitFor();
+    await page.getByRole('heading', { name: 'People with Access', exact: true }).waitFor();
     await context.close();
   }
   assert.deepEqual(errors, []);

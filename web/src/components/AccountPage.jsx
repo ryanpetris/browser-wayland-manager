@@ -18,16 +18,23 @@ export function AccountPage({ api, user, changed }) {
   }
   return (
     <div className="mx-auto flex w-full max-w-2xl flex-col gap-7">
-      <PageHeader
-        eyebrow="Signed in"
-        title="Your account"
-        badge={user.role === 'administrator' && <Badge tone="accent">Administrator</Badge>}
-        description="Only an Administrator can change your username or your account role."
-      />
+      <PageHeader title="Your Account" badge={user.role === 'administrator' && <Badge tone="accent">Administrator</Badge>} />
       {error && <Alert>{error}</Alert>}
 
-      <Section title="Profile" description="Your display name appears wherever this account is listed.">
-        <DataList items={[{ label: 'Username', value: <code className="font-mono">{user.username}</code> }]} />
+      <Section title="Profile">
+        <DataList
+          items={[
+            {
+              label: 'Username',
+              value: (
+                <>
+                  <code className="font-mono">{user.username}</code>
+                  <span className="mt-0.5 block text-ink-4">Only an Administrator can change it.</span>
+                </>
+              ),
+            },
+          ]}
+        />
         <form
           className="flex flex-col gap-4 border-t border-line p-4"
           onSubmit={e => {
@@ -39,11 +46,11 @@ export function AccountPage({ api, user, changed }) {
             });
           }}
         >
-          <Field label="Display name">
+          <Field label="Display name" hint="Appears wherever this account is listed.">
             <input className="input" name="display_name" defaultValue={user.display_name} required maxLength={120} />
           </Field>
           <button className="btn btn-primary btn-sm self-start" disabled={busy}>
-            Save display name
+            Save Display Name
           </button>
         </form>
       </Section>
@@ -70,7 +77,7 @@ export function AccountPage({ api, user, changed }) {
             <input className="input" type="password" name="password" autoComplete="new-password" minLength={12} required />
           </Field>
           <button className="btn btn-outline btn-sm self-start" disabled={busy}>
-            Change password and sign out
+            Change Password and Sign Out
           </button>
         </form>
       </Section>

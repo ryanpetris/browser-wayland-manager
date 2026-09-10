@@ -13,12 +13,7 @@ export function NewSessionPage({ api, user, refresh }) {
   const here = '/sessions/new';
   return (
     <Column>
-      <PageHeader
-        back={{ to: '/', label: 'Sessions' }}
-        eyebrow="Your workspace"
-        title="New session"
-        description="Innkeeper builds the machine, installs Elsewhere and its packages, then hands you the desktop."
-      />
+      <PageHeader back={{ to: '/', label: 'Sessions' }} title="New Session" />
       <SessionForm
         administrator={user?.role === 'administrator'}
         error={error}
@@ -43,9 +38,9 @@ export function SessionSettingsPage({ id, sessions, loaded, api, refresh }) {
   const s = sessions.find(item => item.id === id);
   if (!s || s.access_role !== 'manager')
     return loaded ? (
-      <EmptyState className="mt-10" title="These settings are not available" description="The session may have been destroyed, or you may not manage it.">
+      <EmptyState className="mt-10" title="Settings Unavailable" description="The session may have been destroyed, or you may not manage it.">
         <Link to="/" className="btn btn-outline btn-sm mt-1">
-          Back to sessions
+          Back to Sessions
         </Link>
       </EmptyState>
     ) : (
@@ -55,12 +50,7 @@ export function SessionSettingsPage({ id, sessions, loaded, api, refresh }) {
   const here = `${back}/settings`;
   return (
     <Column>
-      <PageHeader
-        back={{ to: back, label: s.name }}
-        eyebrow="Session settings"
-        title="Edit settings"
-        description="The name applies immediately. Screen size, kiosk mode and the startup command apply on the next launch."
-      >
+      <PageHeader back={{ to: back, label: s.name }} title="Edit Settings">
         {s.settings_pending && (
           <p role="status" className="callout callout-info mt-4">
             Settings pending · {pendingNote(s)}
@@ -76,6 +66,7 @@ export function SessionSettingsPage({ id, sessions, loaded, api, refresh }) {
         initial={s}
         error={error}
         cancelTo={back}
+        note="The name applies immediately. Screen size, kiosk mode and the startup command apply on the next launch."
         blocked={settled(s) ? '' : 'Settings can be saved once the session is running or stopped.'}
         submit={async profile => {
           setError('');

@@ -79,20 +79,20 @@ try {
   assert.equal(await page.locator('select[name="role"]').inputValue(), alice.role);
   assert.equal(await page.locator('input[name="enabled"]').isChecked(), alice.enabled);
   const saved = page.waitForRequest(r => r.method() === 'PATCH');
-  await page.getByRole('button', { name: 'Save account', exact: true }).click();
+  await page.getByRole('button', { name: 'Save Account', exact: true }).click();
   assert.deepEqual((await saved).postDataJSON(), {
     username: alice.username, display_name: alice.display_name, role: alice.role, enabled: alice.enabled,
   });
 
   // Deleting asks first, cancels cleanly, and returns to the directory once confirmed.
   const before = writes.length;
-  await page.getByRole('button', { name: 'Delete account', exact: true }).click();
+  await page.getByRole('button', { name: 'Delete Account', exact: true }).click();
   const confirm = page.getByRole('dialog', { name: `Delete ${alice.display_name}`, exact: true });
   await confirm.getByRole('button', { name: 'Cancel', exact: true }).click();
   await confirm.waitFor({ state: 'detached' });
   assert.equal(writes.length, before);
-  await page.getByRole('button', { name: 'Delete account', exact: true }).click();
-  await confirm.getByRole('button', { name: 'Delete account', exact: true }).click();
+  await page.getByRole('button', { name: 'Delete Account', exact: true }).click();
+  await confirm.getByRole('button', { name: 'Delete Account', exact: true }).click();
   await page.getByRole('heading', { name: 'Users', exact: true }).waitFor();
   assert.equal(new URL(page.url()).pathname, '/users');
   assert.deepEqual(writes.slice(before), [{ path: `/api/users/${alice.id}`, body: null }]);
@@ -103,23 +103,23 @@ try {
   await page.getByRole('heading', { name: bob.display_name, exact: true }).waitFor();
   const short = writes.length;
   await page.locator('input[name="reset_password"]').fill('too short');
-  await page.getByRole('button', { name: 'Reset password', exact: true }).click();
+  await page.getByRole('button', { name: 'Reset Password', exact: true }).click();
   assert.equal(writes.length, short);
 
   // Your own account states its username and offers only what you may change.
   await page.getByRole('link', { name: identity.display_name, exact: true }).click();
-  await page.getByRole('heading', { name: 'Your account', exact: true }).waitFor();
+  await page.getByRole('heading', { name: 'Your Account', exact: true }).waitFor();
   assert.equal(await page.locator('input[name="username"]').count(), 0);
   assert.equal(await page.locator('input[name="display_name"]').inputValue(), identity.display_name);
 
   // A normal user reaches neither the directory nor an account page.
   identity = alice;
   await page.goto(`${origin}/users`);
-  await page.getByRole('heading', { name: 'Administrators only', exact: true }).waitFor();
+  await page.getByRole('heading', { name: 'Administrators Only', exact: true }).waitFor();
   await page.goto(`${origin}/users/${bob.id}`);
-  await page.getByRole('heading', { name: 'Administrators only', exact: true }).waitFor();
+  await page.getByRole('heading', { name: 'Administrators Only', exact: true }).waitFor();
   await page.goto(`${origin}/users/new`);
-  await page.getByRole('heading', { name: 'Administrators only', exact: true }).waitFor();
+  await page.getByRole('heading', { name: 'Administrators Only', exact: true }).waitFor();
   assert.equal(await page.getByRole('navigation', { name: 'Sections' }).getByRole('link', { name: 'Users', exact: true }).count(), 0);
 
   assert.deepEqual(errors, []);

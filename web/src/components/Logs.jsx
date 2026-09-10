@@ -1,6 +1,6 @@
 // Live download, setup and runtime output for one session, polled without overlapping requests.
 import { useEffect, useRef, useState } from 'react';
-import { Section } from './ui.jsx';
+import { Disclosure } from './ui.jsx';
 
 export function Logs({ api, session }) {
   const pane = useRef(null);
@@ -24,7 +24,7 @@ export function Logs({ api, session }) {
         inflight = false;
       }
     }
-    // Output is only fetched while it can be read: the pane on screen and the tab in front.
+    // Output is only fetched while it can be read: the view open, on screen, and the tab in front.
     const observer = new IntersectionObserver(entries => {
       visible = entries[0].isIntersecting;
       if (visible) tick();
@@ -47,7 +47,7 @@ export function Logs({ api, session }) {
     .map(([stage, ms]) => `${stage}: ${(ms / 1000).toFixed(2)}s`)
     .join(' · ');
   return (
-    <Section title="Logs" description="Download, setup and runtime output. The view follows new lines until you scroll away.">
+    <Disclosure label="Logs">
       <pre
         ref={pane}
         onScroll={e => {
@@ -60,6 +60,6 @@ export function Logs({ api, session }) {
         {text}
       </pre>
       {timings && <p className="border-t border-line px-4 py-2.5 text-[11px] text-ink-4">{timings}</p>}
-    </Section>
+    </Disclosure>
   );
 }

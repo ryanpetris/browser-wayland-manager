@@ -1,6 +1,6 @@
 // One session in full: what it is, how it is doing, and every action grouped by what it changes.
 import { useState } from 'react';
-import { ExternalLink, Loader2, Play, RotateCw, SlidersHorizontal, Square, Trash2, Wrench } from 'lucide-react';
+import { ExternalLink, Play, RotateCw, SlidersHorizontal, Square, Trash2, Wrench } from 'lucide-react';
 import { DataList, EmptyState, Loading, PageHeader, Section } from './ui.jsx';
 import { Confirm } from './Dialog.jsx';
 import { Link, navigate } from '../router.jsx';
@@ -9,33 +9,17 @@ import { Logs } from './Logs.jsx';
 import { Sharing } from './Sharing.jsx';
 import { StatusBadge, busyState, distribution, elapsed, installLabel, pendingNote, screenLabel, settled } from './session.jsx';
 
-const VERSION_NOTE = {
-  current: 'This session runs the preferred Elsewhere version.',
-  older: 'A newer Elsewhere version is preferred. Upgrading closes running applications.',
-  newer: 'This session runs a newer build than the preferred version.',
-  unknown: 'The installed version could not be compared with the preferred one.',
-};
-
-/// A group of buttons with the sentence that says what pressing one does.
-const ActionRow = ({ hint, children }) => (
-  <div className="flex flex-col gap-2 px-4 py-3.5">
-    <div className="flex flex-wrap items-center gap-2">{children}</div>
-    <p className="text-[11px] leading-relaxed text-ink-4">{hint}</p>
-  </div>
-);
+/// The actions a section ends with.
+const Actions = ({ children }) => <div className="flex flex-wrap items-center gap-2 border-t border-line px-4 py-3">{children}</div>;
 
 export function SessionPage({ id, sessions, loaded, user, api, busy, now, onOpen, onAction }) {
   const [confirming, setConfirming] = useState('');
   const s = sessions.find(item => item.id === id);
   if (!s)
     return loaded ? (
-      <EmptyState
-        className="mt-10"
-        title="This session is not available"
-        description="It may have been destroyed, or your access to it may have been revoked."
-      >
+      <EmptyState className="mt-10" title="Session Unavailable" description="It may have been destroyed, or your access to it may have been revoked.">
         <Link to="/" className="btn btn-outline btn-sm mt-1">
-          Back to sessions
+          Back to Sessions
         </Link>
       </EmptyState>
     ) : (
@@ -44,30 +28,50 @@ export function SessionPage({ id, sessions, loaded, user, api, busy, now, onOpen
   const manages = s.access_role === 'manager';
   const working = busy[s.id];
   const label = installLabel(s);
+  const stoppable = manages && s.status !== 'cancelled';
   return (
     <>
       <PageHeader
         back={{ to: '/', label: 'Sessions' }}
-        eyebrow={distribution(s)}
         title={s.name}
-        badge={<StatusBadge session={s} />}
-        action={
-          <button type="button" className="btn btn-primary btn-lg" disabled={s.status !== 'running' || working} onClick={() => onOpen(s)}>
-            <ExternalLink className="size-4" strokeWidth={1.75} />
-            Open desktop
-          </button>
+        badge={
+          <span className="flex flex-wrap items-center gap-2">
+            <StatusBadge session={s} />
+            {busyState(s) && <span className="text-xs text-ink-3">{s.stage}…</span>}
+            {s.status === 'running' && s.started_ms > 0 && <span className="text-xs text-ink-4">up {elapsed(s.started_ms, now)}</span>}
+          </span>
         }
-      >
-        <p className="mt-1.5 text-sm text-ink-3">Elsewhere {s.installed_version || 'version unavailable'}</p>
-      </PageHeader>
+        action={
+          <>
+            {stoppable && (
+              <button
+                type="button"
+                className="btn btn-outline btn-lg"
+                disabled={working}
+                onClick={() => onAction(s, s.status === 'stopped' ? 'start' : 'stop')}
+              >
+                {s.status === 'stopped' ? <Play className="size-4" strokeWidth={1.75} /> : <Square className="size-3.5" strokeWidth={2} />}
+                {s.status === 'stopped' ? 'Start' : 'Stop'}
+              </button>
+            )}
+            {/* Relaunching is what applies settings saved for the next launch, so it appears with them. */}
+            {manages && s.status === 'running' && s.settings_pending && (
+              <button type="button" className="btn btn-outline btn-lg" disabled={working} onClick={() => onAction(s, 'relaunch')}>
+                <RotateCw className="size-4" strokeWidth={1.75} />
+                Relaunch
+              </button>
+            )}
+            {s.status === 'running' && (
+              <button type="button" className="btn btn-primary btn-lg" disabled={working} onClick={() => onOpen(s)}>
+                <ExternalLink className="size-4" strokeWidth={1.75} />
+                Open Desktop
+              </button>
+            )}
+          </>
+        }
+      />
 
       <div className="mt-6 flex flex-col gap-2 empty:mt-0">
-        {busyState(s) && (
-          <p role="status" className="callout flex items-center gap-2 border-warn/30 bg-warn/10 text-warn">
-            <Loader2 className="size-3.5 shrink-0 animate-spin" />
-            {s.status === 'upgrading' ? 'Upgrading' : 'Preparing'}: {s.stage}…
-          </p>
-        )}
         {s.error && <p role="alert" className="callout callout-bad [overflow-wrap:anywhere]">{s.error}</p>}
         {s.settings_pending && (
           <p role="status" className="callout callout-info">
@@ -80,34 +84,27 @@ export function SessionPage({ id, sessions, loaded, user, api, busy, now, onOpen
         {s.version_error && <p className="callout callout-info">{s.version_error}</p>}
       </div>
 
-      <div className="mt-6 grid grid-cols-1 items-start gap-5 lg:grid-cols-[minmax(0,2fr)_minmax(0,1fr)]">
-        <div className="flex min-w-0 flex-col gap-5">
-          <div className="card overflow-hidden">
-            {/* A running desktop keeps the shape it is captured in; an idle one takes less of the page. */}
-            <Preview
-              session={s}
-              api={api}
-              interval={3000}
-              className={s.status === 'running' ? 'aspect-video' : 'h-56 sm:h-64'}
-              glyph="size-9"
-            />
-          </div>
+      <div className="mt-6 grid grid-cols-1 items-start gap-5 lg:grid-cols-[minmax(0,7fr)_minmax(0,5fr)]">
+        <div className="card overflow-hidden">
+          {/* The desktop keeps its shape whether or not it is up, so the page does not move when it comes back. */}
+          <Preview session={s} api={api} interval={3000} className="aspect-video" glyph="size-9" />
+        </div>
 
+        <div className="flex min-w-0 flex-col gap-5">
           <Section
             title="Configuration"
-            description={manages ? 'Distribution, packages and Docker options are fixed at creation.' : undefined}
             action={
               manages &&
               (settled(s) && !working ? (
                 <Link to={`/sessions/${s.id}/settings`} className="btn btn-outline btn-sm">
                   <SlidersHorizontal className="size-3.5" strokeWidth={1.75} />
-                  Edit settings
+                  Edit Settings
                 </Link>
               ) : (
                 // Settings are only saved for a settled session, so the way in closes with them.
                 <button type="button" className="btn btn-outline btn-sm" disabled>
                   <SlidersHorizontal className="size-3.5" strokeWidth={1.75} />
-                  Edit settings
+                  Edit Settings
                 </button>
               ))
             }
@@ -131,83 +128,30 @@ export function SessionPage({ id, sessions, loaded, user, api, busy, now, onOpen
             />
           </Section>
 
-        </div>
-
-        <div className="flex min-w-0 flex-col gap-5">
-          <Section title="Runtime" description={manages ? 'Whether the machine is up, and the controls that change that.' : undefined}>
-            <DataList
-              items={[
-                { label: 'State', value: <StatusBadge session={s} /> },
-                busyState(s) && { label: 'Stage', value: s.stage },
-                s.status === 'running' && s.started_ms > 0 && { label: 'Launched', value: `${elapsed(s.started_ms, now)} ago` },
-                manages && s.status === 'running' && s.port > 0 && { label: 'Port', value: <code className="font-mono">{s.port}</code> },
-              ]}
-            />
-            {manages && (
-              <div className="divide-y divide-line border-t border-line">
-                  <ActionRow
-                    hint={
-                      s.status === 'stopped'
-                        ? 'Starts the container and applies any pending settings.'
-                        : 'Shuts the desktop down. Running applications will close.'
-                    }
-                  >
-                    <button
-                      type="button"
-                      className="btn btn-outline btn-sm"
-                      disabled={working || s.status === 'cancelled'}
-                      onClick={() => onAction(s, s.status === 'stopped' ? 'start' : 'stop')}
-                    >
-                      {s.status === 'stopped' ? <Play className="size-3.5" strokeWidth={1.75} /> : <Square className="size-3" strokeWidth={2} />}
-                      {s.status === 'stopped' ? 'Start' : 'Stop'}
-                    </button>
-                  </ActionRow>
-                  <ActionRow hint="Restarts with the saved settings. Running applications will close.">
-                    <button
-                      type="button"
-                      className="btn btn-outline btn-sm"
-                      disabled={working || s.status !== 'running'}
-                      onClick={() => onAction(s, 'relaunch')}
-                    >
-                      <RotateCw className="size-3.5" strokeWidth={1.75} />
-                      Relaunch
-                    </button>
-                  </ActionRow>
-              </div>
-            )}
-          </Section>
-
           {manages && (
             <>
-              <Section title="Elsewhere version">
+              <Section title="Elsewhere Version">
                 <DataList
                   items={[
                     { label: 'Installed', value: s.installed_version || <span className="text-ink-4">Unavailable</span> },
                     { label: 'Preferred', value: s.expected_version },
                   ]}
                 />
-                <div className="border-t border-line">
-                  <ActionRow hint={VERSION_NOTE[s.version_status] ?? VERSION_NOTE.unknown}>
-                    <button
-                      type="button"
-                      className="btn btn-outline btn-sm"
-                      disabled={working || !settled(s)}
-                      onClick={() => setConfirming('install')}
-                    >
-                      <Wrench className="size-3.5" strokeWidth={1.75} />
-                      {label}
-                    </button>
-                  </ActionRow>
-                </div>
+                <Actions>
+                  <button type="button" className="btn btn-outline btn-sm" disabled={working || !settled(s)} onClick={() => setConfirming('install')}>
+                    <Wrench className="size-3.5" strokeWidth={1.75} />
+                    {label}
+                  </button>
+                </Actions>
               </Section>
 
-              <Section title="Danger zone" className="border-bad/25">
-                <ActionRow hint="Removes the container and permanently deletes the session's home directory.">
+              <Section title="Danger Zone" className="border-bad/25">
+                <Actions>
                   <button type="button" className="btn btn-danger btn-sm" disabled={working} onClick={() => setConfirming('destroy')}>
                     <Trash2 className="size-3.5" strokeWidth={1.75} />
-                    Destroy session
+                    Destroy Session
                   </button>
-                </ActionRow>
+                </Actions>
               </Section>
             </>
           )}
