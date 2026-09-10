@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build adjacent Elsewhere packages and select them for an explicit local Compose run."""
+"""Build adjacent Elsewhere packages and run Innkeeper with them."""
 import fcntl
 import json
 import os
@@ -57,6 +57,20 @@ def build():
     parts = version.removesuffix('.dirty').split('.')
     if len(parts) < 3 or not all(part.isascii() and part.isdigit() for part in parts):
         raise RuntimeError('Elsewhere returned an unsupported package version.')
+    compose_image = output('docker', 'compose', '--project-directory', ROOT,
+                           '-f', ROOT / 'compose.yaml', 'config', '--images')
+    targets = {'innkeeper': {'tags': [compose_image]}}
+    for distro in ('arch', 'debian'):
+        targets[distro] = {
+            'context': str(ROOT / 'scripts'),
+            'dockerfile': 'elsewhere-local.Dockerfile',
+            'target': distro,
+            'tags': [f'innkeeper-elsewhere-build:{distro}'],
+            'platforms': ['linux/amd64'],
+            'args': {'BUILDER_UID': str(os.getuid()), 'BUILDER_GID': str(os.getgid())},
+        }
+    run('docker', 'buildx', 'bake', '-f', ROOT / 'compose.yaml', '-f', '-',
+        '--load', *targets, input=json.dumps({'target': targets}), text=True, cwd=ROOT)
     generation = Path(tempfile.mkdtemp(prefix='build-', dir=LOCAL))
     publishing = False
     try:
@@ -64,10 +78,6 @@ def build():
             ('arch', 'package-arch', f'elsewhere-{version}-1-x86_64.pkg.tar.zst'),
             ('debian', 'package-deb', f'elsewhere_{version}-1_debian-13_amd64.deb')):
             image = f'innkeeper-elsewhere-build:{distro}'
-            run('docker', 'build', '--platform', 'linux/amd64', '--target', distro, '-t', image,
-                '--build-arg', f'BUILDER_UID={os.getuid()}',
-                '--build-arg', f'BUILDER_GID={os.getgid()}',
-                '-f', ROOT / 'scripts/elsewhere-local.Dockerfile', ROOT / 'scripts')
             cache = LOCAL / 'cache' / distro
             for directory in ('target', 'cargo', 'node_modules', 'web-dist'):
                 (cache / directory).mkdir(parents=True, exist_ok=True)
@@ -113,7 +123,7 @@ def build():
         # Keep artifacts once publication starts, even if its durability check fails.
         publishing = True
         atomic_json(LOCAL / 'manifest.json', {'version': version, 'directory': generation.name})
-        print(f'Local Elsewhere {version} is ready. Run make run-local to activate it.')
+        print(f'Local Elsewhere {version} is ready.')
     except BaseException:
         if not publishing:
             shutil.rmtree(generation)
@@ -122,10 +132,10 @@ def build():
 
 def main():
     action = sys.argv[1] if len(sys.argv) == 2 else ''
-    if action not in ('build', 'run', 'reset'):
-        raise RuntimeError('Expected build, run, or reset')
+    if action not in ('local', 'reset'):
+        raise RuntimeError('Expected local or reset')
     # Check the checkout before creating any local build state.
-    if action == 'build' and not SOURCE.is_dir():
+    if action == 'local' and not SOURCE.is_dir():
         raise RuntimeError('Adjacent elsewhere checkout does not exist. Nothing was checked out.')
     if os.getuid() == 0:
         raise RuntimeError('Run local-build commands as a non-root user; Arch makepkg requires it.')
@@ -139,13 +149,10 @@ def main():
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError as error:
             raise RuntimeError('Another local-build operation is running. Retry after it finishes.') from error
-        if action == 'build':
+        if action == 'local':
             build()
-        elif action == 'run':
-            if not (LOCAL / 'manifest.json').is_file() or not (LOCAL / 'compose.json').is_file():
-                raise RuntimeError('No local packages selected. Run make elsewhere-local first.')
             run('docker', 'compose', '--project-directory', ROOT, '-f', ROOT / 'compose.yaml',
-                '-f', LOCAL / 'compose.json', 'up', '-d', '--build', '--force-recreate')
+                '-f', LOCAL / 'compose.json', 'up', '-d', '--no-build', '--force-recreate')
         else:
             (LOCAL / 'manifest.json').unlink(missing_ok=True)
             (LOCAL / 'compose.json').unlink(missing_ok=True)

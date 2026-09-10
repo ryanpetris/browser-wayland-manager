@@ -11,12 +11,9 @@ web:
 test: web
 	cargo test --locked
 
-.PHONY: elsewhere-local run-local elsewhere-local-reset
-elsewhere-local:
-	python3 scripts/elsewhere-local.py build
-
-run-local:
-	python3 scripts/elsewhere-local.py run
+.PHONY: local elsewhere-local-reset
+local:
+	python3 scripts/elsewhere-local.py local
 
 elsewhere-local-reset:
 	python3 scripts/elsewhere-local.py reset

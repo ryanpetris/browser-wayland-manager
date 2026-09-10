@@ -4,7 +4,7 @@ url=$1
 package=$2
 image=$3
 if [ -z "$url" ] && [ ! -s "$package" ]; then
-    echo "Local Elsewhere package is missing; rebuild with make elsewhere-local." >&2
+    echo "Local Elsewhere package is missing; rebuild with make local." >&2
     exit 1
 fi
 mkdir -p "$(dirname "$package")"

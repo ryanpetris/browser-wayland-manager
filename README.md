@@ -214,11 +214,12 @@ download reconnects to the existing desktop; the user can request installation a
 
 ## Testing a local Elsewhere checkout
 
-Run `make elsewhere-local` as a non-root user with Python 3.9+, Git, Make, and Docker available.
+Run `make local` as a non-root user with Python 3.9+, Git, Make, and Docker with Buildx available.
 The adjacent `../elsewhere` checkout must already exist and have the history and tags required
 by its `make version` target. Innkeeper never clones or fetches that checkout.
 
-The target runs Elsewhere's `make package-arch` and `make package-deb` sequentially in Docker,
+Docker Buildx Bake builds Innkeeper and both packaging images in parallel.
+The target then runs Elsewhere's `make package-arch` and `make package-deb` sequentially in Docker,
 using separate Cargo and Node build caches and native build environments with FFmpeg development
 libraries. The Debian builder targets Debian 13. It copies the packages from the
 checkout's `dist/` into `.elsewhere-local/`, validates their metadata, and selects the build
@@ -226,9 +227,9 @@ only after both packages succeed. A failed
 build preserves the previous selection. Package metadata and filenames use Elsewhere's
 normalized version, including `.dirty` for uncommitted changes.
 
-`make run-local` rebuilds and recreates the Innkeeper Compose service with the selected
+After successful packaging, the command recreates the Innkeeper Compose service with the selected
 manifest and packages mounted read-only. Its footer identifies local mode. The override is
-read at startup; selecting another build requires running `make run-local` again. Existing
+read at startup. Run `make local` after source changes to build and activate them. Existing
 session containers are retained. New sessions install the selected local package. Start and
 Relaunch remain launch-only. Use **Reinstall** to test changed packages with the same version
 or install a dirty build whose version cannot be compared. The install action always uses the

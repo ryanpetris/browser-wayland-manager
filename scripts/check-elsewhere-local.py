@@ -27,7 +27,20 @@ import json, os, sys
 from pathlib import Path
 a = sys.argv[1:]
 with open(os.environ['CALLS'], 'a') as log: log.write(json.dumps(a) + '\\n')
-if a[0] in ('build', 'compose'): sys.exit(0)
+if a[0] == 'compose':
+    if a[-2:] == ['config', '--images']: print('innkeeper-local-fixture')
+    sys.exit(0)
+if a[:2] == ['buildx', 'bake']:
+    targets = json.load(sys.stdin)['target']
+    assert set(targets) == {'innkeeper', 'arch', 'debian'}
+    assert targets['innkeeper']['tags'] == ['innkeeper-local-fixture']
+    assert a[-4:] == ['--load', 'innkeeper', 'arch', 'debian']
+    for distro in ('arch', 'debian'):
+        assert targets[distro]['target'] == distro
+        assert targets[distro]['platforms'] == ['linux/amd64']
+        assert targets[distro]['args']['BUILDER_UID'] == str(os.getuid())
+    if os.environ.get('FAIL_BAKE'): sys.exit(7)
+    sys.exit(0)
 source = Path(a[a.index('--workdir') + 1])
 version = (source / 'version').read_text().strip().removeprefix('v').replace('-', '.')
 if 'make' in a:
@@ -50,7 +63,7 @@ else: sys.exit(8)
 ''')
     docker.chmod(0o755)
     env = dict(os.environ, PATH=str(bins) + ':' + os.environ['PATH'], CALLS=str(work / 'calls'))
-    def invoke(action='build', success=True, **extra):
+    def invoke(action='local', success=True, **extra):
         result = subprocess.run(['python3', str(root / 'scripts/elsewhere-local.py'), action],
                                 env=dict(env, **extra), capture_output=True, text=True)
         assert (result.returncode == 0) == success, result.stdout + result.stderr
@@ -78,9 +91,14 @@ else: sys.exit(8)
     assert 'type=bind' in (work / 'calls').read_text()
     compose = json.loads((local / 'compose.json').read_text())
     assert compose['services']['innkeeper']['volumes'][0]['read_only'] is True
-    for failure in ('FAIL_DEBIAN', 'BAD_METADATA'):
+    calls = lambda: [json.loads(line) for line in (work / 'calls').read_text().splitlines()]
+    assert calls()[-1][-4:] == ['up', '-d', '--no-build', '--force-recreate']
+    activations = lambda: sum('up' in call for call in calls())
+    assert activations() == 1
+    for failure in ('FAIL_BAKE', 'FAIL_DEBIAN', 'BAD_METADATA'):
         invoke(success=False, **{failure: '1'})
         assert manifest.read_bytes() == original
+        assert activations() == 1
         assert len(list(local.glob('build-*'))) == 1
     invoke(success=False, NO_OUTPUT='1')
     assert manifest.read_bytes() == original
@@ -95,10 +113,10 @@ else: sys.exit(8)
     subprocess.run(['git', '-C', str(root), 'add', '.'], check=True)
     tracked = subprocess.check_output(['git', '-C', str(root), 'ls-files'], text=True)
     assert '.elsewhere-local/' not in tracked
-    invoke('run')
-    assert json.loads((work / 'calls').read_text().splitlines()[-1])[-4:] == ['up', '-d', '--build', '--force-recreate']
+    invoke()
+    assert activations() == 2
+    assert json.loads(manifest.read_text())['directory'] != selected['directory']
     invoke('reset')
     assert not manifest.exists() and not (local / 'compose.json').exists()
     assert (local / selected['directory']).exists()
-    invoke('run', success=False)
-    print('Missing checkout, sequential builds, metadata validation, stale output, atomic selection, lock contention, ignored files, explicit Compose and reset passed')
+    print('Missing checkout, Bake image builds, sequential packaging, metadata validation, stale output, atomic selection, lock contention, ignored files, automatic Compose activation and reset passed')
