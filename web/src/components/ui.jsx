@@ -16,8 +16,8 @@ export function IconButton({ icon: Icon, label, active, className = '', ...props
       aria-label={label}
       aria-pressed={active}
       className={cx(
-        'inline-flex size-7 shrink-0 cursor-pointer items-center justify-center rounded-md transition-colors focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent disabled:pointer-events-none disabled:opacity-40',
-        active ? 'bg-accent/15 text-accent-2 ring-1 ring-accent/40 ring-inset' : 'text-ink-3 hover:bg-surface-3 hover:text-ink',
+        'inline-flex size-7 shrink-0 items-center justify-center rounded-md transition-colors focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent disabled:opacity-40',
+        active ? 'bg-accent/15 text-accent-2 ring-1 ring-accent/40 ring-inset' : 'text-ink-3 enabled:hover:bg-surface-3 enabled:hover:text-ink',
         className,
       )}
     >
@@ -129,7 +129,7 @@ export function Section({ title, description, action, className = '', children }
 export function Disclosure({ label, panelRef, children }) {
   return (
     <details ref={panelRef} className="group card overflow-hidden">
-      <summary className="flex cursor-pointer items-center gap-3 px-4 py-3 transition-colors select-none hover:bg-surface-3">
+      <summary className="flex items-center gap-3 px-4 py-3 transition-colors select-none hover:bg-surface-3">
         <ChevronRight className="size-4 shrink-0 text-ink-3 transition-transform group-open:rotate-90" strokeWidth={2} />
         <h2 className="min-w-0 flex-1 text-sm font-semibold text-ink">{label}</h2>
       </summary>

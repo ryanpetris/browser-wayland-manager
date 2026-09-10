@@ -51,17 +51,28 @@ dialog::backdrop { background: rgb(8 9 12 / 0.85); backdrop-filter: blur(6px); }
 summary { list-style: none; }
 summary::-webkit-details-marker { display: none; }
 
+/* Action controls use a hand; disabled controls keep the arrow. */
+@layer base {
+  a[href], button:enabled, select:enabled, summary, input[type="checkbox"]:enabled,
+  label:has(input[type="checkbox"]:enabled), label:has(select:enabled) {
+    cursor: pointer;
+  }
+  :disabled, label:has(:disabled) {
+    cursor: default;
+  }
+}
+
 @layer components {
   .btn {
-    @apply inline-flex h-8 shrink-0 cursor-pointer items-center justify-center gap-1.5 rounded-md border border-transparent px-3 text-sm font-medium whitespace-nowrap transition-colors select-none;
-    @apply focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent disabled:pointer-events-none disabled:opacity-40;
+    @apply inline-flex h-8 shrink-0 items-center justify-center gap-1.5 rounded-md border border-transparent px-3 text-sm font-medium whitespace-nowrap transition-colors select-none;
+    @apply focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent disabled:opacity-40;
   }
   .btn-sm { @apply h-7 px-2.5 text-xs; }
   .btn-xs { @apply h-6 gap-1 px-2 text-[11px]; }
-  .btn-primary { @apply bg-accent text-white hover:bg-accent-3; }
-  .btn-outline { @apply border-line-2 bg-surface-2 text-ink-2 hover:bg-surface-3 hover:text-ink; }
-  .btn-ghost { @apply text-ink-2 hover:bg-surface-3 hover:text-ink; }
-  .btn-danger { @apply border-bad/30 bg-bad/10 text-bad hover:border-bad/50 hover:bg-bad/20; }
+  .btn-primary { @apply bg-accent text-white not-disabled:hover:bg-accent-3; }
+  .btn-outline { @apply border-line-2 bg-surface-2 text-ink-2 not-disabled:hover:bg-surface-3 not-disabled:hover:text-ink; }
+  .btn-ghost { @apply text-ink-2 not-disabled:hover:bg-surface-3 not-disabled:hover:text-ink; }
+  .btn-danger { @apply border-bad/30 bg-bad/10 text-bad not-disabled:hover:border-bad/50 not-disabled:hover:bg-bad/20; }
   .btn-lg { @apply h-9 px-4; }
 
   .input {
@@ -70,8 +81,8 @@ summary::-webkit-details-marker { display: none; }
   }
 
   .select {
-    @apply h-7 max-w-full cursor-pointer appearance-none rounded-md border border-line bg-surface-2 pr-7 pl-2 text-[11px] text-ink-2 transition-colors;
-    @apply hover:border-line-2 hover:text-ink focus:border-accent focus:outline-none disabled:cursor-default disabled:opacity-50;
+    @apply h-7 max-w-full appearance-none rounded-md border border-line bg-surface-2 pr-7 pl-2 text-[11px] text-ink-2 transition-colors;
+    @apply hover:border-line-2 hover:text-ink focus:border-accent focus:outline-none disabled:opacity-50;
     background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='%23aab1c1' stroke-width='2.75' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
     background-repeat: no-repeat;
     background-position: right 0.5rem center;
@@ -79,7 +90,7 @@ summary::-webkit-details-marker { display: none; }
   .select-md { @apply h-8 pl-2.5 text-sm; }
 
   .check {
-    @apply size-4 shrink-0 cursor-pointer appearance-none rounded border border-line-2 bg-surface-2 transition-colors;
+    @apply size-4 shrink-0 appearance-none rounded border border-line-2 bg-surface-2 transition-colors;
     @apply checked:border-accent checked:bg-accent focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent;
     background-position: center;
     background-repeat: no-repeat;

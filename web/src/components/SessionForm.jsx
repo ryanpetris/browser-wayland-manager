@@ -197,7 +197,7 @@ export function SessionForm({ submit, error, initial, administrator = false, can
                 </Field>
               </div>
             )}
-            <label className="flex cursor-pointer items-center gap-2.5 text-sm text-ink">
+            <label className="flex items-center gap-2.5 text-sm text-ink">
               <input type="checkbox" className="check" checked={profile.kiosk} onChange={e => change('kiosk', e.target.checked)} />
               Kiosk mode
             </label>
