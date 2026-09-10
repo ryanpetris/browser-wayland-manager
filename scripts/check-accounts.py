@@ -11,6 +11,7 @@ import socket
 import sqlite3
 import subprocess
 import tempfile
+import termios
 import time
 import uuid
 from auth_fixture import Client, PASSWORD
@@ -129,25 +130,40 @@ with tempfile.TemporaryDirectory(prefix='innkeeper-accounts-') as temporary:
         listing=subprocess.run([binary,'users','list'],env=env,capture_output=True)
         assert listing.returncode==0 and admin['id'].encode() in listing.stdout
         # Recovery uses a controlling terminal and never echoes passwords.
-        pid,terminal=pty.fork()
-        if pid==0: os.execve(binary,[binary,'users','reset-password','--id',second_admin['id']],env)
-        transcript=b'';sent=0;deadline=time.monotonic()+10
-        try:
-            while time.monotonic()<deadline:
-                if select.select([terminal],[],[],.1)[0]:
-                    try: chunk=os.read(terminal,4096)
-                    except OSError: break
-                    if not chunk:break
-                    transcript+=chunk
-                    if sent==0 and b'New password:' in transcript:
-                        os.write(terminal,b'local recovery password\n');sent=1
-                    if sent==1 and b'Repeat password:' in transcript:
-                        os.write(terminal,b'local recovery password\n');sent=2
-            else:
-                os.kill(pid,9);raise AssertionError('Recovery prompt timed out')
-        finally: os.close(terminal)
-        _,status=os.waitpid(pid,0)
-        assert status==0 and sent==2 and b'local recovery password' not in transcript,transcript
+        for mode in ('mismatch', 'separate', 'together'):
+            ready_read,ready_write=os.pipe()
+            pid,terminal=pty.fork()
+            if pid==0:
+                os.close(ready_write);os.read(ready_read,1);os.close(ready_read)
+                os.execve(binary,[binary,'users','reset-password','--id',second_admin['id']],env)
+            os.close(ready_read)
+            original=termios.tcgetattr(terminal)
+            os.write(ready_write,b'1');os.close(ready_write)
+            transcript=b'';sent=0;deadline=time.monotonic()+10
+            try:
+                while time.monotonic()<deadline:
+                    if select.select([terminal],[],[],.1)[0]:
+                        try: chunk=os.read(terminal,4096)
+                        except OSError: break
+                        if not chunk:break
+                        transcript+=chunk
+                        if sent==0 and b'New password:' in transcript:
+                            assert not termios.tcgetattr(terminal)[3] & (termios.ECHO | termios.ECHONL)
+                            os.write(terminal,b'local recovery password\n');sent=1
+                            if mode=='together':
+                                os.write(terminal,b'local recovery password\n');sent=2
+                        if sent==1 and b'Repeat password:' in transcript:
+                            assert not termios.tcgetattr(terminal)[3] & (termios.ECHO | termios.ECHONL)
+                            os.write(terminal,b'different recovery password\n' if mode=='mismatch' else b'local recovery password\n');sent=2
+                else:
+                    os.kill(pid,9);raise AssertionError('Recovery prompt timed out')
+                assert termios.tcgetattr(terminal)==original
+            finally: os.close(terminal)
+            _,status=os.waitpid(pid,0)
+            assert (status!=0 if mode=='mismatch' else status==0),transcript
+            assert sent==2 and b'local recovery password' not in transcript and b'different recovery password' not in transcript,transcript
+            assert b'Repeat password:' in transcript,transcript
+            if mode=='mismatch': assert b'Passwords differ' in transcript,transcript
         with db() as conn: assert conn.execute('SELECT count(*) FROM login_sessions WHERE user_id=?',[second_admin['id']]).fetchone()[0]==0
         process=subprocess.Popen([binary],env=env,stdout=log,stderr=log)
         for _ in range(100):

@@ -1630,6 +1630,43 @@ async fn asset(uri: axum::http::Uri) -> Response {
     )
         .into_response()
 }
+fn recovery_passwords() -> Result<(String, String)> {
+    use std::os::fd::AsRawFd;
+
+    struct TerminalEcho {
+        tty: std::fs::File,
+        original: libc::termios,
+    }
+    impl Drop for TerminalEcho {
+        fn drop(&mut self) {
+            unsafe { libc::tcsetattr(self.tty.as_raw_fd(), libc::TCSANOW, &self.original) };
+        }
+    }
+
+    let tty = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open("/dev/tty")?;
+    let mut original = std::mem::MaybeUninit::uninit();
+    if unsafe { libc::tcgetattr(tty.as_raw_fd(), original.as_mut_ptr()) } != 0 {
+        return Err(std::io::Error::last_os_error().into());
+    }
+    let terminal = TerminalEcho {
+        tty,
+        original: unsafe { original.assume_init() },
+    };
+    let mut hidden = terminal.original;
+    hidden.c_lflag &= !(libc::ECHO | libc::ECHONL);
+    // Echo stays off before either prompt is visible and between the two reads.
+    if unsafe { libc::tcsetattr(terminal.tty.as_raw_fd(), libc::TCSANOW, &hidden) } != 0 {
+        return Err(std::io::Error::last_os_error().into());
+    }
+    Ok((
+        rpassword::prompt_password("New password: ")?,
+        rpassword::prompt_password("Repeat password: ")?,
+    ))
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     if std::env::args_os()
@@ -1681,8 +1718,7 @@ async fn main() -> Result<()> {
                 if account.is_none_or(|u| !u.enabled) {
                     bail!("Enabled account not found")
                 }
-                let password = rpassword::prompt_password("New password: ")?;
-                let confirm = rpassword::prompt_password("Repeat password: ")?;
+                let (password, confirm) = recovery_passwords()?;
                 if password != confirm {
                     bail!("Passwords differ")
                 }
