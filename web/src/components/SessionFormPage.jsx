@@ -8,13 +8,15 @@ import { pendingNote, settled } from './session.jsx';
 /// Forms sit in a single column so the eye has one place to go.
 const Column = ({ children }) => <div className="mx-auto flex w-full max-w-3xl flex-col gap-7">{children}</div>;
 
-export function NewSessionPage({ api, user, refresh }) {
+export function NewSessionPage({ api, user, refresh, loaded, gpuAvailable }) {
   const [error, setError] = useState('');
   const here = '/sessions/new';
+  if (!loaded) return <Loading>Loading session options…</Loading>;
   return (
     <Column>
       <PageHeader back={{ to: '/', label: 'Sessions' }} title="New Session" />
       <SessionForm
+        gpuAvailable={gpuAvailable}
         administrator={user?.role === 'administrator'}
         error={error}
         cancelTo="/"
@@ -66,7 +68,7 @@ export function SessionSettingsPage({ id, sessions, loaded, api, refresh }) {
         initial={s}
         error={error}
         cancelTo={back}
-        note="The name applies immediately. Screen size, kiosk mode and the startup command apply on the next launch."
+        note="The name applies immediately. Screen size, kiosk mode, software encoding and the startup command apply on the next launch."
         blocked={settled(s) ? '' : 'Settings can be saved once the session is running or stopped.'}
         submit={async profile => {
           setError('');
@@ -77,6 +79,7 @@ export function SessionSettingsPage({ id, sessions, loaded, api, refresh }) {
                 name: profile.name,
                 screen_size: profile.screen_size,
                 kiosk: profile.kiosk,
+                software_encoding: profile.software_encoding,
                 startup_command: profile.startup_command,
               }),
             });

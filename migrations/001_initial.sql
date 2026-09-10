@@ -17,7 +17,8 @@ CREATE TABLE sessions (
     repair_available INTEGER NOT NULL CHECK (repair_available IN (0, 1)),
     version_error TEXT,
     upgrade_started_ms INTEGER NOT NULL CHECK (upgrade_started_ms >= 0),
-    upgrade_target TEXT
+    upgrade_target TEXT,
+    gpu_access INTEGER NOT NULL CHECK (gpu_access IN (0, 1))
 ) STRICT;
 
 CREATE TABLE session_settings (
@@ -27,6 +28,7 @@ CREATE TABLE session_settings (
     height INTEGER,
     kiosk INTEGER NOT NULL CHECK (kiosk IN (0, 1)),
     startup_command TEXT NOT NULL,
+    software_encoding INTEGER NOT NULL CHECK (software_encoding IN (0, 1)),
     PRIMARY KEY (session_id, kind),
     CHECK ((width IS NULL AND height IS NULL) OR
            (width IS NOT NULL AND height IS NOT NULL AND

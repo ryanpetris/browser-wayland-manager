@@ -102,8 +102,8 @@ else:sys.exit(1)
         user=admin.api('/users','POST',dict(username='shared',display_name='Shared user',password=PASSWORD))['user'];client=Client(admin.origin);client.login('shared')
         sid=str(uuid.uuid4())
         with sqlite3.connect(data/'state.sqlite3') as db:
-            db.execute("INSERT INTO sessions(id,name,distribution,port,started_ms,status,stage,repair_available,upgrade_started_ms) VALUES(?,'Fixture','debian',19500,0,'preparing','launch',0,0)",[sid])
-            db.execute("INSERT INTO session_settings VALUES(?,'desired',NULL,NULL,0,'')",[sid])
+            db.execute("INSERT INTO sessions(id,name,distribution,port,started_ms,status,stage,repair_available,upgrade_started_ms,gpu_access) VALUES(?,'Fixture','debian',19500,0,'preparing','launch',0,0,0)",[sid])
+            db.execute("INSERT INTO session_settings VALUES(?,'desired',NULL,NULL,0,'',1)",[sid])
         listening_at=time.monotonic()+12
         access=f'/sessions/{sid}/access/{user["id"]}'
         admin.api(access,'PUT',{'role':'viewer'});wait(lambda:len(rows())==1)

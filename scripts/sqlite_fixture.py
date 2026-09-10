@@ -46,11 +46,11 @@ def seed(data, sessions, installation_id):
         db.execute('UPDATE metadata SET installation_id = ?', [installation_id])
         for s in sessions:
             db.execute('''INSERT INTO sessions
-                (id,name,distribution,port,started_ms,status,stage,error,repair_available,upgrade_started_ms)
-                VALUES (?,?,?,?,?,?,?,?,0,0)''',
+                (id,name,distribution,port,started_ms,status,stage,error,repair_available,upgrade_started_ms,gpu_access)
+                VALUES (?,?,?,?,?,?,?,?,0,0,0)''',
                 [s['id'], s['name'], s['distribution'], s['port'], s.get('started_ms', 0), s['status'], s['stage'], s.get('error')])
             for kind in ('desired', 'applied'):
-                db.execute('INSERT INTO session_settings VALUES (?,?,NULL,NULL,0,?)', [s['id'], kind, ''])
+                db.execute('INSERT INTO session_settings VALUES (?,?,NULL,NULL,0,?,1)', [s['id'], kind, ''])
 
 
 def settings(data, sid, kind):
@@ -59,7 +59,7 @@ def settings(data, sid, kind):
         if row is None:
             return None
         return dict(screen_size=None if row['width'] is None else dict(width=row['width'], height=row['height']),
-                    kiosk=bool(row['kiosk']), startup_command=row['startup_command'])
+                    kiosk=bool(row['kiosk']), startup_command=row['startup_command'], software_encoding=bool(row['software_encoding']))
 
 
 def reject_updates(data, sid, enabled):

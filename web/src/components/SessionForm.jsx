@@ -8,6 +8,8 @@ const defaultProfile = {
   distribution: 'arch',
   packages: [],
   docker_args: [],
+  gpu_access: false,
+  software_encoding: false,
   startup_command: '',
   screen_size: null,
   kiosk: false,
@@ -16,8 +18,9 @@ const screenPresets = ['1280x720', '1920x1080', '2560x1440', '3840x2160'];
 
 /// `note` says what saving does; `blocked`, when set, replaces it with why it cannot and holds the
 /// commit back.
-export function SessionForm({ submit, error, initial, administrator = false, cancelTo, note = '', blocked = '' }) {
-  const [profile, setProfile] = useState(initial || defaultProfile);
+export function SessionForm({ submit, error, initial, gpuAvailable = false, administrator = false, cancelTo, note = '', blocked = '' }) {
+  const defaults = { ...defaultProfile, gpu_access: gpuAvailable, software_encoding: !gpuAvailable };
+  const [profile, setProfile] = useState(initial || defaults);
   const [packages, setPackages] = useState(initial?.packages.join(' ') || '');
   const [dockerArgs, setDockerArgs] = useState(initial?.docker_args?.join('\n') || '');
   const initialSize = initial?.screen_size;
@@ -38,7 +41,7 @@ export function SessionForm({ submit, error, initial, administrator = false, can
       if (!value || Array.isArray(value) || typeof value !== 'object' || Object.keys(value).some(key => !Object.hasOwn(defaultProfile, key))) {
         throw new Error('Profile must be an object containing session settings only.');
       }
-      const p = { ...defaultProfile, ...value };
+      const p = { ...defaults, ...value };
       if (
         typeof p.name !== 'string' ||
         !['arch', 'debian', 'ubuntu'].includes(p.distribution) ||
@@ -47,7 +50,9 @@ export function SessionForm({ submit, error, initial, administrator = false, can
         !Array.isArray(p.docker_args) ||
         p.docker_args.some(arg => typeof arg !== 'string' || /[\r\n\0]/.test(arg)) ||
         typeof p.startup_command !== 'string' ||
-        typeof p.kiosk !== 'boolean'
+        typeof p.kiosk !== 'boolean' ||
+        typeof p.gpu_access !== 'boolean' ||
+        typeof p.software_encoding !== 'boolean'
       ) {
         throw new Error('Invalid profile field types.');
       }
@@ -60,6 +65,8 @@ export function SessionForm({ submit, error, initial, administrator = false, can
       ) {
         throw new Error('Screen dimensions must be even numbers between 2 and 8192.');
       }
+      if (p.gpu_access && !gpuAvailable) throw new Error('GPU access requires the host render node.');
+      p.software_encoding ||= !p.gpu_access;
       setProfile(p);
       setPackages(p.packages.join(' '));
       setDockerArgs(p.docker_args.join('\n'));
@@ -96,6 +103,7 @@ export function SessionForm({ submit, error, initial, administrator = false, can
             packages: packages.trim().split(/\s+/).filter(Boolean),
             docker_args: (administrator ? dockerArgs : '').split('\n').map(line => line.trim()).filter(Boolean),
             screen_size: size,
+            software_encoding: profile.software_encoding || !profile.gpu_access,
           });
         } finally {
           setPending(false);
@@ -177,6 +185,21 @@ export function SessionForm({ submit, error, initial, administrator = false, can
 
         <Section title="Display">
           <div className="flex flex-col gap-4 p-4">
+            <div className="flex flex-col gap-2">
+              <label className="flex items-center gap-2.5 text-sm text-ink">
+                <input type="checkbox" className="check" name="gpu_access" checked={profile.gpu_access}
+                  disabled={!!initial || (!gpuAvailable && !profile.gpu_access)}
+                  onChange={e => setProfile(p => ({ ...p, gpu_access: e.target.checked, software_encoding: p.software_encoding || !e.target.checked }))} />
+                GPU access
+              </label>
+              <p className="text-xs text-ink-3">{initial ? 'GPU access is set at creation.' : gpuAvailable ? 'Let the desktop and applications use the host GPU. Set at creation.' : 'The host render node is unavailable.'}</p>
+              <label className="flex items-center gap-2.5 text-sm text-ink">
+                <input type="checkbox" className="check" name="software_encoding" checked={profile.software_encoding || !profile.gpu_access}
+                  disabled={!profile.gpu_access} onChange={e => change('software_encoding', e.target.checked)} />
+                Software video encoding
+              </label>
+              <p className="text-xs text-ink-3">Use CPU encoders for the viewer stream. The desktop runs at 30 Hz. Applies on Start or Relaunch; required without GPU access.</p>
+            </div>
             <Field label="Screen size">
               <select className="select select-md w-full" value={screen} onChange={e => setScreen(e.target.value)}>
                 <option value="dynamic">Dynamic</option>

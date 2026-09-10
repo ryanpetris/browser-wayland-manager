@@ -14,6 +14,7 @@ filter=$!
 set -- --no-tls --listen 0.0.0.0:19443 --url-prefix "$INNKEEPER_URL_PREFIX" --rtc-port "$INNKEEPER_RTC_PORT" --elements
 if [ -n "${INNKEEPER_RTC_ADDR:-}" ]; then set -- "$@" --rtc-addr "$INNKEEPER_RTC_ADDR"; fi
 if [ -n "${INNKEEPER_SCREEN_SIZE:-}" ]; then set -- "$@" --screen-size "$INNKEEPER_SCREEN_SIZE"; fi
+if [ "${INNKEEPER_SOFTWARE_ENCODING}" = 1 ]; then set -- "$@" --software-encoding; fi
 if [ "${INNKEEPER_KIOSK:-0}" = 1 ]; then set -- "$@" --kiosk; fi
 if [ -n "${INNKEEPER_STARTUP_COMMAND:-}" ]; then set -- "$@" --exec "$INNKEEPER_STARTUP_COMMAND"; fi
 elsewhere "$@" > "$XDG_RUNTIME_DIR/output" 2>&1 &

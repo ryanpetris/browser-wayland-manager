@@ -7,7 +7,7 @@ import { chromium } from '../web/node_modules/playwright-core/index.mjs';
 const administrator = { id: 'admin-fixture', username: 'fixture', display_name: 'Fixture', role: 'administrator' };
 const manager = {
   id: 'manager-fixture', name: 'Managed fixture', distribution: 'arch', packages: ['firefox'], docker_args: [],
-  startup_command: '', screen_size: null, kiosk: false, settings_pending: false, installed_version: '0.7.3-1',
+  startup_command: '', screen_size: null, kiosk: false, software_encoding: true, gpu_access: false, settings_pending: false, installed_version: '0.7.3-1',
   repair_available: false, version_error: null, expected_version: '0.7.3', version_status: 'current', port: 0,
   started_ms: 0, status: 'stopped', stage: 'idle', error: null, timings: {}, access_role: 'manager',
 };

@@ -77,8 +77,16 @@ try:
     viewer_user=api('/users','POST',dict(username='viewer',display_name='Viewer',password=PASSWORD))['user']
     viewer_account.login('viewer')
     browser=[]
+    gpu_checks = os.environ.get('PROXY_CHECK_GPU') == '1'
+    gpu_access = os.environ.get('PROXY_GPU_ACCESS') == '1'
+    if gpu_checks:
+        available = Path('/dev/dri/renderD128').exists()
+        assert api('/sessions')['gpu_available'] == available
+        if not available:
+            assert account.request('/sessions', 'POST', dict(name='Unavailable GPU', distribution='ubuntu', packages=[], gpu_access=True))[0] == 400
     for distro in os.environ.get('PROXY_DISTROS','arch,debian,ubuntu').split(','):
-        sid=api('/sessions','POST',dict(name='Proxy '+distro,distribution=distro,packages=['foot'],startup_command='foot',screen_size={'width':640,'height':480}))['id']
+        options = dict(gpu_access=gpu_access, software_encoding=False) if gpu_checks else {}
+        sid=api('/sessions','POST',dict(name='Proxy '+distro,distribution=distro,packages=['foot'] + (['vulkan-tools'] if gpu_checks else []),startup_command='foot',screen_size={'width':640,'height':480}, **options))['id']
         created.append(sid)
         def ready():
             s=state(sid)
@@ -89,6 +97,42 @@ try:
         wait(ready,600)
         name='innkeeper-'+sid
         info=json.loads(subprocess.check_output(['docker','inspect',name]))[0]
+        if gpu_checks:
+            def check_gpu(software):
+                current = json.loads(subprocess.check_output(['docker','inspect',name]))[0]
+                devices = current['HostConfig']['Devices'] or []
+                assert any(d['PathInContainer']=='/dev/dri' for d in devices) == gpu_access, devices
+                assert current['Id'] == info['Id']
+                assert state(sid)['gpu_access'] == gpu_access
+                assert state(sid)['software_encoding'] == software
+                command = subprocess.check_output(['docker','top',name,'-eo','pid,args'],text=True)
+                desktop = next(line.split(None,1)[1] for line in command.splitlines()[1:] if len(line.split(None,1)) == 2 and line.split(None,1)[1].startswith('elsewhere '))
+                assert ('--software-encoding' in desktop.split()) == software, desktop
+                logs = api('/sessions/'+sid+'/logs')['text']
+                encoders = [line for line in logs.splitlines() if 'video encoders' in line]
+                assert encoders and ('software=true' if software else 'software=false') in encoders[-1], logs
+                return current
+            check_gpu(not gpu_access)
+            if gpu_access:
+                subprocess.run(['docker','exec','--user','elsewhere',name,'sh','-c',
+                                'test -r /dev/dri/renderD128 && test -w /dev/dri/renderD128'],check=True)
+            else:
+                subprocess.run(['docker','exec',name,'test','!','-e','/dev/dri/renderD128'],check=True)
+            probe = subprocess.run(['docker','exec','--user','elsewhere','-e',
+                         'XDG_RUNTIME_DIR=/tmp/runtime-elsewhere',name,'vulkaninfo','--summary'],text=True,capture_output=True)
+            vulkan = probe.stdout + probe.stderr
+            assert probe.returncode == 0 or (not gpu_access and probe.returncode == 1 and 'ERROR_INITIALIZATION_FAILED' in vulkan), vulkan
+            assert ('PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU' in vulkan or 'PHYSICAL_DEVICE_TYPE_DISCRETE_GPU' in vulkan) == gpu_access, vulkan
+            for software, action in ((True,'relaunch'),(False,'start'),(True,'relaunch')):
+                desired = {key:state(sid)[key] for key in ('name','screen_size','kiosk','startup_command')}
+                desired['software_encoding'] = software
+                api('/sessions/'+sid+'/settings','PUT',desired)
+                if action == 'start': api('/sessions/'+sid+'/stop','POST')
+                api('/sessions/'+sid+'/'+action,'POST')
+                wait(ready)
+                check_gpu(software or not gpu_access)
+                assert not state(sid)['settings_pending']
+            print(distro+': GPU devices, Vulkan client access, encoding flags/logs and Start/Relaunch passed',flush=True)
         if older := os.environ.get('PROXY_UPGRADE_FROM'):
             asset=(f'elsewhere-{older}-1-x86_64.pkg.tar.zst' if distro=='arch' else
                    f'elsewhere_{older}-1_{dict(debian="debian-13",ubuntu="ubuntu-26.04")[distro]}_amd64.deb')

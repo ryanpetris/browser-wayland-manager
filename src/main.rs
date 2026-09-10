@@ -97,6 +97,8 @@ struct Session {
     distribution: String,
     packages: Vec<String>,
     docker_args: Vec<String>,
+    gpu_access: bool,
+    software_encoding: bool,
     startup_command: String,
     screen_size: Option<ScreenSize>,
     kiosk: bool,
@@ -277,7 +279,7 @@ async fn docker(args: &[&str]) -> Result<String> {
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 fn public_session(s: &Session) -> serde_json::Value {
-    serde_json::json!({"id":s.id,"name":s.name,"distribution":s.distribution,"packages":s.packages,"docker_args":s.docker_args,"startup_command":s.startup_command,"screen_size":s.screen_size,"kiosk":s.kiosk,"settings_pending":s.applied_settings.as_ref().is_some_and(|applied| *applied != LaunchSettings::from(s)),"installed_version":s.installed_version,"repair_available":s.repair_available,"version_error":s.version_error,"expected_version":elsewhere_version(),"version_status":version_status(s.installed_version.as_deref()),"port":s.port,"started_ms":s.started_ms,"status":s.status,"stage":s.stage,"error":s.error,"timings":s.timings})
+    serde_json::json!({"id":s.id,"name":s.name,"distribution":s.distribution,"packages":s.packages,"docker_args":s.docker_args,"gpu_access":s.gpu_access,"software_encoding":s.software_encoding,"startup_command":s.startup_command,"screen_size":s.screen_size,"kiosk":s.kiosk,"settings_pending":s.applied_settings.as_ref().is_some_and(|applied| *applied != LaunchSettings::from(s)),"installed_version":s.installed_version,"repair_available":s.repair_available,"version_error":s.version_error,"expected_version":elsewhere_version(),"version_status":version_status(s.installed_version.as_deref()),"port":s.port,"started_ms":s.started_ms,"status":s.status,"stage":s.stage,"error":s.error,"timings":s.timings})
 }
 fn authorized_session(s: &Session, role: &str) -> serde_json::Value {
     let mut value = if role == "manager" {
@@ -304,7 +306,7 @@ async fn list(State(app): State<Shared>, auth: Auth) -> Api<Json<serde_json::Val
         }
     }
     Ok(Json(
-        serde_json::json!({"sessions":sessions,"version":env!("INNKEEPER_VERSION"),"local_elsewhere":LOCAL_ELSEWHERE.get().is_some()}),
+        serde_json::json!({"sessions":sessions,"version":env!("INNKEEPER_VERSION"),"local_elsewhere":LOCAL_ELSEWHERE.get().is_some(),"gpu_available":gpu_available()}),
     ))
 }
 #[derive(Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -320,6 +322,9 @@ impl ScreenSize {
             .all(|n| (2..=8192).contains(n) && n % 2 == 0)
     }
 }
+fn gpu_available() -> bool {
+    std::path::Path::new("/dev/dri/renderD128").exists()
+}
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Create {
@@ -328,6 +333,10 @@ struct Create {
     packages: Vec<String>,
     #[serde(default)]
     docker_args: Vec<String>,
+    #[serde(default = "gpu_available")]
+    gpu_access: bool,
+    #[serde(default)]
+    software_encoding: bool,
     #[serde(default)]
     startup_command: String,
     #[serde(default)]
@@ -338,6 +347,7 @@ struct Create {
 #[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 struct LaunchSettings {
+    software_encoding: bool,
     #[serde(deserialize_with = "required_screen_size")]
     screen_size: Option<ScreenSize>,
     kiosk: bool,
@@ -351,6 +361,7 @@ fn required_screen_size<'de, D: serde::Deserializer<'de>>(
 impl From<&Session> for LaunchSettings {
     fn from(s: &Session) -> Self {
         Self {
+            software_encoding: s.software_encoding,
             screen_size: s.screen_size,
             kiosk: s.kiosk,
             startup_command: s.startup_command.clone(),
@@ -360,6 +371,7 @@ impl From<&Session> for LaunchSettings {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Settings {
+    software_encoding: bool,
     name: String,
     #[serde(deserialize_with = "required_screen_size")]
     screen_size: Option<ScreenSize>,
@@ -420,6 +432,7 @@ async fn settings(
             s.name = input.name.trim().into();
             s.screen_size = input.screen_size;
             s.kiosk = input.kiosk;
+            s.software_encoding = input.software_encoding || !s.gpu_access;
             s.startup_command = input.startup_command;
         })
         .await?;
@@ -434,8 +447,9 @@ fn launch_config(settings: &LaunchSettings) -> String {
         .unwrap_or_default();
     let command = settings.startup_command.replace('\'', "'\"'\"'");
     format!(
-        "export INNKEEPER_SCREEN_SIZE='{size}'\nexport INNKEEPER_KIOSK='{}'\nexport INNKEEPER_STARTUP_COMMAND='{command}'\n",
-        u8::from(settings.kiosk)
+        "export INNKEEPER_SCREEN_SIZE='{size}'\nexport INNKEEPER_KIOSK='{}'\nexport INNKEEPER_SOFTWARE_ENCODING='{}'\nexport INNKEEPER_STARTUP_COMMAND='{command}'\n",
+        u8::from(settings.kiosk),
+        u8::from(settings.software_encoding)
     )
 }
 fn validate_docker_args(args: &[String]) -> Api<()> {
@@ -491,16 +505,23 @@ async fn create(
         }
         validate_settings(&input.name, input.screen_size, &input.startup_command)?;
         validate_docker_args(&input.docker_args)?;
+        if input.gpu_access && !gpu_available() {
+            return Err(Error(StatusCode::BAD_REQUEST, "GPU access requires the host render node.".into()));
+        }
+        let software_encoding = input.software_encoding || !input.gpu_access;
         let s = Session {
             id: Uuid::new_v4().to_string(),
             name: input.name.trim().into(),
             distribution: input.distribution,
             packages: input.packages,
             docker_args: input.docker_args,
+            gpu_access: input.gpu_access,
+            software_encoding,
             startup_command: input.startup_command.clone(),
             screen_size: input.screen_size,
             kiosk: input.kiosk,
             applied_settings: Some(LaunchSettings {
+                software_encoding,
                 screen_size: input.screen_size,
                 kiosk: input.kiosk,
                 startup_command: input.startup_command.clone(),
@@ -709,7 +730,8 @@ async fn prepare(app: Shared, id: &str, new_container: bool, attempt_ms: u64) ->
             } else {
                 args.splice(1..1, ["-p".into(), tcp]);
             }
-            if std::path::Path::new("/dev/dri/renderD128").exists() {
+            if s.gpu_access {
+                anyhow::ensure!(gpu_available(), "GPU access requires the host render node");
                 args.splice(
                     1..1,
                     ["--device".to_owned(), "/dev/dri:/dev/dri".to_owned()],

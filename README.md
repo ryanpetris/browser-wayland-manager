@@ -47,7 +47,7 @@ browser's own back and forward buttons.
 | `/` | The workspace: every session you can reach, as a grid or a list |
 | `/sessions/new` | Create a session |
 | `/sessions/<id>` | One session: preview, configuration, runtime, logs, sharing, and its actions |
-| `/sessions/<id>/settings` | Change that session's name, screen size, kiosk mode, and startup command |
+| `/sessions/<id>/settings` | Change that session's name, screen size, kiosk mode, software encoding, and startup command |
 | `/account` | Your display name and password |
 | `/users` | Every account (Administrators) |
 | `/users/new` | Create an account (Administrators) |
@@ -128,7 +128,7 @@ Creation validates package names, records the session, downloads a release packa
 
 Inside the session container, setup installs runtime services, prepares the user and runtime directories, and installs Elsewhere with `apt` or `pacman`. The package manager resolves the package's declared dependencies, including Debian recommendations. A separate script installs requested extra packages before Elsewhere starts. Innkeeper requires Elsewhere 0.8.1 and creates a private non-expiring internal credential with `elsewhere token create --admin` in the server's execution environment. It stores credentials privately and never includes them in startup logs, machine listings, or previews. Initialization includes authenticated token inventory. Browser tokens are created only through the CSRF-protected connect POST and are non-expiring. Previews use Innkeeper's internal credential. Setup and installation markers allow stopped sessions to restart without reinstalling packages.
 
-All distributions include xterm for sessions with no extra packages. Sessions use hardware encoding when a supported GPU is available, and software encoding without a GPU. Release packages are assumed compatible with the selected distribution; Innkeeper does not perform a separate binary or shared-library compatibility check.
+All distributions include xterm for sessions with no extra packages. Sessions use VA-API encoding when GPU access is enabled and software video encoding is off. Otherwise they use CPU encoders. Release packages are assumed compatible with the selected distribution; Innkeeper does not perform a separate binary or shared-library compatibility check.
 
 Sessions default to `GSK_RENDERER=ngl` to work around GTK 4 Vulkan rendering artifacts
 and `QT_QPA_PLATFORM='wayland;xcb'` so Qt tries Wayland, then X11 when its Wayland
@@ -257,15 +257,16 @@ when no local instance needs those files.
 
 ## Hardware encoding
 
-New sessions use the host GPU for rendering and VA-API video encoding when
-`/dev/dri/renderD128` is available to Innkeeper. The Compose file mounts
+New sessions default to GPU access and VA-API video encoding when
+`/dev/dri/renderD128` is available to Innkeeper. Disable GPU access to use software rendering,
+or enable software video encoding to retain GPU rendering with CPU encoding. The Compose file mounts
 `/dev/dri` so Innkeeper can detect it, and Innkeeper passes GPU devices to
-session containers. When running Innkeeper with `docker run`, also mount
+session containers only when GPU access is enabled. When running Innkeeper with `docker run`, also mount
 `/dev/dri:/dev/dri:ro`. The Docker daemon must run on the same host.
 
 Native installations detect the devices directly without additional configuration.
 Session setup installs Intel and AMD VA-API and Vulkan drivers for encoding and
-rendering, and grants the desktop user access to the device groups. Hosts without a render device use software rendering
+rendering, and grants the desktop user access to the device groups. Sessions without GPU access use software rendering
 and encoding. A GPU must support VA-API encoding to use the hardware path.
 Creation installs Innkeeper's pinned Elsewhere package. Start and Relaunch keep the installed
 package and refresh the container entrypoint, desktop startup script, and launch settings.
@@ -280,7 +281,7 @@ In **New session**, expand **Import profile**, paste a profile's JSON, and choos
 Review the settings and choose **Create session**.
 
 Profiles support `name`, `distribution` (`arch`, `debian`, or `ubuntu`), `packages` (an array of
-package names), `startup_command`, `screen_size`, `kiosk`, and `docker_args`. Omitted fields use the
+package names), `startup_command`, `screen_size`, `kiosk`, `docker_args`, `gpu_access`, and `software_encoding`. Omitted fields use the
 form defaults. Unknown fields are rejected. `screen_size` is `null` for dynamic sizing, or an object with `width`
 and `height`, both even integers from 2 to 8192. Kiosk mode defaults to `false`.
 The startup command runs through `sh -c` as the desktop user on each session start,
@@ -303,8 +304,20 @@ Start, Relaunch, Upgrade, Downgrade, Reinstall, and Innkeeper restarts. They are
 Settings and are separate from pending desktop settings. Create a new session to use
 different Docker options.
 
+**GPU access** lets the desktop and applications use the host GPU. It is set at creation and defaults to on when `/dev/dri/renderD128` is available to Innkeeper. Without that render node, GPU access cannot be enabled. Disabling it creates a session without GPU devices.
+
+**Software video encoding** uses CPU encoders for the viewer stream while retaining GPU access for applications when enabled. The desktop runs at 30 Hz with software encoding. This launch setting applies on Start or Relaunch and does not recreate the container.
+
+| GPU access | Software video encoding | Rendering and encoding |
+| --- | --- | --- |
+| On | Off | GPU rendering and VA-API encoding |
+| On | On | GPU rendering and CPU encoding |
+| Off | On automatically | Software rendering and CPU encoding |
+
+Profiles and `POST /api/sessions` accept `gpu_access` and `software_encoding` booleans. Omitted GPU access follows host availability; omitted software encoding is off when GPU access is on. Without GPU access, software encoding is always saved as on. Edit Settings and `PUT /api/sessions/{id}/settings` can change `software_encoding`; GPU access remains fixed for that container.
+
 Use **Edit Settings** on a running or stopped session to change its name, screen size,
-kiosk mode, or startup command. **Save Changes** updates the name immediately and saves the
+kiosk mode, software encoding, or startup command. **Save Changes** updates the name immediately and saves the
 other settings for the next launch. It does not interrupt the desktop. Distribution
 and extra packages are set at creation.
 
@@ -317,8 +330,8 @@ directory, connection tokens, and port are retained. A failed launch retains sav
 for retry through Stop and Start. Settings cannot be saved during preparation or failure;
 stop a failed session before editing it.
 
-The authenticated API accepts `PUT /api/sessions/{id}/settings` with all four fields:
-`name`, `screen_size`, `kiosk`, and `startup_command`. Use `null` for dynamic screen sizing,
+The authenticated API accepts `PUT /api/sessions/{id}/settings` with all five fields:
+`name`, `screen_size`, `kiosk`, `software_encoding`, and `startup_command`. Use `null` for dynamic screen sizing,
 `false` to disable kiosk mode, and an empty string to clear the startup command.
 Unknown or missing fields are rejected. `POST /api/sessions/{id}/relaunch` relaunches a
 running session using saved settings. Session responses include `settings_pending`.
@@ -433,3 +446,5 @@ session refresh check for one distribution.
 Set `PROXY_UPGRADE_FROM` to an older Elsewhere release with matching artifacts to check an actual package upgrade to the selected version. The rig installs the older package, requests the upgrade through Innkeeper, verifies the installed version, and starts the same container.
 
 For browser checks, set `PROXY_WAIT_BROWSER=1` on that desktop rig, build the `proxy-browser` target, and run `node /src/scripts/check-proxy-browser.mjs` with host networking and the same `/work` directory after `/work/browser.json` appears. Set `PROXY_BROWSER_ORIGIN=https://localhost:29301` to exercise hostname resolution. This covers simultaneous desktops, Open and token isolation, decoded video and a non-silent audio test tone, file transfers, MCP, terminals, viewer access, direct WebRTC and WebSocket fallback. The browser writes `/work/browser-done` so the desktop rig can clean up.
+
+To check GPU access and encoder selection in the real-desktop rig, set `PROXY_CHECK_GPU=1` and `PROXY_GPU_ACCESS=1` on `check-proxy-desktops.py` and expose `/dev/dri` to the rig. Repeat with `PROXY_GPU_ACCESS=0`, then keep that setting and run without exposing `/dev/dri`. The check verifies device access by the desktop user, Vulkan client enumeration, encoder logs, and Start/Relaunch without container replacement. Use `PROXY_WAIT_BROWSER=1` for the accompanying audio/video browser check.

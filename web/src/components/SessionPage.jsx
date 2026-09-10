@@ -125,6 +125,8 @@ export function SessionPage({ id, sessions, loaded, user, api, busy, now, onOpen
                 { label: 'Distribution', value: distribution(s) },
                 manages && { label: 'Packages', value: s.packages?.length ? s.packages.join(', ') : <span className="text-ink-4">None</span> },
                 manages && { label: 'Screen size', value: screenLabel(s) },
+                manages && { label: 'GPU access', value: s.gpu_access ? 'On' : 'Off' },
+                manages && { label: 'Software video encoding', value: s.software_encoding ? 'On' : 'Off' },
                 manages && { label: 'Kiosk mode', value: s.kiosk ? 'On' : 'Off' },
                 manages && {
                   label: 'Startup command',

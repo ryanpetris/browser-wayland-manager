@@ -4,10 +4,11 @@ import { readFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { chromium } from '../web/node_modules/playwright-core/index.mjs';
 
+let gpuAvailable = true;
 const dockerArgs = ['--security-opt=seccomp=unconfined', '--security-opt=apparmor=unconfined', '--cap-add=SYS_ADMIN'];
 const session = {
   id: 'docker-options-fixture', name: 'Steam', distribution: 'ubuntu', packages: [],
-  access_role: 'manager', docker_args: dockerArgs, status: 'stopped', screen_size: null, kiosk: false,
+  access_role: 'manager', docker_args: dockerArgs, status: 'stopped', screen_size: null, kiosk: false, software_encoding: true, gpu_access: true,
   startup_command: '', settings_pending: false, installed_version: '0.7.3-1', expected_version: '0.7.3',
   version_status: 'current', repair_available: false, port: 0, started_ms: 0, timings: {},
 };
@@ -40,7 +41,7 @@ try {
     if (path === '/api/me') {
       await route.fulfill({json: {user:{id:'fixture',username:'fixture',display_name:'Fixture',role:'administrator'},csrf_token:'fixture-csrf',session_expires_at_ms:Date.now()+7*86400000,server_time_ms:Date.now()}});
     } else if (path === '/api/sessions' && request.method() === 'GET') {
-      await route.fulfill({ json: { sessions: [session], version: 'fixture' } });
+      await route.fulfill({ json: { sessions: [session], version: 'fixture', gpu_available: gpuAvailable } });
     } else if (path === '/api/sessions' && request.method() === 'POST') {
       await route.fulfill({ status: 202, json: { ...session } });
     } else if (path === `/api/sessions/${session.id}/settings` && request.method() === 'PUT') {
@@ -63,6 +64,8 @@ try {
   await page.getByRole('link', { name: 'New Session', exact: true }).click();
   const create = page.getByRole('heading', { name: 'New Session', exact: true });
   await create.waitFor();
+  assert.equal(await page.getByRole('checkbox', {name:'GPU access',exact:true}).isChecked(), true);
+  assert.equal(await page.getByRole('checkbox', {name:'Software video encoding',exact:true}).isChecked(), false);
   assert.equal(new URL(page.url()).pathname, '/sessions/new');
   await page.getByText('Import Profile', { exact: true }).click();
   await page.getByText('Advanced Docker Options', { exact: true }).click();
@@ -75,7 +78,7 @@ try {
     await importProfile({ name: 'Distribution profile', distribution: distro });
     assert.equal(await page.locator('select[name=distribution]').inputValue(), distro);
   }
-  await importProfile({ name: 'Steam', docker_args: dockerArgs });
+  await importProfile({ name: 'Steam', docker_args: dockerArgs, gpu_access: true, software_encoding: true });
   assert.equal(await options.inputValue(), dockerArgs.join('\n'));
   assert.equal(await options.evaluate(element => element.readOnly), false);
   for (const invalid of ['--cap-add=SYS_ADMIN', ['--cap-add=SYS_ADMIN\n--cap-drop=NET_RAW']]) {
@@ -84,12 +87,14 @@ try {
     assert.equal(await options.inputValue(), dockerArgs.join('\n'));
     assert.equal(await page.getByLabel('Session name').inputValue(), 'Steam');
   }
-  await importProfile({ name: 'Basic profile', distribution: 'ubuntu' });
+  await importProfile({ name: 'Basic profile', distribution: 'ubuntu', gpu_access: false, software_encoding: false });
   assert.equal(await options.inputValue(), '');
   const basicRequest = page.waitForRequest(request => request.method() === 'POST' && new URL(request.url()).pathname === '/api/sessions');
   await page.getByRole('button', { name: 'Create Session', exact: true }).click();
   const basic = (await basicRequest).postDataJSON();
   assert.deepEqual(basic.docker_args, []);
+  assert.equal(basic.gpu_access, false);
+  assert.equal(basic.software_encoding, true);
   assert.equal(basic.distribution, 'ubuntu');
   // Creating lands on the new session's own page.
   await page.getByRole('heading', { name: session.name, exact: true }).waitFor();
@@ -99,12 +104,15 @@ try {
   await page.goto(origin + '/sessions/new');
   await page.getByText('Import Profile', { exact: true }).click();
   await page.getByText('Advanced Docker Options', { exact: true }).click();
-  await importProfile({ name: 'Steam', docker_args: dockerArgs });
+  await importProfile({ name: 'Steam', docker_args: dockerArgs, gpu_access: true, software_encoding: true });
   assert.equal(await options.inputValue(), dockerArgs.join('\n'));
   await options.fill(`  ${dockerArgs.join('\n\n')}  \n`);
   const createRequest = page.waitForRequest(request => request.method() === 'POST' && new URL(request.url()).pathname === '/api/sessions');
   await page.getByRole('button', { name: 'Create Session', exact: true }).click();
-  assert.deepEqual((await createRequest).postDataJSON().docker_args, dockerArgs);
+  const created = (await createRequest).postDataJSON();
+  assert.deepEqual(created.docker_args, dockerArgs);
+  assert.equal(created.gpu_access, true);
+  assert.equal(created.software_encoding, true);
   await page.getByRole('heading', { name: session.name, exact: true }).waitFor();
 
   // Settings are reached from the session, and keep the creation-time options read-only.
@@ -114,15 +122,31 @@ try {
   await page.getByText('Advanced Docker Options', { exact: true }).click();
   assert.equal(await options.inputValue(), dockerArgs.join('\n'));
   assert.equal(await options.evaluate(element => element.readOnly), true);
+  assert.equal(await page.getByRole('checkbox', {name:'GPU access',exact:true}).isDisabled(), true);
+  await page.getByRole('checkbox', {name:'Software video encoding',exact:true}).uncheck();
   await page.getByLabel('Session name').fill('Steam renamed');
   const saveRequest = page.waitForRequest(request => request.method() === 'PUT');
   await page.getByRole('button', { name: 'Save Changes', exact: true }).click();
   assert.deepEqual((await saveRequest).postDataJSON(), {
-    name: 'Steam renamed', screen_size: null, kiosk: false, startup_command: '',
+    name: 'Steam renamed', screen_size: null, kiosk: false, software_encoding: false, startup_command: '',
   });
   // Saving returns to the session.
   await page.getByRole('heading', { name: session.name, exact: true }).waitFor();
   assert.equal(new URL(page.url()).pathname, `/sessions/${session.id}`);
+  gpuAvailable = false;
+  await page.goto(origin + '/sessions/new');
+  const gpu = page.getByRole('checkbox', {name:'GPU access',exact:true});
+  await gpu.waitFor();
+  assert.equal(await gpu.isDisabled(), true);
+  assert.equal(await gpu.isChecked(), false);
+  assert.equal(await page.getByRole('checkbox', {name:'Software video encoding',exact:true}).isChecked(), true);
+  await page.getByText('Import Profile', {exact:true}).click();
+  await importProfile({name:'Unavailable', gpu_access:true});
+  assert.equal(await page.locator('form').getByRole('alert').innerText(), 'GPU access requires the host render node.');
+  await importProfile({name:'Unknown', unexpected:true});
+  assert.equal(await page.locator('form').getByRole('alert').innerText(), 'Profile must be an object containing session settings only.');
+  await importProfile({name:'Invalid', software_encoding:'true'});
+  assert.equal(await page.locator('form').getByRole('alert').innerText(), 'Invalid profile field types.');
   assert.deepEqual(errors, []);
   await page.route('**/api/me', route => route.fulfill({status:503,json:{error:'unavailable'}}));
   await page.reload();

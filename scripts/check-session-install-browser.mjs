@@ -7,7 +7,7 @@ import { chromium } from '../web/node_modules/playwright-core/index.mjs';
 let session = {
   id: 'install-fixture', name: 'Install fixture', distribution: 'debian', packages: [],
   access_role: 'manager', status: 'stopped', installed_version: '0.7.3-1', docker_args: [],
-  startup_command: '', screen_size: null, kiosk: false, settings_pending: false, port: 0, started_ms: 0,
+  startup_command: '', screen_size: null, kiosk: false, software_encoding: true, gpu_access: false, settings_pending: false, port: 0, started_ms: 0,
   expected_version: '0.7.3', version_status: 'current', repair_available: false, timings: {},
 };
 const server = createServer(async (request, response) => {

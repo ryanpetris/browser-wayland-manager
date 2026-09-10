@@ -173,22 +173,22 @@ impl Store {
 fn read_session(db: &Connection, id: &str) -> Result<Option<Session>> {
     let session = db.prepare_cached(
         "SELECT id, name, distribution, port, started_ms, status, stage, error, installed_version,
-         repair_available, version_error, upgrade_started_ms, upgrade_target FROM sessions WHERE id = ?1",
+         repair_available, version_error, upgrade_started_ms, upgrade_target, gpu_access FROM sessions WHERE id = ?1",
     )?.query_row(
         [id], |row| Ok(Session {
             id: row.get(0)?, name: row.get(1)?, distribution: row.get(2)?, port: row.get(3)?,
             started_ms: unsigned(row, 4)?, status: row.get(5)?, stage: row.get(6)?, error: row.get(7)?,
             installed_version: row.get(8)?, repair_available: row.get(9)?, version_error: row.get(10)?,
-            upgrade_started_ms: unsigned(row, 11)?, upgrade_target: row.get(12)?,
+            upgrade_started_ms: unsigned(row, 11)?, upgrade_target: row.get(12)?, gpu_access: row.get(13)?,
             packages: vec![], docker_args: vec![], timings: Default::default(), startup_command: String::new(),
-            screen_size: None, kiosk: false, applied_settings: None, launching_settings: None,
+            screen_size: None, kiosk: false, software_encoding: false, applied_settings: None, launching_settings: None,
         }),
     ).optional()?;
     let Some(mut session) = session else {
         return Ok(None);
     };
     let mut desired = false;
-    let mut statement = db.prepare_cached("SELECT kind, width, height, kiosk, startup_command FROM session_settings WHERE session_id = ?1")?;
+    let mut statement = db.prepare_cached("SELECT kind, width, height, kiosk, startup_command, software_encoding FROM session_settings WHERE session_id = ?1")?;
     let settings = statement.query_map([id], |row| {
         let width: Option<u32> = row.get(1)?;
         let height: Option<u32> = row.get(2)?;
@@ -200,6 +200,7 @@ fn read_session(db: &Connection, id: &str) -> Result<Option<Session>> {
                     .map(|(width, height)| ScreenSize { width, height }),
                 kiosk: row.get(3)?,
                 startup_command: row.get(4)?,
+                software_encoding: row.get(5)?,
             },
         ))
     })?;
@@ -209,6 +210,7 @@ fn read_session(db: &Connection, id: &str) -> Result<Option<Session>> {
             "desired" => {
                 session.screen_size = settings.screen_size;
                 session.kiosk = settings.kiosk;
+                session.software_encoding = settings.software_encoding;
                 session.startup_command = settings.startup_command;
                 desired = true;
             }
@@ -240,14 +242,14 @@ fn read_session(db: &Connection, id: &str) -> Result<Option<Session>> {
 fn write_session(db: &Connection, s: &Session) -> Result<()> {
     db.execute(
         "INSERT INTO sessions (id, name, distribution, port, started_ms, status, stage, error,
-         installed_version, repair_available, version_error, upgrade_started_ms, upgrade_target)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
+         installed_version, repair_available, version_error, upgrade_started_ms, upgrade_target, gpu_access)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
          ON CONFLICT(id) DO UPDATE SET name=excluded.name, distribution=excluded.distribution,
          port=excluded.port, started_ms=excluded.started_ms, status=excluded.status, stage=excluded.stage,
          error=excluded.error, installed_version=excluded.installed_version, repair_available=excluded.repair_available,
-         version_error=excluded.version_error, upgrade_started_ms=excluded.upgrade_started_ms, upgrade_target=excluded.upgrade_target",
+         version_error=excluded.version_error, upgrade_started_ms=excluded.upgrade_started_ms, upgrade_target=excluded.upgrade_target, gpu_access=excluded.gpu_access",
         params![s.id, s.name, s.distribution, s.port, i64::try_from(s.started_ms)?, s.status, s.stage, s.error,
-                s.installed_version, s.repair_available, s.version_error, i64::try_from(s.upgrade_started_ms)?, s.upgrade_target],
+                s.installed_version, s.repair_available, s.version_error, i64::try_from(s.upgrade_started_ms)?, s.upgrade_target, s.gpu_access],
     )?;
     for table in [
         "session_settings",
@@ -267,7 +269,7 @@ fn write_session(db: &Connection, s: &Session) -> Result<()> {
     ] {
         if let Some(settings) = settings {
             db.execute(
-                "INSERT INTO session_settings VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                "INSERT INTO session_settings VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
                 params![
                     s.id,
                     kind,
@@ -275,6 +277,7 @@ fn write_session(db: &Connection, s: &Session) -> Result<()> {
                     settings.screen_size.map(|size| size.height),
                     settings.kiosk,
                     settings.startup_command,
+                    settings.software_encoding,
                 ],
             )?;
         }
@@ -364,6 +367,7 @@ mod tests {
                 height: 480,
             }),
             kiosk: true,
+            software_encoding: true,
             startup_command: "foot\n--test 'quoted'".into(),
         };
         Session {
@@ -380,6 +384,8 @@ mod tests {
             startup_command: settings.startup_command.clone(),
             screen_size: settings.screen_size,
             kiosk: settings.kiosk,
+            software_encoding: settings.software_encoding,
+            gpu_access: true,
             applied_settings: Some(settings.clone()),
             launching_settings: Some(settings),
             port: 0,
@@ -404,6 +410,7 @@ mod tests {
         let first = db.create(session()).await.unwrap().unwrap();
         let mut without_options = session();
         without_options.docker_args.clear();
+        without_options.gpu_access = false;
         without_options.distribution = "ubuntu".into();
         let second = db.create(without_options).await.unwrap().unwrap();
         assert!(db.session(&first.id).await.unwrap().unwrap() == first);

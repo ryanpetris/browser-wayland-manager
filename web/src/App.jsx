@@ -14,6 +14,7 @@ import { Link, useRoute } from './router.jsx';
 export function App() {
   const [version, setVersion] = useState('');
   const [localElsewhere, setLocalElsewhere] = useState(false);
+  const [gpuAvailable, setGpuAvailable] = useState(false);
   const [token, setToken] = useState('');
   const [user, setUser] = useState(null);
   const [setupRequired, setSetupRequired] = useState(null);
@@ -93,6 +94,7 @@ export function App() {
     const data = await response.json();
     if (currentToken.current !== token || signal?.aborted) return;
     setSessions(data.sessions);
+    setGpuAvailable(data.gpu_available);
     setVersion(data.version);
     setLocalElsewhere(Boolean(data.local_elsewhere));
     setAuthenticated(true);
@@ -256,7 +258,7 @@ export function App() {
           />
         );
       case 'session-new':
-        return <NewSessionPage api={api} user={user} refresh={refresh} />;
+        return <NewSessionPage api={api} user={user} refresh={refresh} loaded={loaded} gpuAvailable={gpuAvailable} />;
       case 'session-settings':
         return <SessionSettingsPage key={route.id} id={route.id} sessions={sessions} loaded={loaded} api={api} refresh={refresh} />;
       case 'account':

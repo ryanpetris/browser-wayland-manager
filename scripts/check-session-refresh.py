@@ -528,7 +528,7 @@ exec sleep 10000
             wait(lambda: state(sid)["version_status"] == "older")
             assert state(sid)["status"] == "stopped"
             # An upgrade exits without launching or applying pending desktop settings.
-            pending_profile = {"name":"Upgrade test", "screen_size":{"width":1280,"height":720}, "kiosk":False, "startup_command":""}
+            pending_profile = {"name":"Upgrade test", "screen_size":{"width":1280,"height":720}, "kiosk":False, "software_encoding":True, "startup_command":""}
             api(f"/sessions/{sid}/settings", "PUT", pending_profile)
             package(distro, "upgraded")
             api(f"/sessions/{sid}/upgrade", "POST")
@@ -629,7 +629,7 @@ exec sleep 10000
             restart_manager()
             wait(lambda: state(sid)["status"] == "running")
             assert not state(sid)["settings_pending"]
-            original = {k: state(sid)[k] for k in ("name", "screen_size", "kiosk", "startup_command")}
+            original = {k: state(sid)[k] for k in ("name", "screen_size", "kiosk", "startup_command", "software_encoding")}
             def save(settings):
                 return api(f"/sessions/{sid}/settings", "PUT", settings)
             def pending():
@@ -689,13 +689,13 @@ exec sleep 10000
             assert launched(sid, baseline + 1)
             args = subprocess.check_output(["docker", "exec", name, "cat", "/home/elsewhere/launch-args"]).decode().split("\0")[:-1]
             assert args == ["--no-tls", "--listen", "0.0.0.0:19443", "--url-prefix", "/e/" + sid, "--rtc-port", str(state(sid)["port"]), "--elements", "--rtc-addr", "127.0.0.1",
-                            "--screen-size", "1280x720", "--kiosk", "--exec", command], args
+                            "--screen-size", "1280x720", "--software-encoding", "--kiosk", "--exec", command], args
             run("docker", "exec", name, "test", "!", "-e", "/tmp/unexpected")
             assert run("docker", "inspect", name, "--format", "{{.Id}}") == identity
             check_docker_args(sid, docker_args)
             assert run("docker", "exec", name, "cat", "/root/settings-sentinel") == "retained"
             assert stored_settings(data, sid, "launching") is None, stored_settings(data, sid, "launching")
-            assert stored_settings(data, sid, "applied") == {k: edited[k] for k in ("screen_size", "kiosk", "startup_command")}
+            assert stored_settings(data, sid, "applied") == {k: edited[k] for k in ("screen_size", "kiosk", "startup_command", "software_encoding")}
             # Copy and Docker start failures retain edits for a later start.
             for failure in ("cp", "start"):
                 save(renamed)
@@ -711,7 +711,7 @@ exec sleep 10000
                 api(f"/sessions/{sid}/start", "POST")
                 wait(lambda: state(sid)["status"] == "running" and not pending())
                 args = subprocess.check_output(["docker", "exec", name, "cat", "/home/elsewhere/launch-args"]).decode().split("\0")[:-1]
-                assert args == ["--no-tls", "--listen", "0.0.0.0:19443", "--url-prefix", "/e/" + sid, "--rtc-port", str(state(sid)["port"]), "--elements", "--rtc-addr", "127.0.0.1"]
+                assert args == ["--no-tls", "--listen", "0.0.0.0:19443", "--url-prefix", "/e/" + sid, "--rtc-port", str(state(sid)["port"]), "--elements", "--rtc-addr", "127.0.0.1", "--software-encoding"]
                 save(edited)
                 api(f"/sessions/{sid}/relaunch", "POST")
                 wait(lambda: state(sid)["status"] == "running" and not pending())
