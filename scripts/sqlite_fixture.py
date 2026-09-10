@@ -1,10 +1,32 @@
-"""SQLite fixtures initialized by the production migration runner."""
+"""SQLite setup and Docker port reservations for disposable integration checks."""
 from contextlib import contextmanager
+import json
 import os
 from pathlib import Path
 import sqlite3
 import subprocess
+import sys
 import time
+
+
+def docker_ports():
+    ports = set()
+    ids = subprocess.check_output(['docker', 'ps', '-aq'], text=True).split()
+    if not ids:
+        return ports
+    result = subprocess.run(['docker', 'inspect', *ids], capture_output=True, text=True)
+    if result.returncode:
+        missing = {f'Error: No such object: {cid}' for cid in ids}
+        if result.returncode != 1 or not result.stderr or not set(result.stderr.splitlines()) <= missing:
+            sys.stderr.write(result.stderr)
+            result.check_returncode()
+    for info in json.loads(result.stdout):
+        for bindings in (info['HostConfig'].get('PortBindings') or {}).values():
+            for binding in bindings or []:
+                port = int(binding['HostPort'] or 0)
+                if 19500 <= port < 20000:
+                    ports.add(port)
+    return ports
 
 
 @contextmanager

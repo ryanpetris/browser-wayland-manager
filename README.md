@@ -441,7 +441,7 @@ Run the session refresh check with `--local` to verify same-version and incompar
 using the selected local packages. Use `--distribution arch`, `--distribution debian`, or `--distribution ubuntu` to run the
 session refresh check for one distribution.
 
-`scripts/check-proxy-desktops.py` checks fresh real Arch, Debian and Ubuntu packages through the production creation and launch flow. Mount the script at `/check.py`; `proxy-rig` includes its SQLite fixture helper. Run it in `proxy-rig` with the Docker socket, the session scripts, a writable directory at `/work`, and a local package manifest and artifacts at `/local`. Mount `/dev/dri` to exercise the host GPU. Publish `127.0.0.1:29301:29301` for a local browser rig. Leave `INNKEEPER_RTC_ADDR` unset to check hostname fallback, or set it to check an explicit override. It reserves ports used by unrelated Docker containers and removes only its own sessions.
+`scripts/check-proxy-desktops.py` checks fresh real Arch, Debian and Ubuntu packages through the production creation and launch flow. Mount the script at `/check.py`; `proxy-rig` includes its SQLite fixture helper. For iteration without rebuilding the image, also mount `scripts/sqlite_fixture.py` at `/sqlite_fixture.py`. Run it in `proxy-rig` with the Docker socket, the session scripts, a writable directory at `/work`, and a local package manifest and artifacts at `/local`. Mount `/dev/dri` to exercise the host GPU. Publish `127.0.0.1:29301:29301` for a local browser rig. Leave `INNKEEPER_RTC_ADDR` unset to check hostname fallback, or set it to check an explicit override. It reserves ports used by unrelated Docker containers and removes only its own sessions.
 
 Use a disposable work directory for this check. Each invocation starts with a fresh database and retains downloaded packages so the directory can be reused.
 
@@ -450,3 +450,11 @@ Set `PROXY_UPGRADE_FROM` to an older Elsewhere release with matching artifacts t
 For browser checks, set `PROXY_WAIT_BROWSER=1` on that desktop rig, build the `proxy-browser` target, and run `node /src/scripts/check-proxy-browser.mjs` with host networking and the same `/work` directory after `/work/browser.json` appears. Set `PROXY_BROWSER_ORIGIN=https://localhost:29301` to exercise hostname resolution. This covers simultaneous desktops, Open and token isolation, decoded video and a non-silent audio test tone, file transfers, MCP, terminals, viewer access, direct WebRTC and WebSocket fallback. The browser writes `/work/browser-done` so the desktop rig can clean up.
 
 To check GPU access and encoder selection in the real-desktop rig, set `PROXY_CHECK_GPU=1` and `PROXY_GPU_ACCESS=1` on `check-proxy-desktops.py` and expose `/dev/dri` to the rig. Repeat with `PROXY_GPU_ACCESS=0`, then keep that setting and run without exposing `/dev/dri`. The check verifies device access by the desktop user, Vulkan client enumeration, encoder logs, and Start/Relaunch without container replacement. Use `PROXY_WAIT_BROWSER=1` for the accompanying audio/video browser check.
+
+The port-discovery check creates and removes two disposable containers without starting them. It checks disappearance races, retained reservations and Docker errors. Run it with:
+
+```sh
+docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
+  -v "$PWD/scripts:/scripts:ro" --entrypoint python3 \
+  innkeeper-proxy-rig /scripts/check-fixture-ports.py
+```

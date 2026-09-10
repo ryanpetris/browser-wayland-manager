@@ -11,7 +11,7 @@ import subprocess
 import time
 import urllib.request
 import uuid
-from sqlite_fixture import seed, database
+from sqlite_fixture import seed, database, docker_ports
 from auth_fixture import Client, PASSWORD
 import shutil
 
@@ -28,18 +28,8 @@ data.mkdir(exist_ok=True)
 for name in ('state.sqlite3', 'state.sqlite3-wal', 'state.sqlite3-shm'):
     (data / name).unlink(missing_ok=True)
 # Reserve host ports already in use by unrelated containers in this disposable database.
-reserved = []
-reserved_ports = set()
-ids = subprocess.check_output(['docker', 'ps', '-aq'], text=True).split()
-if ids:
-    for info in json.loads(subprocess.check_output(['docker', 'inspect', *ids])):
-        for bindings in (info['HostConfig'].get('PortBindings') or {}).values():
-            for binding in bindings or []:
-                port = int(binding['HostPort'] or 0)
-                if 19500 <= port < 20000 and port not in reserved_ports:
-                    reserved_ports.add(port)
-                    reserved.append(dict(id=str(uuid.uuid4()), name='Reserved fixture port', distribution='debian', packages=[],
-                                         port=port, status='failed', stage='download', error=None))
+reserved = [dict(id=str(uuid.uuid4()), name='Reserved fixture port', distribution='debian', packages=[],
+                 port=port, status='failed', stage='download', error=None) for port in docker_ports()]
 seed(data, reserved, str(uuid.uuid4()))
 cert, key = work / 'cert.pem', work / 'key.pem'
 subprocess.run(['openssl','req','-x509','-newkey','rsa:2048','-nodes','-days','1','-subj','/CN=localhost',
