@@ -443,6 +443,8 @@ session refresh check for one distribution.
 
 `scripts/check-proxy-desktops.py` checks fresh real Arch, Debian and Ubuntu packages through the production creation and launch flow. Mount the script at `/check.py`; `proxy-rig` includes its SQLite fixture helper. Run it in `proxy-rig` with the Docker socket, the session scripts, a writable directory at `/work`, and a local package manifest and artifacts at `/local`. Mount `/dev/dri` to exercise the host GPU. Publish `127.0.0.1:29301:29301` for a local browser rig. Leave `INNKEEPER_RTC_ADDR` unset to check hostname fallback, or set it to check an explicit override. It reserves ports used by unrelated Docker containers and removes only its own sessions.
 
+Use a disposable work directory for this check. Each invocation starts with a fresh database and retains downloaded packages so the directory can be reused.
+
 Set `PROXY_UPGRADE_FROM` to an older Elsewhere release with matching artifacts to check an actual package upgrade to the selected version. The rig installs the older package, requests the upgrade through Innkeeper, verifies the installed version, and starts the same container.
 
 For browser checks, set `PROXY_WAIT_BROWSER=1` on that desktop rig, build the `proxy-browser` target, and run `node /src/scripts/check-proxy-browser.mjs` with host networking and the same `/work` directory after `/work/browser.json` appears. Set `PROXY_BROWSER_ORIGIN=https://localhost:29301` to exercise hostname resolution. This covers simultaneous desktops, Open and token isolation, decoded video and a non-silent audio test tone, file transfers, MCP, terminals, viewer access, direct WebRTC and WebSocket fallback. The browser writes `/work/browser-done` so the desktop rig can clean up.

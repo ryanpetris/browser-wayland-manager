@@ -24,6 +24,9 @@ with wave.open(str(tone),'wb') as wav:
     wav.writeframes(b''.join(struct.pack('<h',int(8000*math.sin(2*math.pi*440*i/48000))) for i in range(48000)))
 data = work / 'data'
 data.mkdir(exist_ok=True)
+# Each invocation has fresh accounts and port reservations, with cached packages retained.
+for name in ('state.sqlite3', 'state.sqlite3-wal', 'state.sqlite3-shm'):
+    (data / name).unlink(missing_ok=True)
 # Reserve host ports already in use by unrelated containers in this disposable database.
 reserved = []
 reserved_ports = set()
