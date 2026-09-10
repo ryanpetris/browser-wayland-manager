@@ -160,8 +160,9 @@ with tempfile.TemporaryDirectory(prefix='innkeeper-accounts-') as temporary:
                 else:
                     os.kill(pid,9);raise AssertionError('Recovery prompt timed out')
                 assert termios.tcgetattr(terminal)==original
-            finally: os.close(terminal)
-            _,status=os.waitpid(pid,0)
+            finally:
+                os.close(terminal)
+                _,status=os.waitpid(pid,0)
             assert (status!=0 if mode=='mismatch' else status==0),transcript
             assert sent==2 and b'local recovery password' not in transcript and b'different recovery password' not in transcript,transcript
             assert b'Repeat password:' in transcript,transcript
