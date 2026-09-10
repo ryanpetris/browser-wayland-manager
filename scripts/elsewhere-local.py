@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """Build adjacent Elsewhere packages and select them for an explicit local Compose run."""
 import fcntl
-import hashlib
 import json
 import os
 from pathlib import Path
@@ -24,25 +23,6 @@ def run(*args, **kwargs):
 
 def output(*args, **kwargs):
     return run(*args, stdout=subprocess.PIPE, text=True, **kwargs).stdout.strip()
-
-
-def snapshot():
-    digest = hashlib.sha256(output('git', '-C', SOURCE, 'rev-parse', 'HEAD').encode())
-    names = run('git', '-C', SOURCE, 'ls-files', '-co', '--exclude-standard', '-z',
-                stdout=subprocess.PIPE, text=True).stdout
-    for name in sorted(set(names.split('\0')) - {''}):
-        path = SOURCE / name
-        digest.update(name.encode() + b'\0')
-        if path.is_symlink():
-            digest.update(b'link\0' + os.readlink(path).encode())
-        elif path.is_file():
-            digest.update(str(path.stat().st_mode).encode() + b'\0')
-            with path.open('rb') as stream:
-                while chunk := stream.read(1024 * 1024):
-                    digest.update(chunk)
-        else:
-            digest.update(b'missing\0')
-    return digest.digest()
 
 
 def sync_directory(path):
@@ -72,7 +52,6 @@ def build():
         raise RuntimeError('Adjacent elsewhere checkout is missing or lacks its package targets. Nothing was checked out.')
     if output('git', '-C', SOURCE, 'rev-parse', '--show-toplevel') != str(SOURCE):
         raise RuntimeError('The adjacent elsewhere directory must be the checkout root.')
-    original = snapshot()
     git_version = output('make', '--no-print-directory', '-s', '-C', SOURCE, 'version')
     version = git_version.removeprefix('v').replace('-', '.')
     parts = version.removesuffix('.dirty').split('.')
@@ -108,8 +87,6 @@ def build():
                                         if distro == 'debian' else asset)
             archive.unlink(missing_ok=True)
             run(*command, image, 'make', target)
-            if snapshot() != original or output('make', '--no-print-directory', '-s', '-C', SOURCE, 'version') != git_version:
-                raise RuntimeError('Elsewhere source changed during the build. Retry after changes are finished.')
             if not archive.is_file() or not archive.stat().st_size:
                 raise RuntimeError(f'Expected package was not produced: {archive.name}')
             if distro == 'arch':

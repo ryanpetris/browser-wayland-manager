@@ -41,7 +41,6 @@ if 'make' in a:
                else 'elsewhere_' + version + '-1_debian-13_amd64.deb')
     (source / 'dist').mkdir(exist_ok=True)
     (source / 'dist' / archive).write_text(distro)
-    if os.environ.get('CHANGE_SOURCE'): (source / ' input').write_text('changed')
 elif 'bsdtar' in a:
     print('pkgname = elsewhere\\npkgver = ' + version + '-1\\narch = x86_64')
 elif 'dpkg-deb' in a:
@@ -63,7 +62,6 @@ else: sys.exit(8)
     (checkout / 'scripts/package.sh').write_text('fixture')
     (checkout / 'version').write_text('v0.4.4.7-dirty\n')
     (checkout / 'Makefile').write_text('.PHONY: version\nversion:\n\t@cat version\n')
-    (checkout / ' input').write_text('original')
     (checkout / '.gitignore').write_text('/dist/\n/target/\n')
     subprocess.run(['git', 'init', '-q', str(checkout)], check=True)
     subprocess.run(['git', '-C', str(checkout), 'add', '.'], check=True)
@@ -80,7 +78,7 @@ else: sys.exit(8)
     assert 'type=bind' in (work / 'calls').read_text()
     compose = json.loads((local / 'compose.json').read_text())
     assert compose['services']['innkeeper']['volumes'][0]['read_only'] is True
-    for failure in ('FAIL_DEBIAN', 'BAD_METADATA', 'CHANGE_SOURCE'):
+    for failure in ('FAIL_DEBIAN', 'BAD_METADATA'):
         invoke(success=False, **{failure: '1'})
         assert manifest.read_bytes() == original
         assert len(list(local.glob('build-*'))) == 1
@@ -103,4 +101,4 @@ else: sys.exit(8)
     assert not manifest.exists() and not (local / 'compose.json').exists()
     assert (local / selected['directory']).exists()
     invoke('run', success=False)
-    print('Missing checkout, sequential builds, metadata validation, source mutation, stale output, atomic selection, lock contention, ignored files, explicit Compose and reset passed')
+    print('Missing checkout, sequential builds, metadata validation, stale output, atomic selection, lock contention, ignored files, explicit Compose and reset passed')

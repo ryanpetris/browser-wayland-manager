@@ -222,7 +222,7 @@ The target runs Elsewhere's `make package-arch` and `make package-deb` sequentia
 using separate Cargo and Node build caches and native build environments with FFmpeg development
 libraries. The Debian builder targets Debian 13. It copies the packages from the
 checkout's `dist/` into `.elsewhere-local/`, validates their metadata, and selects the build
-only after both packages succeed. Source changes during packaging abort selection. A failed
+only after both packages succeed. A failed
 build preserves the previous selection. Package metadata and filenames use Elsewhere's
 normalized version, including `.dirty` for uncommitted changes.
 
