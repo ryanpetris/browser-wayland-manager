@@ -130,12 +130,14 @@ with tempfile.TemporaryDirectory(prefix='innkeeper-accounts-') as temporary:
         listing=subprocess.run([binary,'users','list'],env=env,capture_output=True)
         assert listing.returncode==0 and admin['id'].encode() in listing.stdout
         # Recovery uses a controlling terminal and never echoes passwords.
-        for mode in ('mismatch', 'separate', 'together'):
+        delay=Path(temporary)/'password-prompt-delay.so'
+        subprocess.run(['cc','-shared','-fPIC',str(Path(__file__).with_name('password-prompt-delay.c')),'-o',str(delay),'-ldl'],check=True)
+        for mode in ('mismatch', 'separate', 'together', 'delayed'):
             ready_read,ready_write=os.pipe()
             pid,terminal=pty.fork()
             if pid==0:
                 os.close(ready_write);os.read(ready_read,1);os.close(ready_read)
-                os.execve(binary,[binary,'users','reset-password','--id',second_admin['id']],env)
+                os.execve(binary,[binary,'users','reset-password','--id',second_admin['id']],dict(env,LD_PRELOAD=str(delay)) if mode=='delayed' else env)
             os.close(ready_read)
             original=termios.tcgetattr(terminal)
             os.write(ready_write,b'1');os.close(ready_write)
@@ -148,12 +150,12 @@ with tempfile.TemporaryDirectory(prefix='innkeeper-accounts-') as temporary:
                         if not chunk:break
                         transcript+=chunk
                         if sent==0 and b'New password:' in transcript:
-                            assert not termios.tcgetattr(terminal)[3] & (termios.ECHO | termios.ECHONL)
+                            assert not termios.tcgetattr(terminal)[3] & (termios.ECHO | termios.ECHONL),(mode,transcript)
                             os.write(terminal,b'local recovery password\n');sent=1
                             if mode=='together':
                                 os.write(terminal,b'local recovery password\n');sent=2
                         if sent==1 and b'Repeat password:' in transcript:
-                            assert not termios.tcgetattr(terminal)[3] & (termios.ECHO | termios.ECHONL)
+                            assert not termios.tcgetattr(terminal)[3] & (termios.ECHO | termios.ECHONL),(mode,transcript)
                             os.write(terminal,b'different recovery password\n' if mode=='mismatch' else b'local recovery password\n');sent=2
                 else:
                     os.kill(pid,9);raise AssertionError('Recovery prompt timed out')

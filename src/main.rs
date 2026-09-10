@@ -1646,7 +1646,8 @@ fn recovery_passwords() -> Result<(String, String)> {
     let tty = std::fs::OpenOptions::new()
         .read(true)
         .write(true)
-        .open("/dev/tty")?;
+        .open("/dev/tty")
+        .context("Password recovery requires a controlling terminal")?;
     let mut original = std::mem::MaybeUninit::uninit();
     if unsafe { libc::tcgetattr(tty.as_raw_fd(), original.as_mut_ptr()) } != 0 {
         return Err(std::io::Error::last_os_error().into());
