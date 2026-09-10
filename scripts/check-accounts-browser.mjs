@@ -16,6 +16,10 @@ const server = createServer(async (request, response) => {
     // Innkeeper serves the same document for every in-app path; the browser routes it.
     const file = path === '/app.js' || path === '/app.css' ? path : '/index.html';
     response.setHeader('Content-Type', file.endsWith('.js') ? 'text/javascript' : file.endsWith('.css') ? 'text/css' : 'text/html');
+    // The headers Innkeeper serves, so what the browser refuses there it refuses here too.
+    response.setHeader('Referrer-Policy', 'no-referrer');
+    response.setHeader('X-Content-Type-Options', 'nosniff');
+    response.setHeader('Content-Security-Policy', "default-src 'self'; img-src 'self' blob: data:; style-src 'self' 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'");
     response.end(await readFile(new URL('../web/dist' + file, import.meta.url)));
   } catch {
     response.writeHead(404).end();
@@ -30,6 +34,9 @@ try {
   const page = await context.newPage();
   page.setDefaultTimeout(15000);
   page.on('pageerror', error => errors.push(error.message));
+  page.on('console', message => {
+      if (/Content Security Policy|Refused to/i.test(message.text())) errors.push(`refused: ${message.text()}`);
+    });
   await page.route('**/api/**', async route => {
     const request = route.request(), path = new URL(request.url()).pathname, method = request.method();
     if (path === '/api/me' && method === 'GET') {

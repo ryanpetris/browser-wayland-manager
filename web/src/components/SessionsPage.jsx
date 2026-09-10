@@ -4,7 +4,7 @@ import { ChevronRight, ExternalLink, Grid2X2, List, Loader2, Monitor, Play, Plus
 import { EmptyState, IconButton, Loading, PageHeader } from './ui.jsx';
 import { Link } from '../router.jsx';
 import { Preview } from './Preview.jsx';
-import { StatusBadge, busyState, distribution } from './session.jsx';
+import { StatusBadge, busyState, distribution, stageLabel } from './session.jsx';
 
 const FILTERS = [
   ['all', 'All States'],
@@ -129,11 +129,11 @@ function QuickAction({ s, busy, onOpen, onAction }) {
   return null;
 }
 
-/// The stage a session announces while it is working, in place of its package list.
+/// The step a session announces while it is working, in place of its package list.
 const Stage = ({ s }) => (
   <p role="status" className="flex items-center gap-1.5 truncate text-xs text-warn">
     <Loader2 className="size-3 shrink-0 animate-spin" />
-    {s.stage}…
+    {stageLabel(s)}…
   </p>
 );
 
@@ -176,7 +176,7 @@ function SessionTile({ s, api, busy, onOpen, onAction }) {
 function SessionRow({ s, api, busy, onOpen, onAction }) {
   return (
     <article className="session group relative flex items-center gap-3 border-b border-line px-3 py-2.5 transition-colors last:border-0 hover:bg-surface-3 [overflow-wrap:anywhere]">
-      <Preview session={s} api={api} className="aspect-video w-20 shrink-0 rounded border border-line sm:w-28" glyph="size-4" />
+      <Preview session={s} api={api} className="aspect-video w-20 shrink-0 rounded border border-line sm:w-28" glyph="size-4" label={false} />
       <div className="min-w-0 flex-1">
         <h2 className="truncate text-sm font-semibold text-ink">
           <Link to={`/sessions/${s.id}`} className="row-link transition-colors group-hover:text-accent-2">

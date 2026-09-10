@@ -412,6 +412,10 @@ abandoned, and the reduced session page a non-manager receives.
 across a history jump between two accounts, the save payload, deletion, password rules, and the
 Administrator guards. Mount each at the matching path under `/src/scripts/`.
 
+Each browser check serves the response headers Innkeeper serves, including its Content Security
+Policy, and fails on any resource the browser refuses. Keep those headers in step with `asset` in
+`src/main.rs`.
+
 Run the session refresh check with `--local` to verify same-version and incomparable dirty builds
 using the selected local packages. Use `--distribution arch` or `--distribution debian` to run the
 session refresh check for one distribution.

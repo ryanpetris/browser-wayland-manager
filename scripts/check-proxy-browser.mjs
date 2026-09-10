@@ -17,6 +17,10 @@ try {
   });
   const manager = await context.newPage();
   manager.setDefaultTimeout(15000);
+  const refused = [];
+  manager.on('console', message => {
+    if (/Content Security Policy|Refused to/i.test(message.text())) refused.push(message.text());
+  });
   await manager.goto(origin);
   await manager.getByLabel('Username', {exact:true}).fill('fixture');
   await manager.getByLabel('Password', {exact:true}).fill(password);
@@ -97,6 +101,7 @@ try {
   await userPage.getByRole('button',{name:'Change Password and Sign Out',exact:true}).click();
   await signInUser('browser replacement password');
   await userContext.close();
+  assert.deepEqual(refused, []);
   console.log('Account creation, rename, sharing, user restrictions, password change and re-login passed');
   const current=await (await context.request.get(origin+'/api/me')).json();
   assert.equal((await context.request.delete(origin+'/api/users/'+accountId,{headers:{Origin:origin,'X-Innkeeper-CSRF':current.csrf_token},data:{}})).status(),204);

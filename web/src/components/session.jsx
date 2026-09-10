@@ -30,6 +30,22 @@ export const settled = s => ['running', 'stopped'].includes(s.status);
 
 export const busyState = s => ['preparing', 'upgrading'].includes(s.status);
 
+// The step a session reports while it works, in the words a reader would use for it.
+const STAGES = {
+  queued: 'Queued',
+  download: 'Downloading Elsewhere',
+  image: 'Pulling the base image',
+  container: 'Creating the container',
+  setup: 'Preparing the system',
+  upgrade: 'Updating system packages',
+  elsewhere: 'Installing Elsewhere',
+  packages: 'Installing packages',
+  launch: 'Starting the desktop',
+  ready: 'Ready',
+};
+
+export const stageLabel = s => STAGES[s.stage] ?? s.stage;
+
 /// What installing the preferred Elsewhere version would do to the version already there.
 export const installLabel = s => (s.version_status === 'older' ? 'Upgrade' : s.version_status === 'newer' ? 'Downgrade' : 'Reinstall');
 

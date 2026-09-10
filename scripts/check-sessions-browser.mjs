@@ -12,13 +12,14 @@ const manager = {
   started_ms: 0, status: 'stopped', stage: 'idle', error: null, timings: {}, access_role: 'manager',
 };
 const running = { ...manager, id: 'running-fixture', name: 'Running fixture', status: 'running', port: 41000, started_ms: 0 };
-const working = { ...manager, id: 'working-fixture', name: 'Working fixture', status: 'preparing', stage: 'installing packages' };
+const working = { ...manager, id: 'working-fixture', name: 'Working fixture', status: 'preparing', stage: 'packages' };
 // A non-manager receives only these fields from the server.
 const viewer = {
   id: 'viewer-fixture', name: 'Viewer fixture', distribution: 'debian', status: 'running', stage: 'ready',
   installed_version: '0.7.3-1', expected_version: '0.7.3', version_status: 'current', access_role: 'viewer',
 };
-const sessions = [running, manager, working, viewer];
+const pending = { ...running, id: 'pending-fixture', name: 'Pending fixture', settings_pending: true, started_ms: Date.now() - 3600e3 };
+const sessions = [running, manager, working, viewer, pending];
 
 const server = createServer(async (request, response) => {
   try {
@@ -26,6 +27,10 @@ const server = createServer(async (request, response) => {
     // Innkeeper serves the same document for every in-app path; the browser routes it.
     const file = path === '/app.js' || path === '/app.css' ? path : '/index.html';
     response.setHeader('Content-Type', file.endsWith('.js') ? 'text/javascript' : file.endsWith('.css') ? 'text/css' : 'text/html');
+    // The headers Innkeeper serves, so what the browser refuses there it refuses here too.
+    response.setHeader('Referrer-Policy', 'no-referrer');
+    response.setHeader('X-Content-Type-Options', 'nosniff');
+    response.setHeader('Content-Security-Policy', "default-src 'self'; img-src 'self' blob: data:; style-src 'self' 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'");
     response.end(await readFile(new URL('../web/dist' + file, import.meta.url)));
   } catch {
     response.writeHead(404).end();
@@ -41,6 +46,9 @@ try {
     const page = await context.newPage();
     page.setDefaultTimeout(15000);
     page.on('pageerror', error => errors.push(`${layout}: ${error.message}`));
+    page.on('console', message => {
+      if (/Content Security Policy|Refused to/i.test(message.text())) errors.push(`refused: ${message.text()}`);
+    });
     await page.route('**/api/**', async route => {
       const request = route.request(), path = new URL(request.url()).pathname;
       if (path === '/api/me') {
@@ -74,8 +82,8 @@ try {
     await cards.first().waitFor();
     assert.equal(await cards.count(), sessions.length, layout);
 
-    // A working session announces its stage where a settled one lists its packages.
-    await cards.filter({ hasText: working.name }).getByText(`${working.stage}…`, { exact: true }).waitFor();
+    // A working session announces its step in a reader's words, where a settled one lists its packages.
+    await cards.filter({ hasText: working.name }).getByText('Installing packages…', { exact: true }).waitFor();
 
     // Start acts on the session and leaves the workspace in place, despite the card being a link.
     const before = starts.length;
@@ -113,6 +121,19 @@ try {
     await cards.filter({ hasText: working.name }).waitFor();
     await page.getByLabel('Filter by state', { exact: true }).selectOption('all');
     await page.waitForFunction(count => document.querySelectorAll('article.session').length === count, sessions.length);
+
+    // Progress is reported once, in a bar of its own; the preview only says whether the desktop is up.
+    await page.goto(`${origin}/sessions/${working.id}`);
+    await page.getByRole('status').filter({ hasText: 'Installing packages…' }).waitFor();
+    assert.equal(await page.getByText('Offline', { exact: true }).count(), 1, layout);
+    assert.equal(await page.getByRole('button', { name: 'Open Desktop', exact: true }).count(), 0, layout);
+    assert.equal(await page.getByRole('button', { name: 'Relaunch', exact: true }).count(), 0, layout);
+    // Relaunch is what applies pending settings, so it appears with them and not before.
+    await page.goto(`${origin}/sessions/${running.id}`);
+    assert.equal(await page.getByRole('button', { name: 'Relaunch', exact: true }).count(), 0, layout);
+    await page.goto(`${origin}/sessions/${pending.id}`);
+    await page.getByRole('button', { name: 'Relaunch', exact: true }).waitFor();
+    await page.getByText('Launched', { exact: true }).waitFor();
 
     // Logs start folded away and are not fetched until they are opened.
     await page.goto(`${origin}/sessions/${running.id}`);

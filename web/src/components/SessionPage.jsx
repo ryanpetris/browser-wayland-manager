@@ -1,13 +1,13 @@
 // One session in full: what it is, how it is doing, and every action grouped by what it changes.
 import { useState } from 'react';
-import { ExternalLink, Play, RotateCw, SlidersHorizontal, Square, Trash2, Wrench } from 'lucide-react';
+import { ExternalLink, Loader2, Play, RotateCw, SlidersHorizontal, Square, Trash2, Wrench } from 'lucide-react';
 import { DataList, EmptyState, Loading, PageHeader, Section } from './ui.jsx';
 import { Confirm } from './Dialog.jsx';
 import { Link, navigate } from '../router.jsx';
 import { Preview } from './Preview.jsx';
 import { Logs } from './Logs.jsx';
 import { Sharing } from './Sharing.jsx';
-import { StatusBadge, busyState, distribution, elapsed, installLabel, pendingNote, screenLabel, settled } from './session.jsx';
+import { StatusBadge, busyState, distribution, elapsed, installLabel, pendingNote, screenLabel, settled, stageLabel } from './session.jsx';
 
 /// The actions a section ends with.
 const Actions = ({ children }) => <div className="flex flex-wrap items-center gap-2 border-t border-line px-4 py-3">{children}</div>;
@@ -34,13 +34,7 @@ export function SessionPage({ id, sessions, loaded, user, api, busy, now, onOpen
       <PageHeader
         back={{ to: '/', label: 'Sessions' }}
         title={s.name}
-        badge={
-          <span className="flex flex-wrap items-center gap-2">
-            <StatusBadge session={s} />
-            {busyState(s) && <span className="text-xs text-ink-3">{s.stage}…</span>}
-            {s.status === 'running' && s.started_ms > 0 && <span className="text-xs text-ink-4">up {elapsed(s.started_ms, now)}</span>}
-          </span>
-        }
+        badge={<StatusBadge session={s} />}
         action={
           <>
             {stoppable && (
@@ -72,6 +66,12 @@ export function SessionPage({ id, sessions, loaded, user, api, busy, now, onOpen
       />
 
       <div className="mt-6 flex flex-col gap-2 empty:mt-0">
+        {busyState(s) && (
+          <p role="status" className="callout flex items-center gap-2.5 border-warn/30 bg-warn/10 text-warn">
+            <Loader2 className="size-3.5 shrink-0 animate-spin" />
+            {stageLabel(s)}…
+          </p>
+        )}
         {s.error && <p role="alert" className="callout callout-bad [overflow-wrap:anywhere]">{s.error}</p>}
         {s.settings_pending && (
           <p role="status" className="callout callout-info">
@@ -91,6 +91,17 @@ export function SessionPage({ id, sessions, loaded, user, api, busy, now, onOpen
         </div>
 
         <div className="flex min-w-0 flex-col gap-5">
+          {s.status === 'running' && (s.started_ms > 0 || (manages && s.port > 0)) && (
+            <Section title="Runtime">
+              <DataList
+                items={[
+                  s.started_ms > 0 && { label: 'Launched', value: `${elapsed(s.started_ms, now)} ago` },
+                  manages && s.port > 0 && { label: 'Port', value: <code className="font-mono">{s.port}</code> },
+                ]}
+              />
+            </Section>
+          )}
+
           <Section
             title="Configuration"
             action={
@@ -145,14 +156,6 @@ export function SessionPage({ id, sessions, loaded, user, api, busy, now, onOpen
                 </Actions>
               </Section>
 
-              <Section title="Danger Zone" className="border-bad/25">
-                <Actions>
-                  <button type="button" className="btn btn-danger btn-sm" disabled={working} onClick={() => setConfirming('destroy')}>
-                    <Trash2 className="size-3.5" strokeWidth={1.75} />
-                    Destroy Session
-                  </button>
-                </Actions>
-              </Section>
             </>
           )}
         </div>
@@ -161,6 +164,16 @@ export function SessionPage({ id, sessions, loaded, user, api, busy, now, onOpen
       <div className="mt-5 flex flex-col gap-5 empty:mt-0">
         {manages && <Logs api={api} session={s} />}
         {user?.role === 'administrator' && <Sharing api={api} machine={s} />}
+        {manages && (
+          <Section title="Danger Zone" className="border-bad/25">
+            <Actions>
+              <button type="button" className="btn btn-danger btn-sm" disabled={working} onClick={() => setConfirming('destroy')}>
+                <Trash2 className="size-3.5" strokeWidth={1.75} />
+                Destroy Session
+              </button>
+            </Actions>
+          </Section>
+        )}
       </div>
 
       {confirming === 'install' && manages && (

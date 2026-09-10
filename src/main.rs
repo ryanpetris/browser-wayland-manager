@@ -1623,7 +1623,8 @@ async fn asset(uri: axum::http::Uri) -> Response {
             (header::REFERRER_POLICY, "no-referrer"),
             (header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
             (header::X_FRAME_OPTIONS, "DENY"),
-            (header::CONTENT_SECURITY_POLICY, "default-src 'self'; img-src 'self' blob:; style-src 'self' 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'"),
+            // `data:` carries the interface's own inline glyphs: the arrow on a select and the tick in a checkbox.
+            (header::CONTENT_SECURITY_POLICY, "default-src 'self'; img-src 'self' blob: data:; style-src 'self' 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'"),
         ],
         Body::from(data),
     )

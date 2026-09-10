@@ -20,7 +20,7 @@ function enqueue(task) {
 }
 
 /// `interval` is the refresh period in milliseconds; the server allows one capture every two seconds.
-export function Preview({ session, api, interval = 5000, className = '', glyph = 'size-7' }) {
+export function Preview({ session, api, interval = 5000, className = '', glyph = 'size-7', label = true }) {
   const ref = useRef(null);
   const [url, setUrl] = useState('');
   const urlRef = useRef('');
@@ -84,11 +84,10 @@ export function Preview({ session, api, interval = 5000, className = '', glyph =
       {url && session.status === 'running' ? (
         <img src={url} alt={`Desktop preview of ${session.name}`} className="size-full object-contain" />
       ) : (
-        // The session's own state is stated where it belongs; only a running desktop with no frame
-        // to show says anything here.
+        // Whether the desktop is reachable, and nothing about the work that gets it there.
         <div className="flex flex-col items-center gap-2 px-2 text-center text-ink-4">
           <Monitor className={glyph} strokeWidth={1.5} />
-          {session.status === 'running' && <span className="text-[11px] leading-tight">Preview unavailable</span>}
+          {label && <span className="text-[11px] leading-tight">{session.status === 'running' ? 'Preview unavailable' : 'Offline'}</span>}
         </div>
       )}
     </div>
