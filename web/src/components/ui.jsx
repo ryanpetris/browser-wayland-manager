@@ -126,12 +126,12 @@ export function Section({ title, description, action, className = '', children }
 }
 
 /// A section that stays folded until it is wanted. `panelRef` reaches the element to open it.
-export function Disclosure({ label, panelRef, children }) {
+export function Disclosure({ label, panelRef, danger = false, children }) {
   return (
-    <details ref={panelRef} className="group card overflow-hidden">
+    <details ref={panelRef} className={cx('group card overflow-hidden', danger && 'bg-transparent shadow-none open:border-bad/25 open:bg-surface-2 open:shadow-card')}>
       <summary className="flex items-center gap-3 px-4 py-3 transition-colors select-none hover:bg-surface-3">
         <ChevronRight className="size-4 shrink-0 text-ink-3 transition-transform group-open:rotate-90" strokeWidth={2} />
-        <h2 className="min-w-0 flex-1 text-sm font-semibold text-ink">{label}</h2>
+        <h2 className={cx('min-w-0 flex-1 text-sm', danger ? 'font-medium text-ink-3 group-open:font-semibold group-open:text-ink' : 'font-semibold text-ink')}>{label}</h2>
       </summary>
       <div className="border-t border-line">{children}</div>
     </details>

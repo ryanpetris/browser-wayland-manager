@@ -26,7 +26,7 @@ export function Sharing({ api, machine }) {
     };
   }, [machine.id]);
   return (
-    <Section title="People with Access" description="Administrators can always manage this machine.">
+    <Section title="People with Access">
       <div className="flex flex-col gap-2 p-4">
         {error && <Alert>{error}</Alert>}
         {users === null && !error && <Loading>Loading accounts…</Loading>}

@@ -93,6 +93,9 @@ try {
 
   // Deleting asks first, cancels cleanly, and returns to the directory once confirmed.
   const before = writes.length;
+  const danger = page.locator('details').filter({ has: page.getByRole('heading', { name: 'Danger Zone', exact: true }) });
+  assert.equal(await danger.getAttribute('open'), null);
+  await danger.locator('summary').click();
   await page.getByRole('button', { name: 'Delete Account', exact: true }).click();
   const confirm = page.getByRole('dialog', { name: `Delete ${alice.display_name}`, exact: true });
   await confirm.getByRole('button', { name: 'Cancel', exact: true }).click();

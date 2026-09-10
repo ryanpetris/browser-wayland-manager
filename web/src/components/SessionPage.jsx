@@ -1,7 +1,7 @@
 // One session in full: what it is, how it is doing, and every action grouped by what it changes.
 import { useState } from 'react';
 import { ExternalLink, Loader2, Play, RotateCw, SlidersHorizontal, Square, Trash2, Wrench } from 'lucide-react';
-import { DataList, EmptyState, Loading, PageHeader, Section } from './ui.jsx';
+import { DataList, Disclosure, EmptyState, Loading, PageHeader, Section } from './ui.jsx';
 import { Confirm } from './Dialog.jsx';
 import { Link, navigate } from '../router.jsx';
 import { Preview } from './Preview.jsx';
@@ -165,14 +165,14 @@ export function SessionPage({ id, sessions, loaded, user, api, busy, now, onOpen
         {manages && <Logs api={api} session={s} />}
         {user?.role === 'administrator' && <Sharing api={api} machine={s} />}
         {manages && (
-          <Section title="Danger Zone" className="border-bad/25">
-            <Actions>
+          <Disclosure label="Danger Zone" danger>
+            <div className="flex flex-wrap items-center gap-2 px-4 py-3">
               <button type="button" className="btn btn-danger btn-sm" disabled={working} onClick={() => setConfirming('destroy')}>
                 <Trash2 className="size-3.5" strokeWidth={1.75} />
                 Destroy Session
               </button>
-            </Actions>
-          </Section>
+            </div>
+          </Disclosure>
         )}
       </div>
 

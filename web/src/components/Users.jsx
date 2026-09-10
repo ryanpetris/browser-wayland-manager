@@ -1,7 +1,7 @@
 // Account administration: the directory, the accounts in it, and the form that adds one.
 import { useEffect, useState } from 'react';
 import { ChevronRight, Plus, Trash2, UserRound, UserRoundPlus } from 'lucide-react';
-import { Alert, Badge, EmptyState, Field, FormActions, Loading, PageHeader, Section } from './ui.jsx';
+import { Alert, Badge, Disclosure, EmptyState, Field, FormActions, Loading, PageHeader, Section } from './ui.jsx';
 import { Confirm } from './Dialog.jsx';
 import { Link, leave, navigate } from '../router.jsx';
 
@@ -238,14 +238,14 @@ export function UserPage({ id, api, user, changed }) {
         </form>
       </Section>
 
-      <Section title="Danger Zone" className="border-bad/25">
+      <Disclosure label="Danger Zone" danger>
         <div className="flex flex-wrap items-center gap-2 px-4 py-3">
           <button type="button" className="btn btn-danger btn-sm" disabled={busy} onClick={() => setConfirming(true)}>
             <Trash2 className="size-3.5" strokeWidth={1.75} />
             Delete Account
           </button>
         </div>
-      </Section>
+      </Disclosure>
 
       {confirming && (
         <Confirm

@@ -146,6 +146,18 @@ try {
     assert.equal(await logs.evaluate(element => element.open), true, layout);
     await logs.getByText('fixture log', { exact: true }).waitFor();
 
+    const danger = page.locator('details').filter({ has: page.getByRole('heading', { name: 'Danger Zone', exact: true }) });
+    const destroy = danger.getByRole('button', { name: 'Destroy Session', exact: true });
+    assert.equal(await danger.evaluate(element => element.open), false, layout);
+    assert.equal(await destroy.isVisible(), false, layout);
+    const closedBackground = await danger.evaluate(element => getComputedStyle(element).backgroundColor);
+    await danger.locator('summary').focus();
+    await page.keyboard.press('Enter');
+    assert.equal(await destroy.isVisible(), true, layout);
+    assert.notEqual(await danger.evaluate(element => getComputedStyle(element).backgroundColor), closedBackground, layout);
+    await danger.locator('summary').click();
+    assert.equal(await destroy.isVisible(), false, layout);
+
     // Settings are reachable exactly while they can be saved.
     await page.goto(`${origin}/sessions/${manager.id}`);
     await page.getByRole('link', { name: 'Edit Settings', exact: true }).click();
