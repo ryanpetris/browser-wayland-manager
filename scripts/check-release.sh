@@ -44,7 +44,10 @@ for _ in $(seq 1 30); do
             https://127.0.0.1:29300/api/setup -o "$work/account.json"
         curl --insecure --fail --silent --max-time 2 -b "$work/cookies" \
             https://127.0.0.1:29300/api/sessions -o "$work/sessions.json"
-        if [ "$(cat "$work/sessions.json")" != "{\"local_elsewhere\":false,\"sessions\":[],\"version\":\"$version\"}" ]; then
+        response=$(cat "$work/sessions.json")
+        fields="\"local_elsewhere\":false,\"sessions\":[],\"version\":\"$version\""
+        if [ "$response" != "{\"gpu_available\":false,$fields}" ] &&
+           [ "$response" != "{\"gpu_available\":true,$fields}" ]; then
             printf 'Unexpected sessions response: ' >&2
             cat "$work/sessions.json" >&2
             cat "$work/server.log" >&2
