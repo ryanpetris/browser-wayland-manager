@@ -19,6 +19,14 @@ if [ "$INNKEEPER_RENDER_NODE" != none ]; then
         exit 1
     fi
 fi
+if [ "$INNKEEPER_GPU_DRIVER" = nvidia ]; then
+    for device in /dev/nvidiactl /dev/nvidia-modeset; do
+        if [ ! -r "$device" ] || [ ! -w "$device" ]; then
+            echo "NVIDIA device $device is inaccessible to the desktop user. Check host device permissions." >&2
+            exit 1
+        fi
+    done
+fi
 export HOME=/home/elsewhere XDG_CONFIG_HOME=/home/elsewhere/.config XDG_RUNTIME_DIR=/tmp/runtime-elsewhere NO_COLOR=1
 export GSK_RENDERER="${GSK_RENDERER-ngl}" QT_QPA_PLATFORM="${QT_QPA_PLATFORM-wayland;xcb}"
 cd "$HOME"

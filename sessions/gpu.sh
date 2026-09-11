@@ -8,7 +8,7 @@ if [ "$INNKEEPER_GPU_DRIVER" = nvidia ]; then
         exit 1
     fi
     if ! ldconfig -p | grep -q 'libGLX_nvidia.so.0 (libc6)'; then
-        echo 'NVIDIA 32-bit GLX libraries are unavailable. Steam requires matching 32-bit host drivers and Container Toolkit compat32 injection.' >&2
+        echo 'NVIDIA 32-bit GLX is not visible to the session dynamic loader. Steam needs container 32-bit library support, matching host drivers and Container Toolkit compat32 injection.' >&2
     fi
     backend=
     for directory in /usr/lib/gbm /usr/lib64/gbm /usr/lib/x86_64-linux-gnu/gbm; do
