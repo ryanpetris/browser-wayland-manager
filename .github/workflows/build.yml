@@ -96,7 +96,7 @@ jobs:
       - name: Dependencies
         run: |
           pacman -Sy --noconfirm archlinux-keyring
-          pacman -Syu --noconfirm --needed cargo nodejs npm git docker curl ca-certificates
+          pacman -Syu --noconfirm --needed cargo nodejs npm git docker docker-buildx curl ca-certificates
           useradd -m builder
       - uses: actions/checkout@v7
       - uses: Swatinem/rust-cache@v2
