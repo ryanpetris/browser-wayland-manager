@@ -1,7 +1,7 @@
 // Run in the browser Docker rig while check-proxy-desktops.py waits for completion.
 import assert from 'node:assert/strict';
 import { readFile, writeFile } from 'node:fs/promises';
-import { chromium } from '../web/node_modules/playwright-core/index.mjs';
+import { chromium, request } from '../web/node_modules/playwright-core/index.mjs';
 
 const work = '/work', origin = process.env.PROXY_BROWSER_ORIGIN || 'https://127.0.0.1:29301';
 const sessions = JSON.parse(await readFile(work + '/browser.json', 'utf8'));
@@ -26,10 +26,17 @@ try {
   await manager.getByLabel('Password', {exact:true}).fill(password);
   await manager.getByRole('button', { name: 'Sign In', exact: true }).click();
   await manager.getByRole('link', {name:'Fixture Administrator',exact:true}).waitFor();
-  // Another tab replaces the cookie while this tab retains its previous CSRF value.
+  // Replace the cookie while this tab retains its previous CSRF value.
   const previous = await (await context.request.get(origin + '/api/me')).json();
-  assert.equal((await context.request.post(origin + '/api/logout', {headers:{Origin:origin,'X-Innkeeper-CSRF':previous.csrf_token},data:{}})).status(),204);
-  assert.equal((await context.request.post(origin + '/api/login', {headers:{Origin:origin},data:{username:'fixture',password}})).status(),200);
+  const replacement = await request.newContext({ignoreHTTPSErrors:true});
+  try {
+    const login = await replacement.post(origin + '/api/login', {headers:{Origin:origin},data:{username:'fixture',password}});
+    assert.equal(login.status(),200);
+    assert.notEqual((await login.json()).csrf_token,previous.csrf_token);
+    await context.addCookies((await replacement.storageState()).cookies);
+  } finally {
+    await replacement.dispose();
+  }
   const recovered = manager.waitForResponse(r=>new URL(r.url()).pathname==='/api/me' && r.status()===200);
   await manager.evaluate(() => window.dispatchEvent(new Event('focus')));
   await recovered;
