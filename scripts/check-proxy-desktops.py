@@ -181,11 +181,15 @@ try:
         # Access changes revoke remotely without creating a replacement.
         api('/sessions/'+sid+'/access/'+viewer_user['id'],'PUT',{'role':'interactive'})
         wait(lambda:bearer_status(viewer_token)==401)
-        with database(data) as db: assert db.execute("SELECT count(*) FROM instance_tokens WHERE kind='user' AND user_id=? AND session_id=?",[viewer_user['id'],sid]).fetchone()[0]==0
+        def user_token_removed():
+            with database(data) as db:
+                return db.execute("SELECT count(*) FROM instance_tokens WHERE kind='user' AND user_id=? AND session_id=?",[viewer_user['id'],sid]).fetchone()[0]==0
+        wait(user_token_removed)
         replacement=viewer_account.connect(sid).split('#token=')[1]
         assert replacement!=viewer_token and bearer_status(replacement)==200
         api('/sessions/'+sid+'/access/'+viewer_user['id'],'PUT',{'role':'viewer'})
         wait(lambda:bearer_status(replacement)==401)
+        wait(user_token_removed)
         viewer_token=viewer_account.connect(sid).split('#token=')[1]
         with database(data) as db: before_stop=list(db.execute('SELECT token_id,revoked FROM instance_tokens WHERE session_id=? ORDER BY token_id',[sid]))
         api('/sessions/'+sid+'/stop','POST')
