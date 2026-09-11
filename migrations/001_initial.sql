@@ -18,7 +18,9 @@ CREATE TABLE sessions (
     version_error TEXT,
     upgrade_started_ms INTEGER NOT NULL CHECK (upgrade_started_ms >= 0),
     upgrade_target TEXT,
-    gpu_access INTEGER NOT NULL CHECK (gpu_access IN (0, 1))
+    gpu_access INTEGER NOT NULL CHECK (gpu_access IN (0, 1)),
+    gpu TEXT CHECK (gpu IS NULL OR (json_valid(gpu) AND json_type(gpu) = 'object')),
+    CHECK ((gpu_access = 1) = (gpu IS NOT NULL))
 ) STRICT;
 
 CREATE TABLE session_settings (

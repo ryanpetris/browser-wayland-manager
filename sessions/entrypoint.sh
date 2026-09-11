@@ -13,7 +13,7 @@ fi
 printf 'launch\n' > /opt/innkeeper/operation
 stage setup
 if [ ! -f /opt/innkeeper/setup-complete ]; then
-    sh /opt/innkeeper/setup.sh
+    if [ "${INNKEEPER_BASE_READY:-0}" != 1 ]; then sh /opt/innkeeper/setup.sh; fi
     touch /opt/innkeeper/setup-complete
 fi
 if [ "$mode" = upgrade ]; then
@@ -37,9 +37,10 @@ if [ ! -f /opt/innkeeper/packages-installed ]; then
     touch /opt/innkeeper/packages-installed
 fi
 # Device group IDs come from the host and may differ from the image's groups.
-for device in /dev/dri/card* /dev/dri/renderD*; do
+for device in /dev/dri/card* /dev/dri/renderD* /dev/nvidia* /dev/nvidia-caps/*; do
     [ -c "$device" ] || continue
     gid=$(stat -c %g "$device")
+    [ "$gid" -eq 0 ] && continue
     group=$(getent group "$gid" | cut -d: -f1)
     if [ -z "$group" ]; then
         group="innkeeper-gpu-$gid"
@@ -48,5 +49,6 @@ for device in /dev/dri/card* /dev/dri/renderD*; do
     usermod -aG "$group" elsewhere
 done
 stage launch
+sh /opt/innkeeper/gpu.sh
 trap - EXIT
 exec runuser -u elsewhere -- sh /opt/innkeeper/start.sh

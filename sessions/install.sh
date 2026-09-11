@@ -2,6 +2,7 @@
 set -eu
 if command -v pacman >/dev/null; then
     test "$(pacman -Qp /opt/innkeeper/elsewhere.pkg.tar.zst)" = "elsewhere $1"
+    if [ "${INNKEEPER_BASE_READY:-0}" = 1 ]; then pacman -Syu --noconfirm; fi
     pacman -U --noconfirm /opt/innkeeper/elsewhere.pkg.tar.zst
 else
     test "$(dpkg-deb -f /opt/innkeeper/elsewhere.deb Package)" = elsewhere

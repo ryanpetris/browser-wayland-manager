@@ -1,6 +1,24 @@
 #!/bin/sh
 set -eu
 . /opt/innkeeper/launch-settings.sh
+. /opt/innkeeper/gpu-settings.sh
+. /opt/innkeeper/gpu-env.sh
+export PATH=/usr/local/bin:/usr/local/sbin:/usr/bin:/usr/sbin:/bin:/sbin
+if [ "$INNKEEPER_RENDER_NODE" != none ]; then
+    if [ ! -c "$INNKEEPER_RENDER_NODE" ] || [ ! -r "$INNKEEPER_RENDER_NODE" ] || [ ! -w "$INNKEEPER_RENDER_NODE" ]; then
+        echo 'Selected GPU is inaccessible in this container. Check device permissions or create a new session.' >&2
+        exit 1
+    fi
+    major=$(stat -c %t "$INNKEEPER_RENDER_NODE")
+    minor=$(stat -c %T "$INNKEEPER_RENDER_NODE")
+    device=$(printf '%d:%d' "0x$major" "0x$minor")
+    identity=$(basename "$(readlink -f "/sys/dev/char/$device/device")")
+    driver=$(basename "$(readlink -f "/sys/dev/char/$device/device/driver")")
+    if [ "$device" != "$INNKEEPER_GPU_DEVICE" ] || [ "$identity" != "$INNKEEPER_GPU_ID" ] || [ "$driver" != "$INNKEEPER_GPU_DRIVER" ]; then
+        echo 'Selected GPU device mapping changed. Create a new session for this GPU.' >&2
+        exit 1
+    fi
+fi
 export HOME=/home/elsewhere XDG_CONFIG_HOME=/home/elsewhere/.config XDG_RUNTIME_DIR=/tmp/runtime-elsewhere NO_COLOR=1
 export GSK_RENDERER="${GSK_RENDERER-ngl}" QT_QPA_PLATFORM="${QT_QPA_PLATFORM-wayland;xcb}"
 cd "$HOME"
@@ -11,7 +29,7 @@ mkfifo "$XDG_RUNTIME_DIR/output"
 # Redact credential fragments before Docker persists application output.
 LC_ALL=C stdbuf -oL sed -E 's/(#token=).*/\1[REDACTED]/' < "$XDG_RUNTIME_DIR/output" &
 filter=$!
-set -- --no-tls --listen 0.0.0.0:19443 --url-prefix "$INNKEEPER_URL_PREFIX" --rtc-port "$INNKEEPER_RTC_PORT" --elements
+set -- --no-tls --listen 0.0.0.0:19443 --url-prefix "$INNKEEPER_URL_PREFIX" --rtc-port "$INNKEEPER_RTC_PORT" --elements --render-node "$INNKEEPER_RENDER_NODE"
 if [ -n "${INNKEEPER_RTC_ADDR:-}" ]; then set -- "$@" --rtc-addr "$INNKEEPER_RTC_ADDR"; fi
 if [ -n "${INNKEEPER_SCREEN_SIZE:-}" ]; then set -- "$@" --screen-size "$INNKEEPER_SCREEN_SIZE"; fi
 if [ "${INNKEEPER_SOFTWARE_ENCODING}" = 1 ]; then set -- "$@" --software-encoding; fi

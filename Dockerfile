@@ -24,7 +24,7 @@ RUN useradd --create-home local-check && runuser -u local-check -- python3 scrip
 RUN runuser -u local-check -- env INNKEEPER_BINARY=/src/target/release/elsewhere-innkeeper python3 scripts/check-tls.py
 
 FROM debian:trixie-slim AS runtime
-RUN apt-get update && apt-get install -y --no-install-recommends docker-cli curl ca-certificates tini && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends docker-cli docker-buildx curl ca-certificates tini && rm -rf /var/lib/apt/lists/*
 COPY --from=build /src/target/release/elsewhere-innkeeper /usr/bin/elsewhere-innkeeper
 COPY sessions/ /usr/share/elsewhere-innkeeper/sessions/
 COPY LICENSE /usr/share/licenses/elsewhere-innkeeper/LICENSE
@@ -38,6 +38,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends python3 openssl
     && rm -rf /var/lib/apt/lists/* && useradd -m elsewhere
 COPY --chmod=755 scripts/check-proxy.py /check-proxy.py
 COPY scripts/sqlite_fixture.py scripts/auth_fixture.py /
+COPY scripts/check-glx32.c /check-glx32.c
 RUN ln -s /check-proxy.py /usr/local/bin/elsewhere
 
 FROM web AS proxy-browser

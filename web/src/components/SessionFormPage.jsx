@@ -8,7 +8,7 @@ import { pendingNote, settled } from './session.jsx';
 /// Forms sit in a single column so the eye has one place to go.
 const Column = ({ children }) => <div className="mx-auto flex w-full max-w-3xl flex-col gap-7">{children}</div>;
 
-export function NewSessionPage({ api, user, refresh, loaded, gpuAvailable }) {
+export function NewSessionPage({ api, user, refresh, loaded, gpus, gpuErrors }) {
   const [error, setError] = useState('');
   const here = '/sessions/new';
   if (!loaded) return <Loading>Loading session options…</Loading>;
@@ -16,7 +16,8 @@ export function NewSessionPage({ api, user, refresh, loaded, gpuAvailable }) {
     <Column>
       <PageHeader back={{ to: '/', label: 'Sessions' }} title="New Session" />
       <SessionForm
-        gpuAvailable={gpuAvailable}
+        gpus={gpus}
+        gpuErrors={gpuErrors}
         administrator={user?.role === 'administrator'}
         error={error}
         cancelTo="/"

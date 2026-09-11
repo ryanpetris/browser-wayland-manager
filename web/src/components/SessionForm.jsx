@@ -9,6 +9,7 @@ const defaultProfile = {
   packages: [],
   docker_args: [],
   gpu_access: false,
+  gpu_id: null,
   software_encoding: false,
   startup_command: '',
   screen_size: null,
@@ -18,8 +19,9 @@ const screenPresets = ['1280x720', '1920x1080', '2560x1440', '3840x2160'];
 
 /// `note` says what saving does; `blocked`, when set, replaces it with why it cannot and holds the
 /// commit back.
-export function SessionForm({ submit, error, initial, gpuAvailable = false, administrator = false, cancelTo, note = '', blocked = '' }) {
-  const defaults = { ...defaultProfile, gpu_access: gpuAvailable, software_encoding: !gpuAvailable };
+export function SessionForm({ submit, error, initial, gpus = [], gpuErrors = [], administrator = false, cancelTo, note = '', blocked = '' }) {
+  const gpuAvailable = gpus.length > 0;
+  const defaults = { ...defaultProfile, gpu_access: gpuAvailable, gpu_id: gpus[0]?.id ?? null, software_encoding: !gpuAvailable };
   const [profile, setProfile] = useState(initial || defaults);
   const [packages, setPackages] = useState(initial?.packages.join(' ') || '');
   const [dockerArgs, setDockerArgs] = useState(initial?.docker_args?.join('\n') || '');
@@ -52,6 +54,7 @@ export function SessionForm({ submit, error, initial, gpuAvailable = false, admi
         typeof p.startup_command !== 'string' ||
         typeof p.kiosk !== 'boolean' ||
         typeof p.gpu_access !== 'boolean' ||
+        (p.gpu_id !== null && typeof p.gpu_id !== 'string') ||
         typeof p.software_encoding !== 'boolean'
       ) {
         throw new Error('Invalid profile field types.');
@@ -65,7 +68,10 @@ export function SessionForm({ submit, error, initial, gpuAvailable = false, admi
       ) {
         throw new Error('Screen dimensions must be even numbers between 2 and 8192.');
       }
-      if (p.gpu_access && !gpuAvailable) throw new Error('GPU access requires the host render node.');
+      if (!p.gpu_access && value.gpu_id != null) throw new Error('GPU selection requires GPU access.');
+      if (p.gpu_access && !gpuAvailable) throw new Error('No host GPU is available.');
+      if (p.gpu_access && p.gpu_id !== null && !gpus.some(g => g.id === p.gpu_id)) throw new Error('Selected GPU is unavailable.');
+      p.gpu_id = p.gpu_access ? (p.gpu_id ?? gpus[0].id) : null;
       p.software_encoding ||= !p.gpu_access;
       setProfile(p);
       setPackages(p.packages.join(' '));
@@ -103,6 +109,7 @@ export function SessionForm({ submit, error, initial, gpuAvailable = false, admi
             packages: packages.trim().split(/\s+/).filter(Boolean),
             docker_args: (administrator ? dockerArgs : '').split('\n').map(line => line.trim()).filter(Boolean),
             screen_size: size,
+            gpu_id: profile.gpu_access ? profile.gpu_id : null,
             software_encoding: profile.software_encoding || !profile.gpu_access,
           });
         } finally {
@@ -185,14 +192,21 @@ export function SessionForm({ submit, error, initial, gpuAvailable = false, admi
 
         <Section title="Display">
           <div className="flex flex-col gap-4 p-4">
+            {!initial && gpuErrors.map(message => <Alert key={message}>{message}</Alert>)}
             <div className="flex flex-col gap-2">
               <label className="flex items-center gap-2.5 text-sm text-ink">
                 <input type="checkbox" className="check" name="gpu_access" checked={profile.gpu_access}
                   disabled={!!initial || (!gpuAvailable && !profile.gpu_access)}
-                  onChange={e => setProfile(p => ({ ...p, gpu_access: e.target.checked, software_encoding: p.software_encoding || !e.target.checked }))} />
+                  onChange={e => setProfile(p => ({ ...p, gpu_access: e.target.checked, gpu_id: p.gpu_id ?? gpus[0]?.id ?? null, software_encoding: p.software_encoding || !e.target.checked }))} />
                 GPU access
               </label>
-              <p className="text-xs text-ink-3">{initial ? 'GPU access is set at creation.' : gpuAvailable ? 'Let the desktop and applications use the host GPU. Set at creation.' : 'The host render node is unavailable.'}</p>
+              <p className="text-xs text-ink-3">{initial ? 'GPU access is set at creation.' : gpuAvailable ? 'Let the desktop and applications use the host GPU. Set at creation.' : 'No host GPU is available.'}</p>
+              {profile.gpu_access && <Field label="GPU" hint="The selected GPU renders and encodes the desktop. Set at creation.">
+                <select className="select select-md w-full" name="gpu_id" disabled={!!initial}
+                  value={profile.gpu_id ?? ''} onChange={e => change('gpu_id', e.target.value)}>
+                  {(initial?.gpu ? [initial.gpu] : gpus).map(g => <option key={g.id} value={g.id}>{g.driver} · {g.id} · {g.node}</option>)}
+                </select>
+              </Field>}
               <label className="flex items-center gap-2.5 text-sm text-ink">
                 <input type="checkbox" className="check" name="software_encoding" checked={profile.software_encoding || !profile.gpu_access}
                   disabled={!profile.gpu_access} onChange={e => change('software_encoding', e.target.checked)} />

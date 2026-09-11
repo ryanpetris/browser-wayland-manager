@@ -1,0 +1,4 @@
+#!/bin/sh
+set -eu
+. /opt/innkeeper/gpu-env.sh
+exec /usr/bin/Xwayland "$@"

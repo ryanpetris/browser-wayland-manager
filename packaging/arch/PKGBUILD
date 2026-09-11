@@ -10,7 +10,7 @@ license=('MIT')
 # Native crypto assembly is incompatible with makepkg's injected C LTO flags.
 options=('!lto' '!debug') # one package; no split -debug package with the symbols
 backup=('etc/elsewhere-innkeeper/environment')
-depends=('docker' 'curl' 'ca-certificates' 'gcc-libs')
+depends=('docker' 'docker-buildx' 'curl' 'ca-certificates' 'gcc-libs')
 makedepends=('cargo' 'nodejs' 'npm' 'git')
 
 build() {

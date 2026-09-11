@@ -173,13 +173,14 @@ impl Store {
 fn read_session(db: &Connection, id: &str) -> Result<Option<Session>> {
     let session = db.prepare_cached(
         "SELECT id, name, distribution, port, started_ms, status, stage, error, installed_version,
-         repair_available, version_error, upgrade_started_ms, upgrade_target, gpu_access FROM sessions WHERE id = ?1",
+         repair_available, version_error, upgrade_started_ms, upgrade_target, gpu_access, gpu FROM sessions WHERE id = ?1",
     )?.query_row(
         [id], |row| Ok(Session {
             id: row.get(0)?, name: row.get(1)?, distribution: row.get(2)?, port: row.get(3)?,
             started_ms: unsigned(row, 4)?, status: row.get(5)?, stage: row.get(6)?, error: row.get(7)?,
             installed_version: row.get(8)?, repair_available: row.get(9)?, version_error: row.get(10)?,
             upgrade_started_ms: unsigned(row, 11)?, upgrade_target: row.get(12)?, gpu_access: row.get(13)?,
+            gpu: row.get::<_, Option<String>>(14)?.map(|json| serde_json::from_str(&json)).transpose().map_err(|e| rusqlite::Error::FromSqlConversionFailure(14, rusqlite::types::Type::Text, Box::new(e)))?,
             packages: vec![], docker_args: vec![], timings: Default::default(), startup_command: String::new(),
             screen_size: None, kiosk: false, software_encoding: false, applied_settings: None, launching_settings: None,
         }),
@@ -242,14 +243,14 @@ fn read_session(db: &Connection, id: &str) -> Result<Option<Session>> {
 fn write_session(db: &Connection, s: &Session) -> Result<()> {
     db.execute(
         "INSERT INTO sessions (id, name, distribution, port, started_ms, status, stage, error,
-         installed_version, repair_available, version_error, upgrade_started_ms, upgrade_target, gpu_access)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
+         installed_version, repair_available, version_error, upgrade_started_ms, upgrade_target, gpu_access, gpu)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
          ON CONFLICT(id) DO UPDATE SET name=excluded.name, distribution=excluded.distribution,
          port=excluded.port, started_ms=excluded.started_ms, status=excluded.status, stage=excluded.stage,
          error=excluded.error, installed_version=excluded.installed_version, repair_available=excluded.repair_available,
-         version_error=excluded.version_error, upgrade_started_ms=excluded.upgrade_started_ms, upgrade_target=excluded.upgrade_target, gpu_access=excluded.gpu_access",
+         version_error=excluded.version_error, upgrade_started_ms=excluded.upgrade_started_ms, upgrade_target=excluded.upgrade_target, gpu_access=excluded.gpu_access, gpu=excluded.gpu",
         params![s.id, s.name, s.distribution, s.port, i64::try_from(s.started_ms)?, s.status, s.stage, s.error,
-                s.installed_version, s.repair_available, s.version_error, i64::try_from(s.upgrade_started_ms)?, s.upgrade_target, s.gpu_access],
+                s.installed_version, s.repair_available, s.version_error, i64::try_from(s.upgrade_started_ms)?, s.upgrade_target, s.gpu_access, s.gpu.as_ref().map(serde_json::to_string).transpose()?],
     )?;
     for table in [
         "session_settings",
@@ -386,6 +387,13 @@ mod tests {
             kiosk: settings.kiosk,
             software_encoding: settings.software_encoding,
             gpu_access: true,
+            gpu: Some(crate::gpu::Gpu {
+                id: "0000:01:00.0".into(),
+                driver: "nvidia".into(),
+                node: "/dev/dri/renderD129".into(),
+                major: 226,
+                minor: 129,
+            }),
             applied_settings: Some(settings.clone()),
             launching_settings: Some(settings),
             port: 0,
@@ -411,6 +419,7 @@ mod tests {
         let mut without_options = session();
         without_options.docker_args.clear();
         without_options.gpu_access = false;
+        without_options.gpu = None;
         without_options.distribution = "ubuntu".into();
         let second = db.create(without_options).await.unwrap().unwrap();
         assert!(db.session(&first.id).await.unwrap().unwrap() == first);

@@ -6,7 +6,7 @@ license = "MIT"
 description = "Manage isolated Elsewhere Docker desktops"
 
 [package.metadata.elsewhere]
-version = "0.9.0"
+version = "0.10.1"
 
 [package.metadata.deb]
 maintainer = "Elsewhere Innkeeper contributors <noreply@localhost>"
@@ -16,7 +16,7 @@ extended-description = """\
 Creates and manages isolated Arch Linux, Debian and Ubuntu desktops in Docker, with a web
 interface for session startup, logs, previews, and persistent home directories."""
 license-file = ["LICENSE", "0"]
-depends = "$auto, docker.io, docker-cli, curl, ca-certificates, systemd, init-system-helpers"
+depends = "$auto, docker.io, docker-cli, docker-buildx, curl, ca-certificates, systemd, init-system-helpers"
 maintainer-scripts = "packaging/debian"
 systemd-units = { unit-scripts = "packaging", enable = false, start = false }
 assets = [

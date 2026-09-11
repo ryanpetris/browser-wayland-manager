@@ -3,6 +3,8 @@ set -eu
 url=$1
 package=$2
 image=$3
+base=$4
+distribution=$5
 if [ -z "$url" ] && [ ! -s "$package" ]; then
     echo "Local Elsewhere package is missing; rebuild with make local." >&2
     exit 1
@@ -24,5 +26,10 @@ else
     echo "Using cached $(basename "$package")"
 fi
 if [ -n "$image" ] && ! docker image inspect "$image" >/dev/null 2>&1; then
-    docker pull --platform linux/amd64 "$image"
+    if [ "$image" = "$base" ]; then
+        docker pull --platform linux/amd64 "$image"
+    else
+        docker build --pull --no-cache --platform linux/amd64 --build-arg "BASE_IMAGE=$base" \
+            --build-arg "DISTRIBUTION=$distribution" --tag "$image" "$(dirname "$0")"
+    fi
 fi

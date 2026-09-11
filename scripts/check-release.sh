@@ -46,13 +46,15 @@ for _ in $(seq 1 30); do
             https://127.0.0.1:29300/api/sessions -o "$work/sessions.json"
         response=$(cat "$work/sessions.json")
         fields="\"local_elsewhere\":false,\"sessions\":[],\"version\":\"$version\""
-        if [ "$response" != "{\"gpu_available\":false,$fields}" ] &&
-           [ "$response" != "{\"gpu_available\":true,$fields}" ]; then
-            printf 'Unexpected sessions response: ' >&2
-            cat "$work/sessions.json" >&2
-            cat "$work/server.log" >&2
-            exit 1
-        fi
+        case "$response" in
+            '{"gpu_available":'*',"gpu_errors":['*'],"gpus":['*"],$fields}") ;;
+            *)
+                printf 'Unexpected sessions response: ' >&2
+                cat "$work/sessions.json" >&2
+                cat "$work/server.log" >&2
+                exit 1
+                ;;
+        esac
         printf 'Release version, package setup and authenticated API verified\n'
         exit 0
     fi

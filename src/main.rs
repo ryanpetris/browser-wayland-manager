@@ -1,4 +1,5 @@
 mod accounts;
+mod gpu;
 mod login_store;
 mod network;
 mod proxy;
@@ -98,6 +99,7 @@ struct Session {
     packages: Vec<String>,
     docker_args: Vec<String>,
     gpu_access: bool,
+    gpu: Option<gpu::Gpu>,
     software_encoding: bool,
     startup_command: String,
     screen_size: Option<ScreenSize>,
@@ -279,7 +281,7 @@ async fn docker(args: &[&str]) -> Result<String> {
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 fn public_session(s: &Session) -> serde_json::Value {
-    serde_json::json!({"id":s.id,"name":s.name,"distribution":s.distribution,"packages":s.packages,"docker_args":s.docker_args,"gpu_access":s.gpu_access,"software_encoding":s.software_encoding,"startup_command":s.startup_command,"screen_size":s.screen_size,"kiosk":s.kiosk,"settings_pending":s.applied_settings.as_ref().is_some_and(|applied| *applied != LaunchSettings::from(s)),"installed_version":s.installed_version,"repair_available":s.repair_available,"version_error":s.version_error,"expected_version":elsewhere_version(),"version_status":version_status(s.installed_version.as_deref()),"port":s.port,"started_ms":s.started_ms,"status":s.status,"stage":s.stage,"error":s.error,"timings":s.timings})
+    serde_json::json!({"id":s.id,"name":s.name,"distribution":s.distribution,"packages":s.packages,"docker_args":s.docker_args,"gpu_access":s.gpu_access,"gpu":s.gpu,"gpu_id":s.gpu.as_ref().map(|g| &g.id),"software_encoding":s.software_encoding,"startup_command":s.startup_command,"screen_size":s.screen_size,"kiosk":s.kiosk,"settings_pending":s.applied_settings.as_ref().is_some_and(|applied| *applied != LaunchSettings::from(s)),"installed_version":s.installed_version,"repair_available":s.repair_available,"version_error":s.version_error,"expected_version":elsewhere_version(),"version_status":version_status(s.installed_version.as_deref()),"port":s.port,"started_ms":s.started_ms,"status":s.status,"stage":s.stage,"error":s.error,"timings":s.timings})
 }
 fn authorized_session(s: &Session, role: &str) -> serde_json::Value {
     let mut value = if role == "manager" {
@@ -305,8 +307,9 @@ async fn list(State(app): State<Shared>, auth: Auth) -> Api<Json<serde_json::Val
             sessions.push(authorized_session(&s, &role));
         }
     }
+    let (gpus, gpu_errors) = gpu::discover();
     Ok(Json(
-        serde_json::json!({"sessions":sessions,"version":env!("INNKEEPER_VERSION"),"local_elsewhere":LOCAL_ELSEWHERE.get().is_some(),"gpu_available":gpu_available()}),
+        serde_json::json!({"sessions":sessions,"version":env!("INNKEEPER_VERSION"),"local_elsewhere":LOCAL_ELSEWHERE.get().is_some(),"gpu_available":!gpus.is_empty(),"gpus":gpus,"gpu_errors":gpu_errors}),
     ))
 }
 #[derive(Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -322,8 +325,27 @@ impl ScreenSize {
             .all(|n| (2..=8192).contains(n) && n % 2 == 0)
     }
 }
+async fn require_nvidia_runtime() -> Api<()> {
+    let info = docker(&["info", "--format", "{{json .Runtimes}}"]).await?;
+    let runtimes: serde_json::Value =
+        serde_json::from_str(&info).context("Read Docker runtimes")?;
+    if runtimes.get("nvidia").is_none() {
+        return Err(Error(
+            StatusCode::BAD_REQUEST,
+            "NVIDIA GPU access requires NVIDIA Container Toolkit and Docker's nvidia runtime."
+                .into(),
+        ));
+    }
+    Ok(())
+}
+fn gpu_config(gpu: Option<&gpu::Gpu>) -> String {
+    match gpu {
+        Some(gpu) => format!("export INNKEEPER_RENDER_NODE='{}'\nexport INNKEEPER_GPU_ID='{}'\nexport INNKEEPER_GPU_DRIVER='{}'\nexport INNKEEPER_GPU_DEVICE='{}:{}'\n", gpu.node, gpu.id, gpu.driver, gpu.major, gpu.minor),
+        None => "export INNKEEPER_RENDER_NODE=none\nexport INNKEEPER_GPU_ID=''\nexport INNKEEPER_GPU_DRIVER=''\nexport INNKEEPER_GPU_DEVICE=''\n".into(),
+    }
+}
 fn gpu_available() -> bool {
-    std::path::Path::new("/dev/dri/renderD128").exists()
+    !gpu::discover().0.is_empty()
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -335,6 +357,8 @@ struct Create {
     docker_args: Vec<String>,
     #[serde(default = "gpu_available")]
     gpu_access: bool,
+    #[serde(default)]
+    gpu_id: Option<String>,
     #[serde(default)]
     software_encoding: bool,
     #[serde(default)]
@@ -505,9 +529,9 @@ async fn create(
         }
         validate_settings(&input.name, input.screen_size, &input.startup_command)?;
         validate_docker_args(&input.docker_args)?;
-        if input.gpu_access && !gpu_available() {
-            return Err(Error(StatusCode::BAD_REQUEST, "GPU access requires the host render node.".into()));
-        }
+        let gpu = gpu::select(&gpu::discover().0, input.gpu_access, input.gpu_id.as_deref())
+            .map_err(|e| Error(StatusCode::BAD_REQUEST, e.to_string()))?;
+        if gpu.as_ref().is_some_and(gpu::Gpu::nvidia) { require_nvidia_runtime().await?; }
         let software_encoding = input.software_encoding || !input.gpu_access;
         let s = Session {
             id: Uuid::new_v4().to_string(),
@@ -516,6 +540,7 @@ async fn create(
             packages: input.packages,
             docker_args: input.docker_args,
             gpu_access: input.gpu_access,
+            gpu,
             software_encoding,
             startup_command: input.startup_command.clone(),
             screen_size: input.screen_size,
@@ -579,7 +604,7 @@ async fn prepare(app: Shared, id: &str, new_container: bool, attempt_ms: u64) ->
             bail!("Release packages currently support only x86_64 Docker hosts");
         }
     }
-    let (image, asset) = match initial.distribution.as_str() {
+    let (base_image, asset) = match initial.distribution.as_str() {
         "arch" => (
             "archlinux:base",
             format!("elsewhere-{version}-1-x86_64.pkg.tar.zst"),
@@ -593,6 +618,25 @@ async fn prepare(app: Shared, id: &str, new_container: bool, attempt_ms: u64) ->
             format!("elsewhere_{version}-1_ubuntu-26.04_amd64.deb"),
         ),
         _ => bail!("Unsupported session distribution"),
+    };
+    let prepared_image;
+    let image = if initial.gpu.as_ref().is_some_and(gpu::Gpu::nvidia) {
+        use sha2::{Digest, Sha256};
+        let mut hash = Sha256::new();
+        hash.update(base_image);
+        hash.update(std::fs::read(app.assets.join("sessions/Dockerfile"))?);
+        hash.update(std::fs::read(
+            app.assets
+                .join(format!("sessions/setup-{}.sh", initial.distribution)),
+        )?);
+        prepared_image = format!(
+            "innkeeper-session-{}:{:x}",
+            initial.distribution,
+            hash.finalize()
+        );
+        prepared_image.as_str()
+    } else {
+        base_image
     };
     let package = if let Some(local) = LOCAL_ELSEWHERE.get() {
         local.root.join(&asset)
@@ -643,6 +687,8 @@ async fn prepare(app: Shared, id: &str, new_container: bool, attempt_ms: u64) ->
                 .arg(&url)
                 .arg(&package)
                 .arg(if new_container { image } else { "" })
+                .arg(base_image)
+                .arg(&initial.distribution)
                 .stdout(log.try_clone()?)
                 .stderr(log)
                 .process_group(0)
@@ -681,6 +727,10 @@ async fn prepare(app: Shared, id: &str, new_container: bool, attempt_ms: u64) ->
     }
     tokens::launching(&app, id).await;
     let result: Result<()> = async {
+        if let Some(gpu) = &s.gpu {
+            gpu.validate()?;
+            if gpu.nvidia() { require_nvidia_runtime().await.map_err(|e| anyhow::anyhow!(e.1))?; }
+        }
         app.change(id, move |s| {
             s.stage = "container".into();
             s.timings
@@ -731,11 +781,17 @@ async fn prepare(app: Shared, id: &str, new_container: bool, attempt_ms: u64) ->
                 args.splice(1..1, ["-p".into(), tcp]);
             }
             if s.gpu_access {
-                anyhow::ensure!(gpu_available(), "GPU access requires the host render node");
+                anyhow::ensure!(s.gpu.is_some(), "Session has no selected GPU");
                 args.splice(
                     1..1,
                     ["--device".to_owned(), "/dev/dri:/dev/dri".to_owned()],
                 );
+            }
+            if s.gpu.as_ref().is_some_and(gpu::Gpu::nvidia) {
+                args.splice(1..1, ["--runtime=nvidia", "--env=NVIDIA_VISIBLE_DEVICES=all",
+                    "--env=NVIDIA_DRIVER_CAPABILITIES=compute,video,graphics,utility,display,compat32"].map(str::to_owned));
+            } else {
+                args.splice(1..1, ["--env=NVIDIA_VISIBLE_DEVICES=void".to_owned()]);
             }
             args.extend(s.packages.iter().cloned());
             docker(&args.iter().map(String::as_str).collect::<Vec<_>>()).await?;
@@ -812,6 +868,7 @@ async fn prepare(app: Shared, id: &str, new_container: bool, attempt_ms: u64) ->
             "launch\n".into()
         };
         copy_text(&app, id, "operation", &operation, 0o600).await?;
+        copy_text(&app, id, "gpu-settings.sh", &gpu_config(s.gpu.as_ref()), 0o644).await?;
         if upgrading {
             app.change(id, move |s| {
                 s.stage = "upgrade".into();
@@ -820,6 +877,10 @@ async fn prepare(app: Shared, id: &str, new_container: bool, attempt_ms: u64) ->
             .await?;
             docker(&["start", &container(id)]).await?;
             return Ok(());
+        }
+        for script in ["gpu.sh", "Xwayland"] {
+            docker(&["cp", app.assets.join("sessions").join(script).to_str().context("Invalid assets path")?,
+                &format!("{}:/opt/innkeeper/{script}", container(id))]).await?;
         }
         let launch = LaunchSettings::from(&s);
         let config = app.dir.join(format!("{id}.launch-settings.sh"));
