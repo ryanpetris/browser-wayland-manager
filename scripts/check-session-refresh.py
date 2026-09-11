@@ -179,7 +179,7 @@ exec sleep 10000
         return path
 
     # Pre-pull only the stock images used by our disposable containers.
-    for image in ("archlinux:base", "debian:trixie-slim", "ubuntu:26.04"):
+    for image in ("archlinux:base", "debian:13-slim", "ubuntu:26.04"):
         run("docker", "pull", image)
     for distro in ("arch", "debian", "ubuntu"):
         package(distro, "first")

@@ -164,8 +164,8 @@ export function SessionForm({ submit, error, initial, gpus = [], gpuErrors = [],
                 onChange={e => change('distribution', e.target.value)}
               >
                 <option value="arch">Arch Linux · rolling base</option>
-                <option value="debian">Debian 13 · Trixie</option>
-                <option value="ubuntu">Ubuntu 26.04 LTS · Resolute</option>
+                <option value="debian">Debian 13</option>
+                <option value="ubuntu">Ubuntu 26.04 LTS</option>
               </select>
             </Field>
           </div>

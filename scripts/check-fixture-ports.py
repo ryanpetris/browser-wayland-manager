@@ -11,7 +11,7 @@ created = []
 original = subprocess.check_output
 try:
     for port in (19998, 19999):
-        created.append(original(['docker', 'create', '--publish', f'{port}:{port}/udp', 'debian:trixie-slim', 'true'], text=True).strip())
+        created.append(original(['docker', 'create', '--publish', f'{port}:{port}/udp', 'debian:13-slim', 'true'], text=True).strip())
     def disappear(command, *args, **kwargs):
         result = original(command, *args, **kwargs)
         if command == ['docker', 'ps', '-aq']:

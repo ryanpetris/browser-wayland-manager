@@ -1,6 +1,8 @@
-FROM node:24-bookworm-slim AS node
+# Node.js 24 on Debian 12.
+FROM node:24-slim@sha256:2fe369e969550cde8e867afc3fe370b260140cab4a23d467074295b42163d553 AS node
 
-FROM rust:1-trixie AS debian-build
+# Rust 1 on Debian 13.
+FROM rust:1@sha256:bf5a9aa29062a6cb03c49bd59a46eb55e3cc770caf598a221a7866e500be3082 AS debian-build
 RUN apt-get update && apt-get install -y --no-install-recommends \
     make git pkg-config cmake libavcodec-dev libavutil-dev libavfilter-dev \
     libswscale-dev libswresample-dev libavformat-dev libavdevice-dev libva-dev \
@@ -29,7 +31,8 @@ RUN test -n "$ELSEWHERE_VERSION" \
     && test "$(dpkg-deb -f "$package" Architecture)" = amd64 \
     && cp "$package" /out/
 
-FROM rust:1-bookworm AS ubuntu-rust
+# Rust 1 on Debian 12.
+FROM rust@sha256:9a73a5088750b4c95158ab26629c854c3d6fc4b173cb7bc8079ad252d8ed7bfa AS ubuntu-rust
 FROM ubuntu:26.04 AS ubuntu-build
 COPY --from=ubuntu-rust /usr/local/cargo /usr/local/cargo
 COPY --from=ubuntu-rust /usr/local/rustup /usr/local/rustup

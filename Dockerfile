@@ -1,12 +1,14 @@
 # syntax=docker/dockerfile:1
-FROM node:24-bookworm-slim AS web
+# Node.js 24 on Debian 12.
+FROM node:24-slim@sha256:2fe369e969550cde8e867afc3fe370b260140cab4a23d467074295b42163d553 AS web
 WORKDIR /src/web
 COPY web/package*.json ./
 RUN npm ci --no-audit --no-fund
 COPY web/ ./
 RUN npm run build
 
-FROM rust:1-trixie AS build
+# Rust 1 on Debian 13.
+FROM rust:1@sha256:bf5a9aa29062a6cb03c49bd59a46eb55e3cc770caf598a221a7866e500be3082 AS build
 WORKDIR /src
 COPY . .
 ARG INNKEEPER_VERSION
@@ -23,7 +25,7 @@ RUN INNKEEPER_BINARY=/src/target/release/elsewhere-innkeeper python3 scripts/che
 RUN useradd --create-home local-check && runuser -u local-check -- python3 scripts/check-elsewhere-local.py
 RUN runuser -u local-check -- env INNKEEPER_BINARY=/src/target/release/elsewhere-innkeeper python3 scripts/check-tls.py
 
-FROM debian:trixie-slim AS runtime
+FROM debian:13-slim AS runtime
 RUN apt-get update && apt-get install -y --no-install-recommends docker-cli docker-buildx curl ca-certificates tini && rm -rf /var/lib/apt/lists/*
 COPY --from=build /src/target/release/elsewhere-innkeeper /usr/bin/elsewhere-innkeeper
 COPY sessions/ /usr/share/elsewhere-innkeeper/sessions/

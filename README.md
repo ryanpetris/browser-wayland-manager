@@ -149,13 +149,13 @@ The log view on the session page starts folded away and polls without overlappin
 
 ## Supported session images
 
-Release packages currently support x86_64 Docker hosts. Base images are reused locally; refresh them for future sessions with `docker pull archlinux:base`, `docker pull debian:trixie-slim`, and `docker pull ubuntu:26.04`.
+Release packages currently support x86_64 Docker hosts. Base images are reused locally; refresh them for future sessions with `docker pull archlinux:base`, `docker pull debian:13-slim`, and `docker pull ubuntu:26.04`.
 
 - Arch Linux `archlinux:base`, rolling repositories.
-- Debian 13 `debian:trixie-slim`, Trixie repositories with `main`, `contrib`, `non-free`, and `non-free-firmware` enabled.
-- Ubuntu 26.04 LTS `ubuntu:26.04`, Resolute repositories.
+- Debian 13 `debian:13-slim`, Debian 13 repositories with `main`, `contrib`, `non-free`, and `non-free-firmware` enabled.
+- Ubuntu 26.04 LTS `ubuntu:26.04`, Ubuntu 26.04 repositories.
 
-Ubuntu sessions use `elsewhere_<version>-1_ubuntu-26.04_amd64.deb`. They require an Elsewhere release that publishes that artifact. Debian packages and packages for other Ubuntu releases are not interchangeable because their FFmpeg library ABIs differ. A missing Ubuntu artifact fails the session download; Innkeeper never substitutes a Debian package. Ubuntu setup provides PipeWire and PulseAudio services, VA-API and Vulkan drivers, XWayland, and xterm. Elsewhere audio requires PipeWire 1.4.2 or later and WirePlumber 0.5.6 or later, provided by Resolute. The Elsewhere package declares the media-library dependencies.
+Ubuntu sessions use `elsewhere_<version>-1_ubuntu-26.04_amd64.deb`. They require an Elsewhere release that publishes that artifact. Debian packages and packages for other Ubuntu releases are not interchangeable because their FFmpeg library ABIs differ. A missing Ubuntu artifact fails the session download; Innkeeper never substitutes a Debian package. Ubuntu setup provides PipeWire and PulseAudio services, VA-API and Vulkan drivers, XWayland, and xterm. Elsewhere audio requires PipeWire 1.4.2 or later and WirePlumber 0.5.6 or later, provided by Ubuntu 26.04. The Elsewhere package declares the media-library dependencies.
 
 The Elsewhere release version is pinned in `package.metadata.elsewhere.version` in `Cargo.toml` and embedded in the application at build time. Innkeeper generates GitHub download URLs and package filenames from that single version using the release package naming convention. Packages are cached under `packages/<version>/x86_64/<distribution>/<asset>` in Innkeeper's data directory. Downloads use HTTPS and a temporary file renamed only after a successful transfer. Concurrent session creation shares the preparation lock and reuses completed downloads. Interrupted transfers are retried on the next request.
 
@@ -421,9 +421,11 @@ running session using saved settings. Session responses include `settings_pendin
 The release workflow runs on `vX.Y.Z` tags, checks that the tag identifies the checked-out
 commit, and passes `X.Y.Z` as `INNKEEPER_VERSION` to both package builds. Arch and Debian
 packages use `X.Y.Z-1`, and their binaries report `X.Y.Z`. Cargo metadata stays at `0.0.0`.
-The workflow builds in Debian and Arch job containers with a Rust cache. It publishes
+The workflow builds in Debian and Arch job containers with a Rust cache. Node.js and Rust build
+images use digests to pin the Debian versions noted in their comments; tool updates require refreshing
+those digests. It publishes
 both packages and a Linux x86_64 tarball after verifying the installed Debian package and
-running its authenticated API check on Debian Trixie, Ubuntu 24.04, and the latest Ubuntu image.
+running its authenticated API check on Debian 13 and Ubuntu 26.04.
 
 After the package jobs succeed, the workflow builds the Dockerfile's `final` image for `linux/amd64`
 with the same `INNKEEPER_VERSION` and pushes it to Docker Hub as `X.Y.Z` and `latest`. It creates the

@@ -610,7 +610,7 @@ async fn prepare(app: Shared, id: &str, new_container: bool, attempt_ms: u64) ->
             format!("elsewhere-{version}-1-x86_64.pkg.tar.zst"),
         ),
         "debian" => (
-            "debian:trixie-slim",
+            "debian:13-slim",
             format!("elsewhere_{version}-1_debian-13_amd64.deb"),
         ),
         "ubuntu" => (
