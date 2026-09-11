@@ -126,9 +126,9 @@ installation ID together with its sessions preserves Docker ownership checks.
 
 Creation validates package names, records the session, downloads a release package if it is not cached, and prepares a stock base image. It creates a labeled volume and container, then copies the setup scripts and package into the stopped container through the Docker API. This also works when Innkeeper runs inside Docker; the source files are read from Innkeeper's filesystem.
 
-Inside the session container, setup installs runtime services, prepares the user and runtime directories, and installs Elsewhere with `apt` or `pacman`. The package manager resolves the package's declared dependencies, including Debian recommendations. A separate script installs requested extra packages before Elsewhere starts. Innkeeper requires Elsewhere 0.9.0 and creates a private non-expiring internal credential with `elsewhere token create --admin` in the server's execution environment. It stores credentials privately and never includes them in startup logs, machine listings, or previews. Initialization includes authenticated token inventory. Browser tokens are created only through the CSRF-protected connect POST and are non-expiring. Previews use Innkeeper's internal credential. Setup and installation markers allow stopped sessions to restart without reinstalling packages.
+Inside the session container, setup installs runtime services, prepares the user and runtime directories, and installs Elsewhere with `apt` or `pacman`. The package manager resolves the package's declared dependencies, including Debian recommendations. A separate script installs requested extra packages before Elsewhere starts. Innkeeper requires Elsewhere 0.10.1 and creates a private non-expiring internal credential with `elsewhere token create --admin` in the server's execution environment. It stores credentials privately and never includes them in startup logs, machine listings, or previews. Initialization includes authenticated token inventory. Browser tokens are created only through the CSRF-protected connect POST and are non-expiring. Previews use Innkeeper's internal credential. Setup and installation markers allow stopped sessions to restart without reinstalling packages.
 
-All distributions include xterm for sessions with no extra packages. Sessions use VA-API encoding when GPU access is enabled and software video encoding is off. Otherwise they use CPU encoders. Release packages are assumed compatible with the selected distribution; Innkeeper does not perform a separate binary or shared-library compatibility check.
+All distributions include xterm for sessions with no extra packages. Sessions use VA-API on Intel/AMD or NVENC on NVIDIA when GPU access is enabled and software video encoding is off. Otherwise they use CPU encoders. Release packages are assumed compatible with the selected distribution; Innkeeper does not perform a separate binary or shared-library compatibility check.
 
 Sessions default to `GSK_RENDERER=ngl` to work around GTK 4 Vulkan rendering artifacts
 and `QT_QPA_PLATFORM='wayland;xcb'` so Qt tries Wayland, then X11 when its Wayland
@@ -257,21 +257,101 @@ when no local instance needs those files.
 
 ## Hardware encoding
 
-New sessions default to GPU access and VA-API video encoding when
-`/dev/dri/renderD128` is available to Innkeeper. Disable GPU access to use software rendering,
-or enable software video encoding to retain GPU rendering with CPU encoding. The Compose file mounts
-`/dev/dri` so Innkeeper can detect it, and Innkeeper passes GPU devices to
-session containers only when GPU access is enabled. When running Innkeeper with `docker run`, also mount
-`/dev/dri:/dev/dri:ro`. The Docker daemon must run on the same host.
+New sessions default to GPU access when Innkeeper can discover a DRM render device through
+`/dev/dri` and sysfs. The GPU selector shows the driver, device identity and current render node.
+The lowest numbered render node is selected by default. On hybrid systems, choose the NVIDIA GPU
+explicitly if that is the GPU you want Elsewhere to use. Selection controls Elsewhere's rendering
+and encoding; GPU-enabled applications can still access the other exposed GPUs.
 
-Native installations detect the devices directly without additional configuration.
-Session setup installs Intel and AMD VA-API and Vulkan drivers for encoding and
-rendering, and grants the desktop user access to the device groups. Sessions without GPU access use software rendering
-and encoding. A GPU must support VA-API encoding to use the hardware path.
+The Compose file mounts `/dev/dri` for discovery. With `docker run`, mount
+`/dev/dri:/dev/dri:ro` and retain access to the host GPU metadata under `/sys`.
+The Docker daemon must run on the same host. Native installations discover these devices directly.
+The selected GPU identity and device mapping are fixed at creation. If a driver change or reboot
+changes the device mapping, restore it and use Stop then Start, or create a new session; Innkeeper does not silently select
+another GPU or recreate the container.
+
+Intel and AMD sessions use the image's VA-API and Vulkan drivers. NVIDIA sessions use the host's
+NVIDIA driver through NVIDIA Container Toolkit. Install the host driver with DRM modesetting,
+GBM/EGL support and the EGL GBM external platform library, then configure Docker:
+
+```sh
+sudo nvidia-ctk runtime configure --runtime=docker
+sudo systemctl restart docker
+```
+
+For headless NVIDIA hosts, `/dev/nvidia-modeset` must exist before starting a session. Initialize it
+with `sudo nvidia-modprobe -m` if needed. Steam also needs matching 32-bit NVIDIA driver libraries
+on the host, such as Arch's `lib32-nvidia-utils` from multilib.
+Use Arch sessions for Steam with 32-bit NVIDIA GLX; this is the verified multilib configuration.
+Debian and Ubuntu sessions do not enable i386 multiarch.
+
+Innkeeper starts NVIDIA sessions with `--runtime=nvidia`, `NVIDIA_VISIBLE_DEVICES=all` and
+`NVIDIA_DRIVER_CAPABILITIES=compute,video,graphics,utility,display,compat32`.
+Use the Toolkit's `legacy` runtime mode for this driver-capability configuration. This is a host-wide
+setting for containers using the NVIDIA runtime; account for other workloads that depend on its automatic
+or CDI mode before changing it:
+
+```sh
+sudo nvidia-ctk config --set nvidia-container-runtime.mode=legacy --in-place
+```
+
+NVIDIA sessions use a cached base image prepared with the distribution setup packages before driver
+injection. Docker Buildx is required. This lets package managers install their graphics files before
+the runtime supplies host-specific replacements. The image cache key includes its setup instructions;
+remove the corresponding `innkeeper-session-*` image to rebuild it with current distribution packages.
+Old tagged images remain until explicitly removed; remove unused tags as part of Docker disk maintenance.
+Installing or upgrading Elsewhere in these prepared Arch sessions also refreshes the Arch system packages
+to avoid dependency downloads from stale rolling-release package databases.
+
+The runtime supplies the driver libraries; Innkeeper does not install a separate NVIDIA driver
+inside the session. Session startup locates the injected GBM backend and sets `GBM_BACKENDS_PATH`. If the runtime
+relocates the allocator library but leaves a broken relative backend link, Innkeeper creates its own
+link under `/opt/innkeeper/gbm` to the injected allocator. It does not repair or replace injected files.
+An `/usr/local/bin/Xwayland` wrapper reads the same root-owned configuration and executes
+`/usr/bin/Xwayland`, so X11 rendering works even though Smithay clears most environment variables.
+The wrapper leaves runtime-injected driver files untouched.
+
+Check the session logs for an NVIDIA `GL Renderer:` and verified NVENC encoders. A working
+`nvidia-smi` or successful encoding alone does not prove hardware rendering. The GPU, host driver
+and distribution's FFmpeg build determine usable codecs; NVIDIA hardware need not support AV1
+encoding. Missing libraries or unusable encoders produce startup errors. Enable software video
+encoding explicitly to keep GPU rendering with CPU encoders at 30 Hz, or disable GPU access for
+CPU rendering and encoding. GPU access grants the desktop user the required device groups.
+
 Creation installs Innkeeper's pinned Elsewhere package. Start and Relaunch keep the installed
 package and refresh the container entrypoint, desktop startup script, and launch settings.
-Existing sessions retain their original Docker device configuration; create a new session
-to add GPU access to a container created without it.
+Existing sessions retain their original Docker devices, runtime and driver capabilities. An Elsewhere
+package upgrade cannot add NVIDIA injection or GPU access; create a session with the intended GPU configuration.
+
+### Verified GPU combinations
+
+Elsewhere 0.10.1 was checked on an Arch host with Intel integrated graphics and an NVIDIA Ampere GPU,
+driver 610.57.04, Container Toolkit 1.20.0 in legacy mode, and Docker 29.7.2. The NVIDIA GPU had the
+second render node. All three session distributions passed NVIDIA compositor rendering, NVENC,
+Xwayland direct GLX, native Wayland EGL, and browser video/audio through Innkeeper. Intel rendering
+with VA-API and browser video/audio also passed on all three. Physical AMD hardware was not available
+for this check.
+
+| Session distribution | NVIDIA GBM directory used | FFmpeg libraries |
+| --- | --- | --- |
+| Arch | `/usr/lib/gbm` | 9.0.1 |
+| Debian 13 | `/opt/innkeeper/gbm` private allocator link | 7.1.5 |
+| Ubuntu 26.04 | `/opt/innkeeper/gbm` private allocator link | 8.0.1 |
+
+The private-link cases exercised broken relative links supplied by the runtime. A separate Arch
+session fixture exposed the real driver at `/usr/lib/x86_64-linux-gnu/gbm` and passed NVIDIA
+GLX, Wayland EGL, and 32-bit GLX through the direct-directory branch. This simulates the Debian/Ubuntu
+host library layout; it is not verification on a second host OS.
+
+Arch's 32-bit GLX check passed against injected NVIDIA libraries, including after reinstalling both
+32-bit and 64-bit Mesa/GL dispatch packages. Start, Relaunch, and real package upgrades from Elsewhere
+0.10.0 to 0.10.1 retained the container and GPU configuration. Missing selected GPUs and changed
+device mappings failed without substitution or container recreation.
+GPU-disabled sessions passed device-isolation, lifecycle and browser video/audio checks on all three
+distributions while using the NVIDIA runtime, with no real GPU devices exposed to the manager.
+An additional Arch run passed with GPU inventory visible to the manager. Missing runtime,
+modeset/control devices, unusable NVENC libraries and inaccessible
+control-device permissions produced useful errors without changing the saved GPU or encoding preference.
 
 ## Session profiles
 
@@ -281,7 +361,7 @@ In **New session**, expand **Import profile**, paste a profile's JSON, and choos
 Review the settings and choose **Create session**.
 
 Profiles support `name`, `distribution` (`arch`, `debian`, or `ubuntu`), `packages` (an array of
-package names), `startup_command`, `screen_size`, `kiosk`, `docker_args`, `gpu_access`, and `software_encoding`. Omitted fields use the
+package names), `startup_command`, `screen_size`, `kiosk`, `docker_args`, `gpu_access`, `gpu_id`, and `software_encoding`. Omitted fields use the
 form defaults. Unknown fields are rejected. `screen_size` is `null` for dynamic sizing, or an object with `width`
 and `height`, both even integers from 2 to 8192. Kiosk mode defaults to `false`.
 The startup command runs through `sh -c` as the desktop user on each session start,
@@ -304,17 +384,17 @@ Start, Relaunch, Upgrade, Downgrade, Reinstall, and Innkeeper restarts. They are
 Settings and are separate from pending desktop settings. Create a new session to use
 different Docker options.
 
-**GPU access** lets the desktop and applications use the host GPU. It is set at creation and defaults to on when `/dev/dri/renderD128` is available to Innkeeper. Without that render node, GPU access cannot be enabled. Disabling it creates a session without GPU devices.
+**GPU access** lets the desktop and applications use host GPUs. It is set at creation and defaults to on when a render device is discovered. Choose the GPU for Elsewhere in the GPU selector. Disabling access creates a session without GPU devices.
 
 **Software video encoding** uses CPU encoders for the viewer stream while retaining GPU access for applications when enabled. The desktop runs at 30 Hz with software encoding. This launch setting applies on Start or Relaunch and does not recreate the container.
 
 | GPU access | Software video encoding | Rendering and encoding |
 | --- | --- | --- |
-| On | Off | GPU rendering and VA-API encoding |
+| On | Off | GPU rendering and VA-API or NVENC encoding |
 | On | On | GPU rendering and CPU encoding |
 | Off | On automatically | Software rendering and CPU encoding |
 
-Profiles and `POST /api/sessions` accept `gpu_access` and `software_encoding` booleans. Omitted GPU access follows host availability; omitted software encoding is off when GPU access is on. Without GPU access, software encoding is always saved as on. Edit Settings and `PUT /api/sessions/{id}/settings` can change `software_encoding`; GPU access remains fixed for that container.
+Profiles and `POST /api/sessions` accept `gpu_access` and `software_encoding` booleans and a nullable `gpu_id` from the `gpus` array returned by `GET /api/sessions`. Omit `gpu_id` to select the first discovered device. Explicit unknown IDs are rejected. With GPU access off, `gpu_id` must be null or omitted. Session responses include `gpu_id` and the saved `gpu` device description. Omitted GPU access follows host availability; omitted software encoding is off when GPU access is on. Without GPU access, software encoding is always saved as on. Edit Settings and `PUT /api/sessions/{id}/settings` can change `software_encoding`; GPU access remains fixed for that container.
 
 Use **Edit Settings** on a running or stopped session to change its name, screen size,
 kiosk mode, software encoding, or startup command. **Save Changes** updates the name immediately and saves the
@@ -394,7 +474,7 @@ INNKEEPER_ASSETS_DIR="$PWD" INNKEEPER_DATA_DIR="$PWD/data" ./elsewhere-innkeeper
 
 Docker must be installed and accessible to the account running Innkeeper.
 
-Elsewhere `0.9.0` advertises the assigned UDP port with hostname fallback. `INNKEEPER_RTC_ADDR` is an optional address override.
+Elsewhere `0.10.1` advertises the assigned UDP port with hostname fallback. `INNKEEPER_RTC_ADDR` is an optional address override.
 
 ## Proxy verification
 
@@ -449,7 +529,16 @@ Set `PROXY_UPGRADE_FROM` to an older Elsewhere release with matching artifacts t
 
 For browser checks, set `PROXY_WAIT_BROWSER=1` on that desktop rig, build the `proxy-browser` target, and run `node /src/scripts/check-proxy-browser.mjs` with host networking and the same `/work` directory after `/work/browser.json` appears. Set `PROXY_BROWSER_ORIGIN=https://localhost:29301` to exercise hostname resolution. This covers simultaneous desktops, Open and token isolation, decoded video and a non-silent audio test tone, file transfers, MCP, terminals, viewer access, direct WebRTC and WebSocket fallback. The browser writes `/work/browser-done` so the desktop rig can clean up.
 
-To check GPU access and encoder selection in the real-desktop rig, set `PROXY_CHECK_GPU=1` and `PROXY_GPU_ACCESS=1` on `check-proxy-desktops.py` and expose `/dev/dri` to the rig. Repeat with `PROXY_GPU_ACCESS=0`, then keep that setting and run without exposing `/dev/dri`. The check verifies device access by the desktop user, Vulkan client enumeration, encoder logs, and Start/Relaunch without container replacement. Use `PROXY_WAIT_BROWSER=1` for the accompanying audio/video browser check.
+To check GPU access and encoder selection in the real-desktop rig, set `PROXY_CHECK_GPU=1` and `PROXY_GPU_ACCESS=1` on `check-proxy-desktops.py` and expose `/dev/dri` to the rig. Repeat with `PROXY_GPU_ACCESS=0`, then keep that setting and run without exposing `/dev/dri`. The check verifies device access by the desktop user, Vulkan client enumeration, encoder logs, and Start/Relaunch without container replacement. `proxy-rig` includes `/check-glx32.c`; set `PROXY_CHECK_GLX32=1` to check 32-bit NVIDIA GLX and reinstall the Arch Mesa/GL dispatch packages after driver injection. Set `PROXY_GPU_DRIVER=nvidia` to select NVIDIA or `PROXY_GPU_DRIVER=i915` for Intel. Use `PROXY_WAIT_BROWSER=1` for the accompanying audio/video browser check. It uses hardware encoding by default; repeat with `PROXY_BROWSER_SOFTWARE=1` for CPU encoding with GPU rendering.
+
+Set `PROXY_GBM_LAYOUT=debian` with `PROXY_DISTROS=arch` to exercise the Debian GBM directory using
+the real injected driver. This fixture grants its session mount permissions and overmounts the normal
+GBM directories with temporary filesystems; it does not alter the injected files underneath. It tests
+directory lookup, not a second host operating system. `PROXY_CHECK_FAILURES=1` checks missing NVIDIA
+device and encoder injection. `PROXY_DEFAULT_NVIDIA_RUNTIME=1` forces the rig's Docker creates through
+the NVIDIA runtime to check GPU-disabled isolation without changing the daemon's default runtime.
+With `/dev/null` exposed as `/dev/dri/renderD999`, `PROXY_CHECK_DISCOVERY_ERROR=1` checks that missing
+GPU sysfs metadata is reported. These options operate only on the rig's sessions.
 
 The port-discovery check creates and removes two disposable containers without starting them. It checks disappearance races, retained reservations and Docker errors. Run it with:
 
