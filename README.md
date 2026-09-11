@@ -462,7 +462,7 @@ makepkg -f --noconfirm
 
 The Arch package appears in `packaging/arch/` and uses its `pkgver`, which defaults to
 `0.0.0`. Direct source builds report `0.0.0-dev` unless the version variable is set.
-Rust tests and formatting checks run in the separate Docker check workflow on pushes
+Rust tests and formatting checks run in the separate Docker check workflow on branch pushes
 and pull requests. Release checks compare each binary's version with the tag. The Debian
 installation check verifies the service files, conffile, disabled initial service, and an
 authenticated response from a running Innkeeper instance using temporary state.
